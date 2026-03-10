@@ -1,0 +1,18 @@
+{
+  "name": "nerdflair",
+  "version": "1.0.0",
+  "description": "Nerd Font-powered statusline with configurable layout, color themes, progress bar flair, and audio chime notifications for Claude Code. Shows context usage, model, git branch, cost, and MCP servers.",
+  "author": {
+    "name": "Justin Craig-Kuhn"
+  },
+  "keywords": [
+    "statusline",
+    "status",
+    "nerd-font",
+    "powerline",
+    "context",
+    "progress",
+    "chimes",
+    "audio"
+  ]
+}
