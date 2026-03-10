@@ -16,6 +16,7 @@ if [[ -f "$_SL_STATE_FILE" ]]; then
   _SL_RESOLVED_CHIME_STYLE=$(echo "$_SL_STATE" | grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_FLAIR_SEED=$(echo "$_SL_STATE" | grep -o '"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
   _SL_LAST_TOKENS=$(echo "$_SL_STATE" | grep -o '"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
+  _SL_LAST_SESSION=$(echo "$_SL_STATE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
 fi
 _SL_MODE="${_SL_MODE:-full}"
 _SL_WIDTH="${_SL_WIDTH:-auto}"
@@ -110,7 +111,7 @@ RED="\033[38;2;224;108;117m"
 # Progress bar healthy state
 GREEN="\033[38;2;152;195;121m"
 # Accent: dirty files
-MUSTARD="\033[38;2;170;150;90m"
+MUSTARD="\033[38;2;180;155;95m"
 # Time/cost
 SAGE="\033[38;2;190;150;120m"
 # Cost
@@ -135,7 +136,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   ALERT="\033[38;2;200;200;200m"
   RED="\033[38;2;210;210;210m"
   GREEN="\033[38;2;170;170;170m"
-  MUSTARD="\033[38;2;160;160;160m"
+  MUSTARD="\033[38;2;185;185;185m"
   SAGE="\033[38;2;145;145;145m"
   COST_GREEN="\033[38;2;150;150;150m"
   DIFF_PLUS="\033[38;2;160;160;160m"
@@ -151,7 +152,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   ALERT="\033[38;2;185;165;125m"
   RED="\033[38;2;185;140;140m"
   GREEN="\033[38;2;150;170;135m"
-  MUSTARD="\033[38;2;155;145;115m"
+  MUSTARD="\033[38;2;185;170;115m"
   SAGE="\033[38;2;165;145;125m"
   COST_GREEN="\033[38;2;115;135;110m"
   DIFF_PLUS="\033[38;2;115;135;110m"
@@ -264,12 +265,16 @@ _fmt_duration() {
     local frac=$(( hundredths % 100 ))
     local whole_fmt
     whole_fmt=$(_fmt_num "$whole")
-    if (( frac == 0 )); then
+    local tenths=$(( (frac + 5) / 10 ))
+    if (( tenths >= 10 )); then
+      whole=$(( whole + 1 ))
+      tenths=0
+      whole_fmt=$(_fmt_num "$whole")
+    fi
+    if (( tenths == 0 )); then
       printf '%sh' "$whole_fmt"
-    elif (( frac % 10 == 0 )); then
-      printf '%s.%dh' "$whole_fmt" "$(( frac / 10 ))"
     else
-      printf '%s.%02dh' "$whole_fmt" "$frac"
+      printf '%s.%dh' "$whole_fmt" "$tenths"
     fi
   elif (( total_mins > 0 )); then
     printf '%dm' "$total_mins"
@@ -345,42 +350,94 @@ if [[ -z "$total_used" ]] || ! (( total_used > 0 )) 2>/dev/null; then
   pct=0
 fi
 
-# ── Detect context clear → re-randomize flair seed ──────────────
-# A context *clear* resets tokens to near zero, while a *compaction*
-# retains a summary so tokens stay well above zero.  When we see
-# tokens drop below 20% of the last recorded value (and the last
-# value was meaningful), generate a fresh flair seed.
+# ── Detect new session → re-randomize flair seed ─────────────────
+# Re-seed only on first run or when the session_id changes (new session / /clear).
 _flair_seed="$_SL_FLAIR_SEED"
-_need_new_seed=false
 
-if [[ -z "$_flair_seed" ]]; then
-  # First run or missing seed — initialise from session
-  _need_new_seed=true
-elif (( _SL_LAST_TOKENS > 5000 && total_used * 5 < _SL_LAST_TOKENS )); then
-  # Tokens dropped below 20% of previous → context was cleared
-  _need_new_seed=true
+_is_new_session=false
+if [[ -z "$_flair_seed" || "$session_id" != "$_SL_LAST_SESSION" ]]; then
+  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
+  _is_new_session=true
 fi
 
-if [[ "$_need_new_seed" == "true" ]]; then
-  # Generate a new seed from epoch microseconds + RANDOM
-  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
+# ── Resolve random chime style on new session ────────────────────
+# Do this synchronously so the very first render shows the real name
+# instead of "random". bell.sh will read this value instead of picking
+# its own, avoiding a race condition.
+if [[ "$_is_new_session" == "true" && "$_SL_CHIME_STYLE" == "random" ]]; then
+  # New session — always pick a fresh style (the old resolved value is stale)
+  _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  _AUDIO_DIR="$(cd "$_SCRIPT_DIR/../assets/audio" 2>/dev/null && pwd)" || _AUDIO_DIR=""
+  if [[ -n "$_AUDIO_DIR" && -d "$_AUDIO_DIR" ]]; then
+    _sl_styles=()
+    while IFS= read -r d; do
+      _sl_styles+=("$(basename "$d")")
+    done < <(find "$_AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
+    if [[ ${#_sl_styles[@]} -gt 0 ]]; then
+      # Avoid recently used styles
+      _sl_recent=()
+      if [[ -f "$_SL_STATE_FILE" ]]; then
+        _sl_recent_raw=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' || true)
+        if [[ -n "$_sl_recent_raw" ]]; then
+          IFS=',' read -ra _sl_recent <<< "$_sl_recent_raw"
+        fi
+      fi
+      _sl_candidates=()
+      for s in "${_sl_styles[@]}"; do
+        _sl_is_recent=false
+        for r in "${_sl_recent[@]}"; do
+          if [[ "$s" == "$r" ]]; then _sl_is_recent=true; break; fi
+        done
+        if [[ "$_sl_is_recent" == "false" ]]; then
+          _sl_candidates+=("$s")
+        fi
+      done
+      if [[ ${#_sl_candidates[@]} -eq 0 ]]; then
+        _sl_candidates=("${_sl_styles[@]}")
+      fi
+      _SL_RESOLVED_CHIME_STYLE="${_sl_candidates[$((RANDOM % ${#_sl_candidates[@]}))]}"
+
+      # Update recent history (keep last 10)
+      _sl_recent+=("$_SL_RESOLVED_CHIME_STYLE")
+      while [[ ${#_sl_recent[@]} -gt 10 ]]; do
+        _sl_recent=("${_sl_recent[@]:1}")
+      done
+      _sl_recent_json=$(printf '"%s",' "${_sl_recent[@]}")
+      _sl_recent_json="[${_sl_recent_json%,}]"
+      if [[ -f "$_SL_STATE_FILE" ]]; then
+        if grep -q '"chime_recent_styles"' "$_SL_STATE_FILE"; then
+          sed -i '' "s/\"chime_recent_styles\"[[:space:]]*:[[:space:]]*\[[^]]*\]/\"chime_recent_styles\": $_sl_recent_json/" "$_SL_STATE_FILE"
+        else
+          sed -i '' "s/}$/,\"chime_recent_styles\": $_sl_recent_json}/" "$_SL_STATE_FILE"
+        fi
+        if grep -q '"resolved_chime_style"' "$_SL_STATE_FILE"; then
+          sed -i '' "s/\"resolved_chime_style\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"resolved_chime_style\": \"$_SL_RESOLVED_CHIME_STYLE\"/" "$_SL_STATE_FILE"
+        else
+          sed -i '' "s/}$/,\"resolved_chime_style\": \"$_SL_RESOLVED_CHIME_STYLE\"}/" "$_SL_STATE_FILE"
+        fi
+      fi
+    fi
+  fi
 fi
 
 # Persist updated flair_seed and last_tokens back to state file
 # Re-read the file to avoid overwriting changes made by nerdflair.sh
 # Note: chime seed is derived from Claude PID in bell.sh (no shared state needed)
+# Only update last_tokens when we have real data, so zero-token updates
+# don't clobber the previous value and falsely trigger a re-seed.
 if [[ -f "$_SL_STATE_FILE" ]]; then
   _fresh_state=$(cat "$_SL_STATE_FILE")
   _new_state=$(echo "$_fresh_state" \
     | sed 's/"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*//' \
     | sed 's/"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*//' \
+    | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
     | sed 's/}[[:space:]]*$//' \
     | sed 's/,[[:space:]]*,/,/g' \
     | sed 's/,[[:space:]]*$//' \
     | sed 's/{[[:space:]]*,/{/')
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '%s, "flair_seed": %s, "last_tokens": %s}\n' \
-    "$_new_state" "$_flair_seed" "$total_used" > "$_tmp_state"
+  printf '%s, "flair_seed": %s, "last_tokens": %s, "last_session": "%s"}\n' \
+    "$_new_state" "$_flair_seed" "$total_used" "$session_id" > "$_tmp_state"
   mv "$_tmp_state" "$_SL_STATE_FILE"
 fi
 
@@ -633,8 +690,12 @@ elif awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
   if [[ -f "$_SL_STATE_FILE" ]]; then
     _SL_RESOLVED_CHIME_STYLE=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$_SL_STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   fi
-  if [[ -n "$_SL_RESOLVED_CHIME_STYLE" ]]; then
+  if [[ -n "$_SL_RESOLVED_CHIME_STYLE" && "$_SL_RESOLVED_CHIME_STYLE" != "random" ]]; then
     _chime_label="$_SL_RESOLVED_CHIME_STYLE"
+  elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$_SL_STATE_FILE" ]]; then
+    # No resolved style yet — show the last entry from chime_recent_styles
+    _last_recent=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' | awk -F',' '{print $NF}')
+    _chime_label="${_last_recent:-random}"
   elif [[ -n "$_SL_CHIME_STYLE" ]]; then
     _chime_label="$_SL_CHIME_STYLE"
   else
@@ -1115,6 +1176,37 @@ _render_bar() {
   local _compact_mark_pct="${5:-}"
   local _right_label="${6:-}"
 
+  # NerdFlair logo: shown right-aligned in empty area of bar
+  local _logo_icons=()
+  local _logo_start=0
+  # Logo gradient: toned-down green → mustard → toned-down green (9 steps, symmetric)
+  local _NF_BRAND_COLORS=(
+    "\033[38;2;72;152;66m"
+    "\033[38;2;88;145;58m"
+    "\033[38;2;102;138;54m"
+    "\033[38;2;118;130;52m"
+    "\033[38;2;136;140;51m"
+    "\033[38;2;118;130;52m"
+    "\033[38;2;102;138;54m"
+    "\033[38;2;88;145;58m"
+    "\033[38;2;72;152;66m"
+  )
+  local _NF_BRAND_COLOR="${_NF_BRAND_COLORS[0]}"
+  if [[ "$_SL_FLAIR" == "true" ]]; then
+    _logo_icons=(
+      "$(printf '\UE838')"
+      "$(printf '\U000F0BF7')"
+      "$(printf '\U000F0C1E')"
+      "$(printf '\U000F0BF4')"
+      "$(printf '\U000F0295')"
+      "$(printf '\U000F0C0C')"
+      "$(printf '\U000F0BEB')"
+      "$(printf '\U000F0C03')"
+      "$(printf '\U000F0C1E')"
+    )
+  fi
+  local _logo_end=0  # will be computed after _bar_area is known
+
   # Multi-segment fill: each cell gets its tier color based on what percentage
   # of the bar that position represents. Tier boundaries get curved cap transitions.
   # When a compact mark is set, scale so the mark pct reaches tier 9 (full orange).
@@ -1140,6 +1232,14 @@ _render_bar() {
   local _bar_area=$(( bar_width - 2 ))
   (( _bar_area > MAX_BAR )) && _bar_area=$MAX_BAR
   (( _bar_area < 20 )) && _bar_area=20
+
+  # Position logo left-aligned in the bar area (only when bar is empty)
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
+    _logo_start=0
+    _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
+  elif (( _pct > 0 )); then
+    _logo_icons=()
+  fi
 
   # Compact mark: visual position of the compaction divider (-1 = none)
   local _compact_mark_pos=-1
@@ -1209,8 +1309,8 @@ _render_bar() {
       _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
       ;;
     thick_dots)
-      _fill_icon_a=$(printf '\xef\x91\x84')  # U+F444
-      _fill_icon_b=$(printf '\xc2\xb7')      # U+00B7 middle dot
+      _fill_icon_a=$(printf '\xc2\xb7')      # U+00B7 middle dot (bullet)
+      _fill_icon_b=$(printf '\xef\x91\x84')  # U+F444
       ;;
     sin_wave)
       _fill_icon_a=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
@@ -1225,8 +1325,8 @@ _render_bar() {
       _fill_icon_b=$(printf '\xef\x92\x8b')  # U+F48B
       ;;
     arrows)
-      _fill_icon_a=$(printf '\xee\xad\xb0')  # U+EB70
-      _fill_icon_b=$(printf '\xef\x91\x8a')  # U+F44A
+      _fill_icon_a=$(printf '\xef\x91\x8a')  # U+F44A (small arrow)
+      _fill_icon_b=$(printf '\xee\xad\xb0')  # U+EB70
       ;;
     sparkle)
       _fill_icon_a=$(printf '\xf3\xb1\x8d\xbf')  # U+F137F
@@ -1392,13 +1492,8 @@ _render_bar() {
           _bar+="${_cell_bg} "
           (( _lead_done++ ))
         else
-          # At label boundary, use the small icon to avoid oversized glyphs next to whitespace
-          local _at_label_edge=0
-          (( _vis == _label_start - 1 || _vis == _label_end )) && _at_label_edge=1
           local _ci_mod=$(( _body_i % _fill_cycle ))
-          if (( _at_label_edge )); then
-            _bar+="${_cell_bg}${_cell_wind}${_fill_icon_b}"
-          elif (( _ci_mod == 0 )); then
+          if (( _ci_mod == 0 )); then
             _bar+="${_cell_bg}${_cell_wind}${_fill_icon_a}"
           elif (( _ci_mod == 1 )); then
             _bar+="${_cell_bg}${_cell_wind}${_fill_icon_b}"
@@ -1407,7 +1502,13 @@ _render_bar() {
           fi
         fi
       else
-        _bar+="${_cur_empty_bg} "
+        if (( ${#_logo_icons[@]} > 0 && _vis >= _logo_start && _vis < _logo_end )); then
+          local _li=$(( _vis - _logo_start ))
+          local _lc="${_NF_BRAND_COLORS[$_li]:-${_NF_BRAND_COLOR}}"
+          _bar+="${_cur_empty_bg}${_lc}${_logo_icons[$_li]}"
+        else
+          _bar+="${_cur_empty_bg} "
+        fi
       fi
     fi
     (( _body_i++ ))

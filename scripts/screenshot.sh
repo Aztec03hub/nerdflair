@@ -6,7 +6,7 @@
 #   (1) Full layout × 3 color modes (default, mono, muted)
 #   (2) Compact layout (default color)
 #   (3) Minimal layout (default color)
-#   (4) Progress bar gallery: gradient tiers at varying percentages
+#   (4) Context bar gallery: gradient tiers at varying percentages
 #
 # Usage:
 #   ./scripts/screenshot.sh              # render to terminal
@@ -94,17 +94,34 @@ render_variation() {
   local label="$5"
   local bar_only="${6:-false}"
   local cost_override="${7:-}"
+  local duration_override="${8:-}"
 
   # Section header (skip for bar_only gallery entries)
-  if [[ "$bar_only" != "true" ]]; then
-    local HEADER_COLOR='\033[1;38;2;120;135;155m'
+  if [[ "$bar_only" != "true" && -n "$label" ]]; then
+    local WING_COLOR='\033[38;2;35;38;42m'
+    local LABEL_COLOR='\033[1;38;2;35;38;42m'
     local HEADER_RESET='\033[0m'
-    printf '\n\n%b%s%b\n' "$HEADER_COLOR" "$label" "$HEADER_RESET"
+    local margin=10
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    local usable=$(( cols - margin * 2 ))
+    local label_len=${#label}
+    local pad_len=$(( label_len + 2 ))
+    local remaining=$(( usable - pad_len ))
+    local left_len=$(( remaining / 2 ))
+    local right_len=$(( remaining - left_len ))
+    local left_dashes right_dashes padding
+    left_dashes=$(printf '%*s' "$left_len" '' | tr ' ' '─')
+    right_dashes=$(printf '%*s' "$right_len" '' | tr ' ' '─')
+    padding=$(printf '%*s' "$margin" '')
+    printf '\n\n%s%b%s%b %s %b%s%b%s\n' "$padding" "$WING_COLOR" "$left_dashes" "$LABEL_COLOR" "$label" "$WING_COLOR" "$right_dashes" "$HEADER_RESET" "$padding"
+  elif [[ "$bar_only" != "true" ]]; then
+    printf '\n\n'
   fi
 
   # Write state file into the sandboxed HOME
   cat > "$FAKE_HOME/.claude/statusline-state.json" << STATEEOF
-{"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "flair_seed": $flair_seed, "last_tokens": 80000}
+{"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "flair_seed": $flair_seed, "last_tokens": 80000, "last_session": "$SESSION_ID"}
 STATEEOF
 
   # Build JSON payload
@@ -113,7 +130,7 @@ STATEEOF
   json_tokens=$(( CTX_WINDOW_SIZE * json_pct / 100 ))
   json_cost="${cost_override:-$COST_USD}"
   # Scale API duration proportionally to cost for visual consistency
-  json_api_ms="$API_DURATION_MS"
+  json_api_ms="${duration_override:-$API_DURATION_MS}"
   json_input=$(cat << JSONEOF
 {
   "workspace": {
@@ -155,16 +172,16 @@ JSONEOF
   fi
 }
 
-# ── Randomize seeds ──────────────────────────────────────────────
-# One shared seed for the layout variations (full/compact/minimal)
-SHARED_SEED=$((RANDOM % 10000))
+# ── Deterministic seed for layout variations ─────────────────────
+# seed % 118 == 0 → flask icon; seed % 11 == 1 → thick_dots texture
+SHARED_SEED=826
 
 # ── (1) Full layout × 3 color modes ─────────────────────────────
-render_variation "full" "default" "$SHARED_SEED"  "" "Layout: full"
+render_variation "full" "default" "$SHARED_SEED"  "" "Color: vibrant"
 
-render_variation "full" "muted"   "$SHARED_SEED"  "" "Layout: full · Color: muted"
+render_variation "full" "muted"   "$SHARED_SEED"  "" "Color: muted"
 
-render_variation "full" "mono"    "$SHARED_SEED"  "" "Layout: full · Color: mono"
+render_variation "full" "mono"    "$SHARED_SEED"  "" "Color: mono"
 
 # ── (2) Compact layout ───────────────────────────────────────────
 render_variation "compact" "default" "$SHARED_SEED" "" "Layout: compact"
@@ -172,24 +189,37 @@ render_variation "compact" "default" "$SHARED_SEED" "" "Layout: compact"
 # ── (3) Minimal layout ──────────────────────────────────────────
 render_variation "minimal" "default" "$SHARED_SEED" "" "Layout: minimal"
 
-# ── (4) Progress bar gallery ─────────────────────────────────────
-# Each bar gets its own random seed for unique flair (icon + texture).
-# bar_only=true strips row 1, showing just the progress bar.
+# ── (4) Context bar gallery ──────────────────────────────────────
+# Each bar uses a deterministic seed so that all 11 flair textures are shown
+# (texture = seed % 11). bar_only=true strips row 1, showing just the progress bar.
 # Costs are deliberately varied (seemingly random) up to $150.
-HEADER_COLOR='\033[1;38;2;120;135;155m'
+WING_COLOR='\033[38;2;35;38;42m'
+LABEL_COLOR='\033[1;38;2;35;38;42m'
 HEADER_RESET='\033[0m'
-printf '\n\n%b%s%b' "$HEADER_COLOR" "Progress Bar Gallery" "$HEADER_RESET"
+_gallery_label="Context Bar Gallery"
+_margin=10
+_cols=$(tput cols 2>/dev/null || echo 80)
+_usable=$(( _cols - _margin * 2 ))
+_pad_len=$(( ${#_gallery_label} + 2 ))
+_remaining=$(( _usable - _pad_len ))
+_left_len=$(( _remaining / 2 ))
+_right_len=$(( _remaining - _left_len ))
+_left_dashes=$(printf '%*s' "$_left_len" '' | tr ' ' '─')
+_right_dashes=$(printf '%*s' "$_right_len" '' | tr ' ' '─')
+_padding=$(printf '%*s' "$_margin" '')
+printf '\n\n%s%b%s%b %s %b%s%b%s' "$_padding" "$WING_COLOR" "$_left_dashes" "$LABEL_COLOR" "$_gallery_label" "$WING_COLOR" "$_right_dashes" "$HEADER_RESET" "$_padding"
 
-render_variation "compact" "default" $((RANDOM % 10000))  "3"   ""  true  "0.47"
-render_variation "compact" "default" $((RANDOM % 10000))  "9"   ""  true  "2.18"
-render_variation "compact" "default" $((RANDOM % 10000))  "17"  ""  true  "5.93"
-render_variation "compact" "default" $((RANDOM % 10000))  "24"  ""  true  "11.07"
-render_variation "compact" "default" $((RANDOM % 10000))  "33"  ""  true  "18.42"
-render_variation "compact" "default" $((RANDOM % 10000))  "41"  ""  true  "27.65"
-render_variation "compact" "default" $((RANDOM % 10000))  "50"  ""  true  "43.19"
-render_variation "compact" "default" $((RANDOM % 10000))  "58"  ""  true  "61.84"
-render_variation "compact" "default" $((RANDOM % 10000))  "66"  ""  true  "89.37"
-render_variation "compact" "default" $((RANDOM % 10000))  "74"  ""  true  "112.50"
-render_variation "compact" "default" $((RANDOM % 10000))  "79"  ""  true  "147.03"
+render_variation "compact" "default" "$SHARED_SEED"  "0"   ""  true  "0.00"  "0"
+render_variation "compact" "default" 0   "8"   ""  true  "0.47"   "120000"
+render_variation "compact" "default" 1   "15"  ""  true  "2.18"   "300000"
+render_variation "compact" "default" 2   "23"  ""  true  "5.93"   "540000"
+render_variation "compact" "default" 3   "30"  ""  true  "11.07"  "960000"
+render_variation "compact" "default" 4   "38"  ""  true  "18.42"  "1500000"
+render_variation "compact" "default" 5   "45"  ""  true  "27.65"  "2100000"
+render_variation "compact" "default" 6   "53"  ""  true  "43.19"  "3000000"
+render_variation "compact" "default" 7   "60"  ""  true  "61.84"  "4200000"
+render_variation "compact" "default" 8   "68"  ""  true  "89.37"  "5700000"
+render_variation "compact" "default" 9   "75"  ""  true  "112.50" "7800000"
+render_variation "compact" "default" 10  "83"  ""  true  "147.03" "12600000"
 
-printf '\n'
+printf '\n\n'

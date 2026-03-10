@@ -25,7 +25,7 @@ fi
 # proceed. On subsequent SessionStart events (resume, compaction) the marker
 # is already present, so we skip the sound/style-randomization entirely.
 # SessionEnd cleans up the marker.
-_ppid="$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')"
+_ppid="$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)"
 _session_marker="/tmp/claude-session-${_ppid}"
 
 if [[ "$EVENT" == "SessionStart" ]]; then
@@ -91,10 +91,23 @@ if [[ -f "$STATE_FILE" ]]; then
 fi
 
 # ── Resolve chime style ──
+# On SessionStart, prefer the style the statusline already resolved so the
+# displayed name matches the sound played. Fall back to picking a fresh
+# random style if no resolved style is available yet.
 _resolved_style="$chime_style"
 if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
   if [[ "$EVENT" == "SessionStart" ]]; then
-    # New session: pick a random style, avoiding the last 10
+    # New session: prefer the style already resolved by the statusline renderer
+    # to avoid a race where we pick a different random style than what's displayed.
+    if [[ -f "$STATE_FILE" ]]; then
+      _already_resolved=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+      if [[ -n "$_already_resolved" && "$_already_resolved" != "random" && -f "$AUDIO_DIR/$_already_resolved/$_already_resolved-$EVENT.mp3" ]]; then
+        _resolved_style="$_already_resolved"
+      fi
+    fi
+  fi
+  if [[ "$_resolved_style" == "random" && "$EVENT" == "SessionStart" ]]; then
+    # No pre-resolved style available: pick a random style, avoiding the last 10
     _styles=()
     while IFS= read -r d; do
       _styles+=("$(basename "$d")")
@@ -121,7 +134,6 @@ if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
         fi
       done
 
-      # Fallback if everything was filtered (shouldn't happen with 20 styles / 10 recent)
       if [[ ${#_candidates[@]} -eq 0 ]]; then
         _candidates=("${_styles[@]}")
       fi
@@ -143,12 +155,22 @@ if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
         fi
       fi
     fi
-  else
+  elif [[ "$EVENT" != "SessionStart" ]]; then
     # Mid-session: reuse the previously resolved style
     if [[ -f "$STATE_FILE" ]]; then
       _prev=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
       if [[ -n "$_prev" ]]; then
         _resolved_style="$_prev"
+      fi
+    fi
+    # If still unresolved (no state file or no saved style), pick one now
+    if [[ "$_resolved_style" == "random" ]]; then
+      _styles=()
+      while IFS= read -r d; do
+        _styles+=("$(basename "$d")")
+      done < <(find "$AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
+      if [[ ${#_styles[@]} -gt 0 ]]; then
+        _resolved_style="${_styles[$((RANDOM % ${#_styles[@]}))]}"
       fi
     fi
   fi

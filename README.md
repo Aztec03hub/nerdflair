@@ -1,21 +1,25 @@
-# nerdflair
+<p align="center">
+  <img src="assets/images/nerdflair-logo.png" alt="NerdFlair logo" />
+</p>
 
-A configurable Nerd Font-powered statusline for Claude Code.
+A configurable statusline and audio FX for Claude Code.
 
 ![nerdflair preview](assets/images/preview.png)
+
 
 ## Features
 
 - **3 layout modes**: full (3 rows), compact (2 rows), minimal (1 row with context pill)
-- **10-tier color gradient** context bar (green -> amber -> red) with compaction threshold marker
-- **Randomized lead icons** and **fill textures**
+- **Colorful context bar** (green -> amber -> red) with compaction threshold marker
+- **Randomized icons** and **fill textures** (flair!)
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
 - **Terminal bell** (tab indicator) on Stop, Notification, and PermissionRequest events
 - **Audio chimes** with 20+ styles, configurable per-event, with adjustable volume
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
-- MCP server names
+- Active MCP servers
 - Session cost and API duration
+
 
 ## Prerequisites
 
@@ -37,15 +41,14 @@ Then **configure your terminal to use the font** -- installing it only puts the 
 | **Ghostty** | Add `font-family = JetBrainsMono Nerd Font` to `~/.config/ghostty/config` |
 | **VS Code terminal** | Settings -> search "terminal font" -> set Terminal > Integrated: Font Family to `JetBrainsMono Nerd Font` |
 
-To verify the font is working, run `echo ""` in your terminal. If you see a box or question mark instead of an icon, the font isn't active yet.
 
 ## Installation
 
 Add the marketplace and install:
 
 ```
-/plugin marketplace add <owner>/cc-flair
-/plugin install nerdflair@<owner>-cc-flair
+/plugin marketplace add jcraigk/nerdflair
+/plugin install nerdflair@jcraigk-nerdflair
 ```
 
 Then run setup:
@@ -60,6 +63,7 @@ This will:
 3. Verify the setup
 
 Restart Claude Code after setup for the statusline to appear.
+
 
 ## Usage
 
@@ -78,6 +82,7 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair setup` | First-time setup (font check, settings.json config) |
 | `/nerdflair terminal-bell` | Toggle terminal bell on/off (tab indicator) |
 | `/nerdflair width [auto\|50-150]` | Set layout width |
+
 
 ## How It Works
 
