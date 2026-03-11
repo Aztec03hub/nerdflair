@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <strong>A pure-bash statusline and audio chime pack for Claude Code — randomized flair, context-aware colors, zero background processes.</strong>
+  <strong>A pure bash statusline and audio chime pack for Claude Code</strong>
 </p>
 
 ![nerdflair preview](assets/images/preview.png)
@@ -29,12 +29,11 @@ Restart Claude Code after setup for the statusline to appear.
 
 ## Features
 
-- **3 layout modes** — full (3 rows), compact (2 rows), minimal (1 row with context pill)
-- **Colorful context bar** (green -> amber -> red) with compaction threshold marker
-- **Randomized icons and fill textures** (flair)
-- **3 color palettes** — vibrant (full color), muted (desaturated), mono (grayscale)
-- **Terminal bell** (tab indicator) on Stop, Notification, and PermissionRequest events
-- **Audio chimes** with 20+ styles, configurable per-event, with adjustable volume (macOS only)
+- **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row with context pill)
+- **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker and randomizable icon and texture decorations (flair)
+- **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
+- **Terminal bell**: (tab indicator) on Stop, Notification, and PermissionRequest events
+- **Audio chimes (macOS only)**: 20+ styles, configurable per-event, adjustable volume
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
 - Active MCP servers
@@ -43,7 +42,7 @@ Restart Claude Code after setup for the statusline to appear.
 
 ## Prerequisites
 
-**A Nerd Font is required.** The statusline uses Nerd Font glyphs for icons, Powerline caps, and context bar textures. Without one, characters render as boxes.
+**A Nerd Font is required.** The statusline uses [Nerd Font](https://www.nerdfonts.com/) glyphs for icons, Powerline caps, and context bar textures. Without one installed, characters render as boxes.
 
 Install via Homebrew:
 
@@ -81,7 +80,7 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair chime-events` | Show/toggle which events play chimes |
 | `/nerdflair chime-style` | Cycle chime style (random, BalladPiano, ...) |
 | `/nerdflair chime-volume [0-100]` | Set chime volume (0 = muted) |
-| `/nerdflair color-palette` | Cycle palette: vibrant -> muted -> mono |
+| `/nerdflair color-palette` | Cycle palette: vibrant, muted, mono |
 | `/nerdflair flair` | Toggle context bar decorations (icon + texture) |
 | `/nerdflair layout [mode]` | Set or cycle layout (full, compact, minimal) |
 | `/nerdflair setup` | First-time setup (font check, settings.json config) |
