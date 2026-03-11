@@ -2,7 +2,7 @@
   <img src="assets/images/nerdflair-logo.png" alt="NerdFlair logo" />
 </p>
 
-A configurable statusline and audio FX for Claude Code.
+A configurable statusline and audio FX pack for Claude Code.
 
 ![nerdflair preview](assets/images/preview.png)
 
