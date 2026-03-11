@@ -1190,9 +1190,11 @@ _render_bar() {
   (( _bar_area > MAX_BAR )) && _bar_area=$MAX_BAR
   (( _bar_area < 20 )) && _bar_area=20
 
-  # Position logo left-aligned in the bar area (only when bar is empty)
+  # Position logo centered in the bar area (only when bar is empty)
+  # Once context is used, the label comes back and the logo goes away forever.
   if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
-    _logo_start=0
+    _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
+    (( _logo_start < 0 )) && _logo_start=0
     _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
   elif (( _pct > 0 )); then
     _logo_icons=()
@@ -1219,11 +1221,16 @@ _render_bar() {
   (( _filled > _body_area )) && _filled=$_body_area
 
   # Padded label centered in the full bar_area (visual width)
+  # When logo is showing (pct==0, flair on), suppress the label entirely.
   local _label_padded=" ${_label} "
   local _label_len=${#_label_padded}
   local _label_start=$(( (_bar_area - _label_len) / 2 ))
   (( _label_start < 0 )) && _label_start=0
   local _label_end=$(( _label_start + _label_len ))
+  if (( ${#_logo_icons[@]} > 0 )); then
+    _label_start=-1
+    _label_end=-1
+  fi
 
   # Right-aligned label in empty area (2-char padding from right edge)
   local _rlabel_start=-1
