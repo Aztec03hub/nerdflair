@@ -1200,6 +1200,44 @@ _render_bar() {
     _logo_icons=()
   fi
 
+  # ── Logo background gradient: light → dark → light across the bar ──
+  # Pre-compute per-cell BG when logo is showing for a smooth ambient glow.
+  local _logo_bg_cache=()
+  local _logo_fg_cache=()
+  if (( ${#_logo_icons[@]} > 0 )); then
+    # Endpoints: dark center (near terminal black), light edges (visible glow)
+    local _lg_dark_r=8 _lg_dark_g=8 _lg_dark_b=12
+    local _lg_peak_r _lg_peak_g _lg_peak_b
+    case "$_SL_COLOR_MODE" in
+      mono)  _lg_peak_r=68; _lg_peak_g=68; _lg_peak_b=68 ;;
+      muted) _lg_peak_r=58; _lg_peak_g=62; _lg_peak_b=74 ;;
+      *)     _lg_peak_r=55; _lg_peak_g=60; _lg_peak_b=74 ;;
+    esac
+    # Dark zone = center 35% of bar; gradient wings = outer 32.5% each side
+    local _dark_start=$(( _bar_area * 325 / 1000 ))
+    local _dark_end=$(( _bar_area * 675 / 1000 ))
+    for (( _gi=0; _gi<_bar_area; _gi++ )); do
+      # Cells in center dark zone → t=0 (darkest). Wings interpolate
+      # from 0 at dark zone edge to 100 at bar edge.
+      local _t=0
+      if (( _gi < _dark_start )); then
+        # Left wing: 100 at bar edge (gi=0), 0 at dark zone start
+        _t=$(( 100 - _gi * 100 / _dark_start ))
+      elif (( _gi >= _dark_end )); then
+        # Right wing: 0 at dark zone end, 100 at bar edge
+        local _wing_len=$(( _bar_area - _dark_end ))
+        if (( _wing_len > 0 )); then
+          _t=$(( (_gi - _dark_end) * 100 / _wing_len ))
+        fi
+      fi
+      local _r=$(( _lg_dark_r + (_lg_peak_r - _lg_dark_r) * _t / 100 ))
+      local _g=$(( _lg_dark_g + (_lg_peak_g - _lg_dark_g) * _t / 100 ))
+      local _b=$(( _lg_dark_b + (_lg_peak_b - _lg_dark_b) * _t / 100 ))
+      _logo_bg_cache[$_gi]="\033[48;2;${_r};${_g};${_b}m"
+      _logo_fg_cache[$_gi]="\033[38;2;${_r};${_g};${_b}m"
+    done
+  fi
+
   # Compact mark: visual position of the compaction divider (-1 = none)
   local _compact_mark_pos=-1
   # Darker empty BG for the compaction zone (beyond the mark)
@@ -1248,12 +1286,20 @@ _render_bar() {
   local _left_cap_fg _right_cap_fg
   if (( _pct > 0 )); then
     _left_cap_fg="${TIER_FG[0]}"  # will be overridden after cache is built
+  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
+    _left_cap_fg="${_logo_fg_cache[0]}"
+  elif (( ${#_logo_icons[@]} > 0 )); then
+    _left_cap_fg="$_COMPACT_EMPTY_FG"
   else
     _left_cap_fg="$EMPTY_FG"
   fi
 
   if (( _pct >= 100 )); then
     _right_cap_fg="$_FILL_FG"
+  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
+    _right_cap_fg="${_logo_fg_cache[$((_bar_area - 1))]}"
+  elif (( ${#_logo_icons[@]} > 0 )); then
+    _right_cap_fg="$_COMPACT_EMPTY_FG"
   elif (( _compact_mark_pos >= 0 )); then
     _right_cap_fg="$_COMPACT_EMPTY_FG"
   else
@@ -1376,8 +1422,11 @@ _render_bar() {
     # Insert inner transition cap at the fill boundary (fill → empty)
     if (( _has_inner_cap && _body_i == _filled )); then
       # Pick correct empty BG based on whether we're past the compact mark
+      # or logo is showing (uses darker BG everywhere)
       local _cap_empty_bg="$EMPTY_BG"
-      if (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
+      if (( ${#_logo_icons[@]} > 0 )); then
+        _cap_empty_bg="$_COMPACT_EMPTY_BG"
+      elif (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
         _cap_empty_bg="$_COMPACT_EMPTY_BG"
       fi
       # Use the last filled cell's FG for the transition cap
@@ -1397,15 +1446,21 @@ _render_bar() {
       continue
     fi
 
-    # Determine the empty BG for this position (darker at and beyond compact mark)
+    # Determine the empty BG for this position (darker at and beyond compact mark,
+    # or gradient when logo is showing)
     local _cur_empty_bg="$EMPTY_BG"
     local _cur_light_fg="$LIGHT_FG"
-    if (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
+    if (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
+      _cur_empty_bg="${_logo_bg_cache[$_vis]}"
+    elif (( ${#_logo_icons[@]} > 0 )); then
+      _cur_empty_bg="$_COMPACT_EMPTY_BG"
+    elif (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
       _cur_empty_bg="$_COMPACT_EMPTY_BG"
     fi
 
     # Render compact mark divider (│) at the mark position in the empty zone
-    if (( _compact_mark_pos >= 0 && _vis == _compact_mark_pos && _body_i >= _filled )); then
+    # Skip when logo is showing — nothing to divide at 0%
+    if (( ${#_logo_icons[@]} == 0 && _compact_mark_pos >= 0 && _vis == _compact_mark_pos && _body_i >= _filled )); then
       if (( _vis >= _label_start && _vis < _label_end )); then
         local _ci=$(( _vis - _label_start ))
         local _ch="${_label_padded:$_ci:1}"
