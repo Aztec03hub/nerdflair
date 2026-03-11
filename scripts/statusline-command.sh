@@ -1136,29 +1136,29 @@ _render_bar() {
   # NerdFlair logo: shown right-aligned in empty area of bar
   local _logo_icons=()
   local _logo_start=0
-  # Logo gradient: toned-down green → mustard → toned-down green (9 steps, symmetric)
+  # Logo gradient: blue → purple → aqua (9 steps, matching top bar segment colors)
   local _NF_BRAND_COLORS=(
-    "\033[38;2;72;152;66m"
-    "\033[38;2;88;145;58m"
-    "\033[38;2;102;138;54m"
-    "\033[38;2;118;130;52m"
-    "\033[38;2;136;140;51m"
-    "\033[38;2;118;130;52m"
-    "\033[38;2;102;138;54m"
-    "\033[38;2;88;145;58m"
-    "\033[38;2;72;152;66m"
+    "\033[38;2;95;179;255m"  "\033[38;2;95;179;255m"
+    "\033[38;2;121;164;247m" "\033[38;2;121;164;247m"
+    "\033[38;2;147;150;238m" "\033[38;2;147;150;238m"
+    "\033[38;2;172;135;230m" "\033[38;2;172;135;230m"
+    "\033[38;2;198;120;221m" "\033[38;2;198;120;221m"
+    "\033[38;2;170;136;214m" "\033[38;2;170;136;214m"
+    "\033[38;2;142;151;208m" "\033[38;2;142;151;208m"
+    "\033[38;2;114;167;201m" "\033[38;2;114;167;201m"
+    "\033[38;2;86;182;194m"
   )
   local _NF_BRAND_COLOR="${_NF_BRAND_COLORS[0]}"
   if [[ "$_SL_FLAIR" == "true" ]]; then
     _logo_icons=(
-      "$(printf '\UE838')"
-      "$(printf '\U000F0BF7')"
-      "$(printf '\U000F0C1E')"
-      "$(printf '\U000F0BF4')"
-      "$(printf '\UF335')"
-      "$(printf '\U000F0C0C')"
-      "$(printf '\U000F0BEB')"
-      "$(printf '\U000F0C03')"
+      "$(printf '\UE838')" " "
+      "$(printf '\U000F0BF7')" " "
+      "$(printf '\U000F0C1E')" " "
+      "$(printf '\U000F0BF4')" " "
+      "$(printf '\UF335')" " "
+      "$(printf '\U000F0C0C')" " "
+      "$(printf '\U000F0BEB')" " "
+      "$(printf '\U000F0C03')" " "
       "$(printf '\U000F0C1E')"
     )
   fi

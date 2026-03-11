@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <strong>A pure bash statusline and audio chime pack for Claude Code</strong>
+  <strong>A pure bash statusline and audio pack for Claude Code</strong>
 </p>
 
 ![nerdflair preview](assets/images/preview.png)
