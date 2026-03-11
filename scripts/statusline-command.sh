@@ -1209,9 +1209,9 @@ _render_bar() {
     local _lg_dark_r=8 _lg_dark_g=8 _lg_dark_b=12
     local _lg_peak_r _lg_peak_g _lg_peak_b
     case "$_SL_COLOR_MODE" in
-      mono)  _lg_peak_r=68; _lg_peak_g=68; _lg_peak_b=68 ;;
-      muted) _lg_peak_r=58; _lg_peak_g=62; _lg_peak_b=74 ;;
-      *)     _lg_peak_r=55; _lg_peak_g=60; _lg_peak_b=74 ;;
+      mono)  _lg_peak_r=38; _lg_peak_g=38; _lg_peak_b=38 ;;
+      muted) _lg_peak_r=38; _lg_peak_g=40; _lg_peak_b=45 ;;
+      *)     _lg_peak_r=35; _lg_peak_g=38; _lg_peak_b=45 ;;
     esac
     # Dark zone = center 35% of bar; gradient wings = outer 32.5% each side
     local _dark_start=$(( _bar_area * 325 / 1000 ))
