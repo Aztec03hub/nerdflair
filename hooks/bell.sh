@@ -97,10 +97,18 @@ if [[ "$EVENT" == "SessionStart" ]]; then
   fi
 fi
 
-# ── Resolve chime style ──
-# bell.sh is the authority for picking random styles on SessionStart.
-# It writes resolved_chime_style to the state file; the statusline reads it.
-# For non-SessionStart events, reuse whatever was previously resolved.
+# ── Resolve chime style (per-session) ──
+# Each session gets its own resolved style stored in a small file:
+#   ~/.claude/nerdflair/chime-sessions/<session_id>
+# The global chime_recent_styles list in the shared state file prevents
+# repeats across sessions. The statusline reads the per-session file.
+_CHIME_STYLE_DIR="$HOME/.claude/nerdflair/chime-sessions"
+mkdir -p "$_CHIME_STYLE_DIR"
+_session_style_file=""
+if [[ -n "$_session_id" ]]; then
+  _session_style_file="$_CHIME_STYLE_DIR/${_session_id}"
+fi
+
 _resolved_style="$chime_style"
 if [[ "$_resolved_style" == "random" ]]; then
   if [[ "$EVENT" == "SessionStart" && -d "$AUDIO_DIR" ]]; then
@@ -131,7 +139,7 @@ if [[ "$_resolved_style" == "random" ]]; then
         _candidates=("${_styles[@]}")
       fi
       _resolved_style="${_candidates[$((RANDOM % ${#_candidates[@]}))]}"
-      # Update recent history (keep last 10)
+      # Update global recent history (keep last 10)
       _recent+=("$_resolved_style")
       while [[ ${#_recent[@]} -gt 10 ]]; do
         _recent=("${_recent[@]:1}")
@@ -146,22 +154,28 @@ if [[ "$_resolved_style" == "random" ]]; then
         fi
       fi
     fi
-  elif [[ -f "$STATE_FILE" ]]; then
-    # Non-SessionStart: reuse the previously resolved style
-    _prev=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  elif [[ -n "$_session_style_file" && -f "$_session_style_file" ]]; then
+    # Non-SessionStart: reuse this session's resolved style
+    _prev=$(cat "$_session_style_file" 2>/dev/null || true)
     if [[ -n "$_prev" && "$_prev" != "random" ]]; then
       _resolved_style="$_prev"
     fi
   fi
 fi
 
-# Write resolved style to state file so the statusline can display it
-if [[ "$_resolved_style" != "random" && -f "$STATE_FILE" ]]; then
-  if grep -q '"resolved_chime_style"' "$STATE_FILE"; then
-    sed -i '' "s/\"resolved_chime_style\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"resolved_chime_style\": \"$_resolved_style\"/" "$STATE_FILE"
-  else
-    sed -i '' "s/}$/,\"resolved_chime_style\": \"$_resolved_style\"}/" "$STATE_FILE"
-  fi
+# Write resolved style to per-session file so the statusline can read it
+if [[ "$_resolved_style" != "random" && -n "$_session_style_file" ]]; then
+  printf '%s' "$_resolved_style" > "$_session_style_file"
+fi
+
+# Clean up per-session file on SessionEnd
+if [[ "$EVENT" == "SessionEnd" && -n "$_session_style_file" && -f "$_session_style_file" ]]; then
+  rm -f "$_session_style_file"
+fi
+
+# On SessionStart, prune stale session files older than 7 days
+if [[ "$EVENT" == "SessionStart" ]]; then
+  find "$_CHIME_STYLE_DIR" -type f -mtime +7 -delete 2>/dev/null || true
 fi
 
 # Exit early if terminal bell is off and chime volume is 0

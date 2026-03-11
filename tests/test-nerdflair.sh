@@ -563,15 +563,17 @@ test_bell_picks_random_style_on_session_start() {
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
   echo '{"session_id":"test-new-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
-  # bell.sh should pick a real style on SessionStart and write it
-  local resolved
-  resolved=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    "$FAKE_HOME/.claude/statusline-state.json" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+  # bell.sh should pick a real style on SessionStart and write it to per-session file
+  local resolved=""
+  local _session_file="$FAKE_HOME/.claude/nerdflair/chime-sessions/test-new-session"
+  if [[ -f "$_session_file" ]]; then
+    resolved=$(cat "$_session_file")
+  fi
   if [[ -n "$resolved" && "$resolved" != "random" ]]; then
     (( _pass++ ))
   else
     (( _fail++ ))
-    _errors+=("FAIL: resolved_chime_style should be a real style, got '$resolved'")
+    _errors+=("FAIL: per-session chime style should be a real style, got '$resolved'")
   fi
   _teardown
 }
@@ -579,19 +581,17 @@ EOF
 test_bell_suppresses_resume() {
   _setup
   cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
-{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant", "resolved_chime_style": "BalladPiano"}
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
-  # source=resume should cause bell.sh to exit early without changing resolved style
+  # source=resume should cause bell.sh to exit early without creating a per-session style file
   local rc=0
   echo '{"session_id":"old-session","source":"resume"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || rc=$?
-  local resolved
-  resolved=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    "$FAKE_HOME/.claude/statusline-state.json" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  if [[ "$resolved" == "BalladPiano" ]]; then
+  local _session_file="$FAKE_HOME/.claude/nerdflair/chime-sessions/old-session"
+  if [[ ! -f "$_session_file" ]]; then
     (( _pass++ ))
   else
     (( _fail++ ))
-    _errors+=("FAIL: resume should not change resolved_chime_style, got '$resolved'")
+    _errors+=("FAIL: resume should not create per-session style file, but it exists")
   fi
   _teardown
 }

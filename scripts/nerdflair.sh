@@ -46,8 +46,6 @@ if [[ -f "$STATE_FILE" ]]; then
   current_chime_style=$(cat "$STATE_FILE" | grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   current_chime_events=$(cat "$STATE_FILE" | grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   current_chime_volume=$(cat "$STATE_FILE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_flair_seed=$(cat "$STATE_FILE" | grep -o '"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
-  current_last_tokens=$(cat "$STATE_FILE" | grep -o '"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
   current_last_session=$(cat "$STATE_FILE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   current_mode="${current_mode:-full}"
   current_width="${current_width:-auto}"
@@ -419,14 +417,8 @@ next_chime_volume="${set_volume:-$current_chime_volume}"
 
 # Write new state (preserve renderer-managed fields)
 _extra=""
-if [[ -n "$current_flair_seed" ]]; then
-  _extra=", \"flair_seed\": ${current_flair_seed}"
-fi
-if [[ -n "$current_last_tokens" ]]; then
-  _extra="${_extra}, \"last_tokens\": ${current_last_tokens}"
-fi
 if [[ -n "$current_last_session" ]]; then
-  _extra="${_extra}, \"last_session\": \"${current_last_session}\""
+  _extra=", \"last_session\": \"${current_last_session}\""
 fi
 _tmp_state="${STATE_FILE}.tmp.$$"
 cat > "$_tmp_state" << EOF

@@ -13,9 +13,6 @@ if [[ -f "$_SL_STATE_FILE" ]]; then
   _SL_TERMINAL_BELL=$(echo "$_SL_STATE" | grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_CHIME_VOLUME=$(echo "$_SL_STATE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_CHIME_STYLE=$(echo "$_SL_STATE" | grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_RESOLVED_CHIME_STYLE=$(echo "$_SL_STATE" | grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_FLAIR_SEED=$(echo "$_SL_STATE" | grep -o '"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
-  _SL_LAST_TOKENS=$(echo "$_SL_STATE" | grep -o '"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | sed 's/.*:[[:space:]]*//')
   _SL_LAST_SESSION=$(echo "$_SL_STATE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
 fi
 _SL_MODE="${_SL_MODE:-full}"
@@ -29,11 +26,8 @@ fi
 _SL_TERMINAL_BELL="${_SL_TERMINAL_BELL:-on}"
 _SL_CHIME_VOLUME="${_SL_CHIME_VOLUME:-1}"
 _SL_CHIME_STYLE="${_SL_CHIME_STYLE:-random}"
-_SL_RESOLVED_CHIME_STYLE="${_SL_RESOLVED_CHIME_STYLE:-}"
-# The resolved chime style is set by bell.sh on SessionStart.
-# The statusline just reads it from the state file — no recomputation.
-_SL_FLAIR_SEED="${_SL_FLAIR_SEED:-}"
-_SL_LAST_TOKENS="${_SL_LAST_TOKENS:-0}"
+# The resolved chime style is stored per-session in ~/.claude/nerdflair/chime-sessions/<session_id>
+# by bell.sh on SessionStart. The statusline reads it from there.
 # ── Sanitize external strings ─────────────────────────────────────
 # Strip backslashes so that printf '%b' cannot expand backslash-escape
 # sequences (e.g. \033, \e, \x1b) into terminal control characters.
@@ -115,7 +109,7 @@ MUSTARD="\033[38;2;180;155;95m"
 # Time/cost
 SAGE="\033[38;2;190;150;120m"
 # Cost
-COST_GREEN="\033[38;2;70;115;62m"
+COST_GREEN="\033[38;2;90;120;82m"
 # Diff
 DIFF_PLUS="\033[38;2;130;190;110m"
 DIFF_MINUS="\033[38;2;235;100;90m"
@@ -154,7 +148,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   GREEN="\033[38;2;150;170;135m"
   MUSTARD="\033[38;2;185;170;115m"
   SAGE="\033[38;2;165;145;125m"
-  COST_GREEN="\033[38;2;115;135;110m"
+  COST_GREEN="\033[38;2;120;135;118m"
   DIFF_PLUS="\033[38;2;115;135;110m"
   DIFF_MINUS="\033[38;2;175;125;118m"
   DIM="\033[38;2;95;95;105m"
@@ -350,51 +344,63 @@ if [[ -z "$total_used" ]] || ! (( total_used > 0 )) 2>/dev/null; then
   pct=0
 fi
 
-# ── Detect new session → re-randomize flair seed ─────────────────
-# Re-seed only on first run or when the session_id changes (new session / /clear).
-_flair_seed="$_SL_FLAIR_SEED"
-
-_is_new_session=false
-if [[ -z "$_flair_seed" ]]; then
-  # First run ever — no seed persisted yet
-  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
-  _is_new_session=true
-elif [[ -n "$session_id" && -n "$_SL_LAST_SESSION" && "$session_id" != "$_SL_LAST_SESSION" ]]; then
-  # Session changed (new session or /clear) — re-randomize
-  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
-  _is_new_session=true
+# ── Flair seed: per-session, re-randomize on 0→nonzero context ────
+# Stored in ~/.claude/nerdflair/flair-sessions/<session_id> so parallel
+# sessions don't clobber each other. Re-seeded when context transitions
+# from 0 to nonzero (new conversation or after /clear).
+_FLAIR_SESSION_DIR="$HOME/.claude/nerdflair/flair-sessions"
+mkdir -p "$_FLAIR_SESSION_DIR"
+_flair_session_file=""
+_flair_seed=""
+if [[ -n "$session_id" ]]; then
+  _flair_session_file="$_FLAIR_SESSION_DIR/${session_id}"
+  if [[ -f "$_flair_session_file" ]]; then
+    _flair_seed=$(cat "$_flair_session_file" 2>/dev/null || true)
+  fi
 fi
 
-# Chime style: bell.sh is the authority for picking random styles on
-# SessionStart. The statusline just reads resolved_chime_style from the
-# state file (done at the top of this script and re-read before display).
+if [[ -z "$_flair_seed" ]] && (( total_used > 0 )); then
+  # Context just became nonzero (first prompt, or first prompt after /clear)
+  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
+  if [[ -n "$_flair_session_file" ]]; then
+    printf '%s' "$_flair_seed" > "$_flair_session_file"
+  fi
+elif [[ -n "$_flair_seed" ]] && (( total_used == 0 )); then
+  # Context reset to zero (/clear) — remove seed so next nonzero re-picks
+  _flair_seed=""
+  if [[ -n "$_flair_session_file" && -f "$_flair_session_file" ]]; then
+    rm -f "$_flair_session_file"
+  fi
+fi
+# On SessionStart, prune stale flair session files older than 7 days
+if [[ -n "$session_id" && -n "$_SL_LAST_SESSION" && "$session_id" != "$_SL_LAST_SESSION" ]]; then
+  find "$_FLAIR_SESSION_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+fi
 
-# Persist updated flair_seed and last_tokens back to state file
-# Re-read the file to avoid overwriting changes made by nerdflair.sh
-# Note: chime seed is derived from Claude PID in bell.sh (no shared state needed)
-# Only update last_tokens when we have real data, so zero-token updates
-# don't clobber the previous value and falsely trigger a re-seed.
-if [[ -f "$_SL_STATE_FILE" ]]; then
+# Chime style: bell.sh picks random styles on SessionStart and writes
+# them to per-session files in ~/.claude/nerdflair/chime-sessions/.
+
+# Persist last_session to shared state file (used by bell.sh to suppress
+# duplicate SessionStart on compaction). Re-read to avoid clobbering
+# changes made by nerdflair.sh or bell.sh.
+if [[ -n "$session_id" && -f "$_SL_STATE_FILE" ]]; then
   _fresh_state=$(cat "$_SL_STATE_FILE")
   _new_state=$(echo "$_fresh_state" \
+    | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
     | sed 's/"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*//' \
     | sed 's/"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*//' \
-    | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
     | sed 's/}[[:space:]]*$//' \
     | sed 's/,[[:space:]]*,/,/g' \
     | sed 's/,[[:space:]]*,/,/g' \
     | sed 's/,[[:space:]]*$//' \
     | sed 's/{[[:space:]]*,/{/')
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '%s, "flair_seed": %s, "last_tokens": %s, "last_session": "%s"}\n' \
-    "$_new_state" "$_flair_seed" "$total_used" "$session_id" > "$_tmp_state"
+  printf '%s, "last_session": "%s"}\n' "$_new_state" "$session_id" > "$_tmp_state"
   mv "$_tmp_state" "$_SL_STATE_FILE"
-else
-  # State file doesn't exist yet — create it so flair_seed persists across renders
+elif [[ -n "$session_id" ]]; then
   mkdir -p "$(dirname "$_SL_STATE_FILE")"
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '{"flair_seed": %s, "last_tokens": %s, "last_session": "%s"}\n' \
-    "$_flair_seed" "$total_used" "$session_id" > "$_tmp_state"
+  printf '{"last_session": "%s"}\n' "$session_id" > "$_tmp_state"
   mv "$_tmp_state" "$_SL_STATE_FILE"
 fi
 
@@ -633,39 +639,56 @@ fi
 # ── Row 3 (built here, printed last): left: mcp | right: time · cost
 # Build right side first so we can measure it for MCP name fit check
 row3_right="\033[0m"
-if [[ -n "$cost_segment" ]]; then
-  # When cost/API data is available, show that instead of audio style
-  if [[ -n "$time_segment" ]]; then
-    row3_right+="${time_segment}${BULLET}"
+
+# Always resolve chime style label for display
+_chime_label=""
+if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
+  # Read this session's resolved style from its per-session file
+  _session_style_file="$HOME/.claude/nerdflair/chime-sessions/${session_id}"
+  _session_resolved=""
+  if [[ -n "$session_id" && -f "$_session_style_file" ]]; then
+    _session_resolved=$(cat "$_session_style_file" 2>/dev/null || true)
   fi
-  row3_right+="$cost_segment"
-elif awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
-  # No cost yet — show chime style with icon if chimes are enabled
-  # Re-read resolved style fresh here; the SessionStart hook may have updated
-  # it after we cached the state file at the top of this script.
-  _vol_icon=$(printf '\xef\x80\xa8')  # U+F028  volume icon
-  if [[ -f "$_SL_STATE_FILE" ]]; then
-    _SL_RESOLVED_CHIME_STYLE=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$_SL_STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  fi
-  if [[ -n "$_SL_RESOLVED_CHIME_STYLE" && "$_SL_RESOLVED_CHIME_STYLE" != "random" ]]; then
-    _chime_label="$_SL_RESOLVED_CHIME_STYLE"
+  if [[ -n "$_session_resolved" && "$_session_resolved" != "random" ]]; then
+    _chime_label="$_session_resolved"
   elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$_SL_STATE_FILE" ]]; then
-    # No resolved style yet — show the last entry from chime_recent_styles
+    # No per-session style yet — show the last entry from chime_recent_styles
     _last_recent=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' | awk -F',' '{print $NF}')
     _chime_label="${_last_recent:-random}"
   elif [[ -n "$_SL_CHIME_STYLE" ]]; then
     _chime_label="$_SL_CHIME_STYLE"
-  else
-    _chime_label=""
   fi
-  if [[ -n "$_chime_label" ]]; then
-    _vol_pct=$(awk "BEGIN {printf \"%g\", ${_SL_CHIME_VOLUME:-1} * 100}")
+fi
+
+# Build chime style segment
+# Only show the resolved style name when on "random" and before any cost is incurred
+_chime_segment=""
+if [[ -n "$_chime_label" ]]; then
+  _show_label=false
+  if [[ "$_SL_CHIME_STYLE" == "random" && "$formatted_cost" == "0.00" ]]; then
+    _show_label=true
+  fi
+  _vol_icon=$(printf '\xef\x80\xa8')  # U+F028  volume icon
+  _vol_pct=$(awk "BEGIN {printf \"%g\", ${_SL_CHIME_VOLUME:-1} * 100}")
+  if [[ "$_show_label" == "true" ]]; then
     if [[ "$_vol_pct" != "100" ]]; then
-      row3_right+="${DIM}${_vol_icon}  ${_chime_label} ${_vol_pct}%${RESET}"
+      _chime_segment="${MAUVE}${_vol_icon}  ${_chime_label} ${_vol_pct}%${RESET}"
     else
-      row3_right+="${DIM}${_vol_icon}  ${_chime_label}${RESET}"
+      _chime_segment="${MAUVE}${_vol_icon}  ${_chime_label}${RESET}"
     fi
   fi
+fi
+
+if [[ -n "$cost_segment" ]]; then
+  if [[ -n "$_chime_segment" ]]; then
+    row3_right+="${_chime_segment}${BULLET}"
+  fi
+  if [[ -n "$time_segment" ]]; then
+    row3_right+="${time_segment}${BULLET}"
+  fi
+  row3_right+="$cost_segment"
+elif [[ -n "$_chime_segment" ]]; then
+  row3_right+="$_chime_segment"
 fi
 
 _row3_right_len=$(_vis_len "$row3_right")
