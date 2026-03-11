@@ -3,7 +3,7 @@
 input=$(cat)
 
 # ── Layout mode & width from state file ──────────────────────────
-_SL_STATE_FILE="$HOME/.claude/statusline-state.json"
+_SL_STATE_FILE="$HOME/.claude/nerdflair/state.json"
 if [[ -f "$_SL_STATE_FILE" ]]; then
   _SL_STATE=$(cat "$_SL_STATE_FILE")
   _SL_MODE=$(echo "$_SL_STATE" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')

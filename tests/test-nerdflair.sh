@@ -12,7 +12,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RENDERER="$PLUGIN_ROOT/scripts/statusline-command.sh"
+RENDERER="$PLUGIN_ROOT/scripts/statusline.sh"
 CONFIGURATOR="$PLUGIN_ROOT/scripts/nerdflair.sh"
 BELL="$PLUGIN_ROOT/hooks/bell.sh"
 
@@ -24,7 +24,7 @@ _errors=()
 _setup() {
   TMPDIR_ROOT=$(mktemp -d)
   FAKE_HOME="$TMPDIR_ROOT/home"
-  mkdir -p "$FAKE_HOME/.claude"
+  mkdir -p "$FAKE_HOME/.claude/nerdflair"
 
   FAKE_CWD="$TMPDIR_ROOT/workspace/my-project"
   mkdir -p "$FAKE_CWD"
@@ -115,7 +115,7 @@ EOF
 # Run the renderer with a given state and input
 _render() {
   local state="$1" input="$2"
-  echo "$state" > "$FAKE_HOME/.claude/statusline-state.json"
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
   printf '%s' "$input" | HOME="$FAKE_HOME" bash "$RENDERER"
 }
 
@@ -127,13 +127,13 @@ _configure() {
 # Read a field from the state file
 _state_field() {
   local field="$1"
-  grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$FAKE_HOME/.claude/statusline-state.json" \
+  grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$FAKE_HOME/.claude/nerdflair/state.json" \
     | head -1 | sed 's/.*"\([^"]*\)"/\1/'
 }
 
 _state_field_raw() {
   local field="$1"
-  grep -o "\"$field\"[[:space:]]*:[[:space:]]*[a-z]*" "$FAKE_HOME/.claude/statusline-state.json" \
+  grep -o "\"$field\"[[:space:]]*:[[:space:]]*[a-z]*" "$FAKE_HOME/.claude/nerdflair/state.json" \
     | head -1 | sed 's/.*:[[:space:]]*//'
 }
 
@@ -266,7 +266,7 @@ EOF
 
 test_renderer_no_state_file_uses_defaults() {
   _setup
-  rm -f "$FAKE_HOME/.claude/statusline-state.json"
+  rm -f "$FAKE_HOME/.claude/nerdflair/state.json"
   local output
   output=$(printf '%s' "$(_make_input)" | HOME="$FAKE_HOME" bash "$RENDERER")
   local stripped
@@ -518,7 +518,7 @@ test_config_invalid_command_fails() {
 test_config_legacy_default_color_migrated() {
   _setup
   # Write state with old "default" color value
-  cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "default"}
 EOF
   # Any action should migrate "default" -> "vibrant"
@@ -534,7 +534,7 @@ EOF
 
 test_bell_exits_early_when_all_disabled() {
   _setup
-  cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}
 EOF
   local rc=0
@@ -545,7 +545,7 @@ EOF
 
 test_bell_reads_state_correctly() {
   _setup
-  cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "BalladPiano", "chime_events": "Stop", "color": "vibrant"}
 EOF
   # With both off, it should exit cleanly without errors
@@ -559,7 +559,7 @@ EOF
 
 test_bell_picks_random_style_on_session_start() {
   _setup
-  cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
   echo '{"session_id":"test-new-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
@@ -580,7 +580,7 @@ EOF
 
 test_bell_suppresses_resume() {
   _setup
-  cat > "$FAKE_HOME/.claude/statusline-state.json" <<'EOF'
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
   # source=resume should cause bell.sh to exit early without creating a per-session style file

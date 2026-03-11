@@ -94,8 +94,10 @@ Use the `/nerdflair` command to configure the statusline:
 
 Three bash scripts, one JSON state file, zero background processes.
 
-- **`scripts/statusline-command.sh`** — The renderer. Claude Code pipes JSON session data to this on every statusline refresh. It reads layout state from `~/.claude/statusline-state.json` and renders the appropriate rows.
-- **`scripts/nerdflair.sh`** — The configurator. Toggles modes, flair, colors, etc. by writing to the same state file.
-- **`hooks/bell.sh`** — The notification handler. Fired by hooks on 5 events (Stop, Notification, PermissionRequest, SessionStart, SessionEnd). Sends terminal bell (BEL character) on all platforms and plays audio chimes via `afplay` on macOS.
+![NerdFlair architecture](assets/images/architecture.svg)
 
-Pure bash with a `jq` dependency for JSON parsing.
+- **Renderer** (`statusline.sh`) — Claude Code pipes session JSON on every refresh. Reads state, outputs ANSI-colored statusline.
+- **Configurator** (`nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
+- **Hook Handler** (`bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS) based on user-defined config.
+
+All settings persist in `~/.claude/nerdflair/state.json`. Per-session data is stored in `~/.claude/nerdflair/chime-sessions/` and cleaned up automatically.

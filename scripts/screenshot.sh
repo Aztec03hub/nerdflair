@@ -2,7 +2,7 @@
 # screenshot.sh — Generate deterministic nerdflair screenshots for docs.
 #
 # Renders multiple statusline variations by calling the real
-# statusline-command.sh with controlled inputs:
+# statusline.sh with controlled inputs:
 #   (1) Full layout × 3 color modes (default, mono, muted)
 #   (2) Compact layout (default color)
 #   (3) Minimal layout (default color)
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RENDERER="$SCRIPT_DIR/statusline-command.sh"
+RENDERER="$SCRIPT_DIR/statusline.sh"
 
 # ── Configurable dummy values ────────────────────────────────────
 FOLDER="todos-app"
@@ -42,7 +42,7 @@ TMPDIR_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 FAKE_HOME="$TMPDIR_ROOT/home"
-mkdir -p "$FAKE_HOME/.claude"
+mkdir -p "$FAKE_HOME/.claude/nerdflair"
 
 FAKE_CWD="$TMPDIR_ROOT/workspace/$FOLDER"
 mkdir -p "$FAKE_CWD"
@@ -120,7 +120,7 @@ render_variation() {
   fi
 
   # Write state file into the sandboxed HOME
-  cat > "$FAKE_HOME/.claude/statusline-state.json" << STATEEOF
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" << STATEEOF
 {"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "flair_seed": $flair_seed, "last_tokens": 80000, "last_session": "$SESSION_ID"}
 STATEEOF
 

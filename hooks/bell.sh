@@ -3,7 +3,7 @@
 # Called with event name as $1: Stop, Notification, PermissionRequest,
 # SessionStart, SessionEnd, UserPromptSubmit, PreCompact.
 #
-# Reads settings from ~/.claude/statusline-state.json:
+# Reads settings from ~/.claude/nerdflair/state.json:
 #   terminal_bell: on | off        (BEL char — hard-coded to Stop, Notification, PermissionRequest)
 #   chime_sound:   macOS system sound name (fallback when no chime style)
 #   chime_style:   style folder name from audio/ (or "random")
@@ -42,7 +42,7 @@ chime_sound="Glass"
 chime_style="random"
 chime_events="Stop,Notification,PermissionRequest,SessionStart,SessionEnd"
 chime_volume="1"
-STATE_FILE="$HOME/.claude/statusline-state.json"
+STATE_FILE="$HOME/.claude/nerdflair/state.json"
 if [[ -f "$STATE_FILE" ]]; then
   _tbell=$(grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
   _sound=$(grep -o '"chime_sound"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)

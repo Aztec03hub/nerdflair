@@ -17,10 +17,10 @@
 #   nerdflair width auto           # reset to auto (terminal width)
 #   nerdflair info                 # show current settings without changing anything
 #
-# State is persisted in ~/.claude/statusline-state.json
+# State is persisted in ~/.claude/nerdflair/state.json
 # The statusline script reads this file on every render.
 
-STATE_FILE="$HOME/.claude/statusline-state.json"
+STATE_FILE="$HOME/.claude/nerdflair/state.json"
 VALID_MODES="full compact minimal"
 
 # Ensure the directory exists

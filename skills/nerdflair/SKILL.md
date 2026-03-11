@@ -113,12 +113,12 @@ Read `~/.claude/settings.json` if it exists. Set the statusLine entry:
 {
   "statusLine": {
     "type": "command",
-    "command": "bash /absolute/path/to/scripts/statusline-command.sh"
+    "command": "bash /absolute/path/to/scripts/statusline.sh"
   }
 }
 ```
 
-Resolve the absolute path: `$CLAUDE_PLUGIN_ROOT/scripts/statusline-command.sh`
+Resolve the absolute path: `$CLAUDE_PLUGIN_ROOT/scripts/statusline.sh`
 
 Use Edit to update if settings.json exists, or Write if creating new. Preserve all other existing settings.
 
