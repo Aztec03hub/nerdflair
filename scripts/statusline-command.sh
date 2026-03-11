@@ -355,70 +355,19 @@ fi
 _flair_seed="$_SL_FLAIR_SEED"
 
 _is_new_session=false
-if [[ -z "$_flair_seed" || "$session_id" != "$_SL_LAST_SESSION" ]]; then
+if [[ -z "$_flair_seed" ]]; then
+  # First run ever — no seed persisted yet
+  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
+  _is_new_session=true
+elif [[ -n "$session_id" && -n "$_SL_LAST_SESSION" && "$session_id" != "$_SL_LAST_SESSION" ]]; then
+  # Session changed (new session or /clear) — re-randomize
   _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
   _is_new_session=true
 fi
 
-# ── Resolve random chime style on new session ────────────────────
-# Do this synchronously so the very first render shows the real name
-# instead of "random". bell.sh will read this value instead of picking
-# its own, avoiding a race condition.
-if [[ "$_is_new_session" == "true" && "$_SL_CHIME_STYLE" == "random" ]]; then
-  # New session — always pick a fresh style (the old resolved value is stale)
-  _SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  _AUDIO_DIR="$(cd "$_SCRIPT_DIR/../assets/audio" 2>/dev/null && pwd)" || _AUDIO_DIR=""
-  if [[ -n "$_AUDIO_DIR" && -d "$_AUDIO_DIR" ]]; then
-    _sl_styles=()
-    while IFS= read -r d; do
-      _sl_styles+=("$(basename "$d")")
-    done < <(find "$_AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
-    if [[ ${#_sl_styles[@]} -gt 0 ]]; then
-      # Avoid recently used styles
-      _sl_recent=()
-      if [[ -f "$_SL_STATE_FILE" ]]; then
-        _sl_recent_raw=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' || true)
-        if [[ -n "$_sl_recent_raw" ]]; then
-          IFS=',' read -ra _sl_recent <<< "$_sl_recent_raw"
-        fi
-      fi
-      _sl_candidates=()
-      for s in "${_sl_styles[@]}"; do
-        _sl_is_recent=false
-        for r in "${_sl_recent[@]}"; do
-          if [[ "$s" == "$r" ]]; then _sl_is_recent=true; break; fi
-        done
-        if [[ "$_sl_is_recent" == "false" ]]; then
-          _sl_candidates+=("$s")
-        fi
-      done
-      if [[ ${#_sl_candidates[@]} -eq 0 ]]; then
-        _sl_candidates=("${_sl_styles[@]}")
-      fi
-      _SL_RESOLVED_CHIME_STYLE="${_sl_candidates[$((RANDOM % ${#_sl_candidates[@]}))]}"
-
-      # Update recent history (keep last 10)
-      _sl_recent+=("$_SL_RESOLVED_CHIME_STYLE")
-      while [[ ${#_sl_recent[@]} -gt 10 ]]; do
-        _sl_recent=("${_sl_recent[@]:1}")
-      done
-      _sl_recent_json=$(printf '"%s",' "${_sl_recent[@]}")
-      _sl_recent_json="[${_sl_recent_json%,}]"
-      if [[ -f "$_SL_STATE_FILE" ]]; then
-        if grep -q '"chime_recent_styles"' "$_SL_STATE_FILE"; then
-          sed -i '' "s/\"chime_recent_styles\"[[:space:]]*:[[:space:]]*\[[^]]*\]/\"chime_recent_styles\": $_sl_recent_json/" "$_SL_STATE_FILE"
-        else
-          sed -i '' "s/}$/,\"chime_recent_styles\": $_sl_recent_json}/" "$_SL_STATE_FILE"
-        fi
-        if grep -q '"resolved_chime_style"' "$_SL_STATE_FILE"; then
-          sed -i '' "s/\"resolved_chime_style\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"resolved_chime_style\": \"$_SL_RESOLVED_CHIME_STYLE\"/" "$_SL_STATE_FILE"
-        else
-          sed -i '' "s/}$/,\"resolved_chime_style\": \"$_SL_RESOLVED_CHIME_STYLE\"}/" "$_SL_STATE_FILE"
-        fi
-      fi
-    fi
-  fi
-fi
+# Chime style: bell.sh is the authority for picking random styles on
+# SessionStart. The statusline just reads resolved_chime_style from the
+# state file (done at the top of this script and re-read before display).
 
 # Persist updated flair_seed and last_tokens back to state file
 # Re-read the file to avoid overwriting changes made by nerdflair.sh
@@ -433,11 +382,19 @@ if [[ -f "$_SL_STATE_FILE" ]]; then
     | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
     | sed 's/}[[:space:]]*$//' \
     | sed 's/,[[:space:]]*,/,/g' \
+    | sed 's/,[[:space:]]*,/,/g' \
     | sed 's/,[[:space:]]*$//' \
     | sed 's/{[[:space:]]*,/{/')
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
   printf '%s, "flair_seed": %s, "last_tokens": %s, "last_session": "%s"}\n' \
     "$_new_state" "$_flair_seed" "$total_used" "$session_id" > "$_tmp_state"
+  mv "$_tmp_state" "$_SL_STATE_FILE"
+else
+  # State file doesn't exist yet — create it so flair_seed persists across renders
+  mkdir -p "$(dirname "$_SL_STATE_FILE")"
+  _tmp_state="${_SL_STATE_FILE}.tmp.$$"
+  printf '{"flair_seed": %s, "last_tokens": %s, "last_session": "%s"}\n' \
+    "$_flair_seed" "$total_used" "$session_id" > "$_tmp_state"
   mv "$_tmp_state" "$_SL_STATE_FILE"
 fi
 
@@ -1198,7 +1155,7 @@ _render_bar() {
       "$(printf '\U000F0BF7')"
       "$(printf '\U000F0C1E')"
       "$(printf '\U000F0BF4')"
-      "$(printf '\U000F0295')"
+      "$(printf '\UF335')"
       "$(printf '\U000F0C0C')"
       "$(printf '\U000F0BEB')"
       "$(printf '\U000F0C03')"

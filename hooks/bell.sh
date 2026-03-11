@@ -21,25 +21,13 @@ if ! [ -t 0 ]; then
 fi
 
 # Suppress SessionStart for resumed sessions and post-compaction restarts.
-# On a genuinely new session the marker won't exist yet; we create it and
-# proceed. On subsequent SessionStart events (resume, compaction) the marker
-# is already present, so we skip the sound/style-randomization entirely.
-# SessionEnd cleans up the marker.
-_ppid="$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)"
-_session_marker="/tmp/claude-session-${_ppid}"
-
-if [[ "$EVENT" == "SessionStart" ]]; then
-  if [[ -f "$_session_marker" ]]; then
-    # Not a fresh session — suppress
-    exit 0
-  fi
-  touch "$_session_marker"
+# We check the state file's last_session (written by the statusline) to see if
+# this session_id has already been seen. This persists across process restarts,
+# so /resume (which reuses the same session_id) won't re-trigger the sound.
+_session_id=""
+if [[ -n "$_stdin_data" ]]; then
+  _session_id=$(echo "$_stdin_data" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
 fi
-
-if [[ "$EVENT" == "SessionEnd" ]]; then
-  rm -f "$_session_marker"
-fi
-
 
 # Resolve plugin root (hooks/ is one level down from plugin root)
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -56,11 +44,11 @@ chime_events="Stop,Notification,PermissionRequest,SessionStart,SessionEnd"
 chime_volume="1"
 STATE_FILE="$HOME/.claude/statusline-state.json"
 if [[ -f "$STATE_FILE" ]]; then
-  _tbell=$(grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _sound=$(grep -o '"chime_sound"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _style=$(grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _events=$(grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _volume=$(grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+  _tbell=$(grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  _sound=$(grep -o '"chime_sound"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  _style=$(grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  _events=$(grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  _volume=$(grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
   terminal_bell="${_tbell:-on}"
   chime_sound="${_sound:-Glass}"
   chime_style="${_style:-random}"
@@ -68,7 +56,7 @@ if [[ -f "$STATE_FILE" ]]; then
   chime_volume="${_volume:-1}"
   # Legacy migration: read old "bell" field if new fields are missing
   if [[ -z "$_tbell" ]]; then
-    _old_bell=$(grep -o '"bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    _old_bell=$(grep -o '"bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
     case "$_old_bell" in
       both)   terminal_bell="on" ;;
       visual) terminal_bell="on"; chime_volume="0" ;;
@@ -77,42 +65,50 @@ if [[ -f "$STATE_FILE" ]]; then
     esac
   fi
   if [[ -z "$_style" ]]; then
-    _old_style=$(grep -o '"audio_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    _old_style=$(grep -o '"audio_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
     chime_style="${_old_style:-random}"
   fi
   if [[ -z "$_events" ]]; then
-    _old_events=$(grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    _old_events=$(grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
     chime_events="${_old_events:-Stop,Notification,PermissionRequest,SessionStart,SessionEnd}"
   fi
   if [[ -z "$_volume" ]]; then
-    _old_volume=$(grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    _old_volume=$(grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
     chime_volume="${_old_volume:-1}"
   fi
 fi
 
-# ── Resolve chime style ──
-# On SessionStart, prefer the style the statusline already resolved so the
-# displayed name matches the sound played. Fall back to picking a fresh
-# random style if no resolved style is available yet.
-_resolved_style="$chime_style"
-if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
-  if [[ "$EVENT" == "SessionStart" ]]; then
-    # New session: prefer the style already resolved by the statusline renderer
-    # to avoid a race where we pick a different random style than what's displayed.
-    if [[ -f "$STATE_FILE" ]]; then
-      _already_resolved=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-      if [[ -n "$_already_resolved" && "$_already_resolved" != "random" && -f "$AUDIO_DIR/$_already_resolved/$_already_resolved-$EVENT.mp3" ]]; then
-        _resolved_style="$_already_resolved"
-      fi
+# Suppress SessionStart for resumed sessions and post-compaction restarts.
+# The stdin payload includes "source":"resume" for /resume and "source":"startup"
+# for new sessions. Also suppress if last_session already matches (compaction).
+if [[ "$EVENT" == "SessionStart" ]]; then
+  _source=""
+  if [[ -n "$_stdin_data" ]]; then
+    _source=$(echo "$_stdin_data" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+  fi
+  if [[ "$_source" == "resume" ]]; then
+    exit 0
+  fi
+  if [[ -n "$_session_id" && -f "$STATE_FILE" ]]; then
+    _last_session=$(grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+    if [[ "$_session_id" == "$_last_session" ]]; then
+      exit 0
     fi
   fi
-  if [[ "$_resolved_style" == "random" && "$EVENT" == "SessionStart" ]]; then
-    # No pre-resolved style available: pick a random style, avoiding the last 10
+fi
+
+# ── Resolve chime style ──
+# bell.sh is the authority for picking random styles on SessionStart.
+# It writes resolved_chime_style to the state file; the statusline reads it.
+# For non-SessionStart events, reuse whatever was previously resolved.
+_resolved_style="$chime_style"
+if [[ "$_resolved_style" == "random" ]]; then
+  if [[ "$EVENT" == "SessionStart" && -d "$AUDIO_DIR" ]]; then
+    # New session: pick a fresh random style, avoiding recently used ones
     _styles=()
     while IFS= read -r d; do
       _styles+=("$(basename "$d")")
     done < <(find "$AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
-
     if [[ ${#_styles[@]} -gt 0 ]]; then
       _recent=()
       if [[ -f "$STATE_FILE" ]]; then
@@ -121,8 +117,6 @@ if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
           IFS=',' read -ra _recent <<< "$_recent_raw"
         fi
       fi
-
-      # Build candidates: all styles not in recent history
       _candidates=()
       for s in "${_styles[@]}"; do
         _is_recent=false
@@ -133,13 +127,10 @@ if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
           _candidates+=("$s")
         fi
       done
-
       if [[ ${#_candidates[@]} -eq 0 ]]; then
         _candidates=("${_styles[@]}")
       fi
-
       _resolved_style="${_candidates[$((RANDOM % ${#_candidates[@]}))]}"
-
       # Update recent history (keep last 10)
       _recent+=("$_resolved_style")
       while [[ ${#_recent[@]} -gt 10 ]]; do
@@ -155,29 +146,17 @@ if [[ "$_resolved_style" == "random" && -d "$AUDIO_DIR" ]]; then
         fi
       fi
     fi
-  elif [[ "$EVENT" != "SessionStart" ]]; then
-    # Mid-session: reuse the previously resolved style
-    if [[ -f "$STATE_FILE" ]]; then
-      _prev=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-      if [[ -n "$_prev" ]]; then
-        _resolved_style="$_prev"
-      fi
-    fi
-    # If still unresolved (no state file or no saved style), pick one now
-    if [[ "$_resolved_style" == "random" ]]; then
-      _styles=()
-      while IFS= read -r d; do
-        _styles+=("$(basename "$d")")
-      done < <(find "$AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
-      if [[ ${#_styles[@]} -gt 0 ]]; then
-        _resolved_style="${_styles[$((RANDOM % ${#_styles[@]}))]}"
-      fi
+  elif [[ -f "$STATE_FILE" ]]; then
+    # Non-SessionStart: reuse the previously resolved style
+    _prev=$(grep -o '"resolved_chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+    if [[ -n "$_prev" && "$_prev" != "random" ]]; then
+      _resolved_style="$_prev"
     fi
   fi
 fi
 
 # Write resolved style to state file so the statusline can display it
-if [[ -f "$STATE_FILE" ]]; then
+if [[ "$_resolved_style" != "random" && -f "$STATE_FILE" ]]; then
   if grep -q '"resolved_chime_style"' "$STATE_FILE"; then
     sed -i '' "s/\"resolved_chime_style\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"resolved_chime_style\": \"$_resolved_style\"/" "$STATE_FILE"
   else
