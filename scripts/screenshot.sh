@@ -3,10 +3,10 @@
 #
 # Renders multiple statusline variations by calling the real
 # statusline.sh with controlled inputs:
-#   (1) Full layout × 3 color modes (default, mono, muted)
-#   (2) Compact layout (default color)
-#   (3) Minimal layout (default color)
-#   (4) Context bar gallery: gradient tiers at varying percentages
+#   (1) Full layout × 3 color modes (vibrant, muted, mono)
+#   (2) Compact layout (vibrant)
+#   (3) Minimal layout (vibrant)
+#   (4) Context bar gallery: logo bar + one bar per texture
 #
 # Usage:
 #   ./scripts/screenshot.sh              # render to terminal
@@ -96,25 +96,18 @@ render_variation() {
   local cost_override="${7:-}"
   local duration_override="${8:-}"
 
-  # Section header (skip for bar_only gallery entries)
+  # Section header: centered label (skip for bar_only gallery entries)
   if [[ "$bar_only" != "true" && -n "$label" ]]; then
-    local WING_COLOR='\033[38;2;35;38;42m'
     local LABEL_COLOR='\033[1;38;2;35;38;42m'
     local HEADER_RESET='\033[0m'
-    local margin=10
     local cols
     cols=$(tput cols 2>/dev/null || echo 80)
-    local usable=$(( cols - margin * 2 ))
     local label_len=${#label}
-    local pad_len=$(( label_len + 2 ))
-    local remaining=$(( usable - pad_len ))
-    local left_len=$(( remaining / 2 ))
-    local right_len=$(( remaining - left_len ))
-    local left_dashes right_dashes padding
-    left_dashes=$(printf '%*s' "$left_len" '' | tr ' ' '─')
-    right_dashes=$(printf '%*s' "$right_len" '' | tr ' ' '─')
-    padding=$(printf '%*s' "$margin" '')
-    printf '\n\n%s%b%s%b %s %b%s%b%s\n' "$padding" "$WING_COLOR" "$left_dashes" "$LABEL_COLOR" "$label" "$WING_COLOR" "$right_dashes" "$HEADER_RESET" "$padding"
+    local pad=$(( (cols - label_len) / 2 ))
+    (( pad < 0 )) && pad=0
+    local spaces
+    spaces=$(printf '%*s' "$pad" '')
+    printf '\n\n%s%b%s%b\n' "$spaces" "$LABEL_COLOR" "$label" "$HEADER_RESET"
   elif [[ "$bar_only" != "true" ]]; then
     printf '\n\n'
   fi
@@ -190,26 +183,24 @@ render_variation "compact" "default" "$SHARED_SEED" "" "Layout: compact"
 render_variation "minimal" "default" "$SHARED_SEED" "" "Layout: minimal"
 
 # ── (4) Context bar gallery ──────────────────────────────────────
-# Each bar uses a deterministic seed so that all 11 flair textures are shown
-# (texture = seed % 11). bar_only=true strips row 1, showing just the progress bar.
-# Costs are deliberately varied (seemingly random) up to $150.
-WING_COLOR='\033[38;2;35;38;42m'
+# Logo bar (0% context) + one bar per texture (11 textures).
+# Seeds 0-10 map to texture indices 0-10, each with a different icon.
+# Percentages are spread across the range to show the color gradient.
+
+# Centered header
 LABEL_COLOR='\033[1;38;2;35;38;42m'
 HEADER_RESET='\033[0m'
 _gallery_label="Context Bar Gallery"
-_margin=10
 _cols=$(tput cols 2>/dev/null || echo 80)
-_usable=$(( _cols - _margin * 2 ))
-_pad_len=$(( ${#_gallery_label} + 2 ))
-_remaining=$(( _usable - _pad_len ))
-_left_len=$(( _remaining / 2 ))
-_right_len=$(( _remaining - _left_len ))
-_left_dashes=$(printf '%*s' "$_left_len" '' | tr ' ' '─')
-_right_dashes=$(printf '%*s' "$_right_len" '' | tr ' ' '─')
-_padding=$(printf '%*s' "$_margin" '')
-printf '\n\n%s%b%s%b %s %b%s%b%s' "$_padding" "$WING_COLOR" "$_left_dashes" "$LABEL_COLOR" "$_gallery_label" "$WING_COLOR" "$_right_dashes" "$HEADER_RESET" "$_padding"
+_pad=$(( (_cols - ${#_gallery_label}) / 2 ))
+(( _pad < 0 )) && _pad=0
+_spaces=$(printf '%*s' "$_pad" '')
+printf '\n\n%s%b%s%b' "$_spaces" "$LABEL_COLOR" "$_gallery_label" "$HEADER_RESET"
 
+# Logo bar at 0%
 render_variation "compact" "default" "$SHARED_SEED"  "0"   ""  true  "0.00"  "0"
+
+# One bar per texture: seeds 0-10, spread across percentages
 render_variation "compact" "default" 0   "8"   ""  true  "0.47"   "120000"
 render_variation "compact" "default" 1   "15"  ""  true  "2.18"   "300000"
 render_variation "compact" "default" 2   "23"  ""  true  "5.93"   "540000"

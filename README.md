@@ -13,7 +13,14 @@
   <strong>A pure bash statusline and audio pack for Claude Code</strong>
 </p>
 
-![nerdflair preview](assets/images/preview.png)
+![nerdflair preview](assets/images/preview.gif)
+
+<details>
+<summary><strong>Full resolution screenshot</strong></summary>
+
+![nerdflair screenshot](assets/images/preview.png)
+
+</details>
 
 
 ## Quick Start
