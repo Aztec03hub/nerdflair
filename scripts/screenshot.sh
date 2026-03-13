@@ -117,6 +117,10 @@ render_variation() {
 {"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "flair_seed": $flair_seed, "last_tokens": 80000, "last_session": "$SESSION_ID"}
 STATEEOF
 
+  # Write flair seed to per-session file (statusline reads from here, not state.json)
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/flair-sessions"
+  printf '%s' "$flair_seed" > "$FAKE_HOME/.claude/nerdflair/flair-sessions/$SESSION_ID"
+
   # Build JSON payload
   local json_input json_pct json_tokens json_cost json_api_ms
   json_pct="${pct_override:-$CONTEXT_USED_PCT}"

@@ -1,6 +1,6 @@
 ---
 name: nerdflair
-description: Configure or set up the nerdflair statusline. Use when user asks to set up, setup, install, configure, toggle, or change the statusline layout, mode, flair, terminal-bell, chimes, color-palette, or width.
+description: Configure or install the nerdflair statusline. Use when user asks to set up, setup, install, configure, toggle, or change the statusline layout, mode, terminal-bell, chimes, color-palette, spinner-verbs, or width.
 allowed-tools:
   - Bash
   - Read
@@ -10,13 +10,13 @@ allowed-tools:
 disable-model-invocation: true
 ---
 
-Configure the nerdflair statusline. This skill handles both first-time setup and ongoing configuration.
+Configure the nerdflair statusline. This skill handles both first-time install and ongoing configuration.
 
 Base directory for this skill: $CLAUDE_PLUGIN_ROOT
 
 ## First: check what the user asked for
 
-If the user provided arguments (e.g., `/nerdflair setup`, `/nerdflair layout full`), handle that request directly using the **Setup** or **Configure** sections below.
+If the user provided arguments (e.g., `/nerdflair install`, `/nerdflair layout full`), handle that request directly using the **Install** or **Configure** sections below.
 
 If the user invoked `/nerdflair` with NO arguments, first run `info` to get the current state, then display a complete command reference showing current settings and all available commands. Format it like a CLI help page:
 
@@ -27,7 +27,7 @@ If the user invoked `/nerdflair` with NO arguments, first run `info` to get the 
 nerdflair
 
 Current settings:
-  layout: full   width: auto   flair: on
+  layout: full   width: auto
   terminal-bell: on   chimes: on (BalladPiano)   color-palette: vibrant
 
 Commands:
@@ -35,9 +35,10 @@ Commands:
   /nerdflair chime-style [style]   Set or cycle chime style (random, BalladPiano, ...)
   /nerdflair chime-volume [0-100]  Set chime volume (0 = muted)
   /nerdflair color-palette [mode]  Set or cycle palette (vibrant, muted, mono)
-  /nerdflair flair              Toggle progress bar decorations
   /nerdflair layout [mode]      Set or cycle layout (full, compact, minimal)
-  /nerdflair setup              First-time setup (font check, settings.json)
+  /nerdflair install             First-time install (font check, settings.json)
+  /nerdflair uninstall           Remove nerdflair from settings and clean up data
+  /nerdflair spinner-verbs      Show/manage custom spinner verbs
   /nerdflair terminal-bell      Toggle terminal bell on/off (tab indicator)
   /nerdflair width [auto|50-150]   Set layout width
 ```
@@ -49,12 +50,12 @@ Then ask with AskUserQuestion (header: "nerdflair", single question, 4 options):
 **Options:**
 1. **Cycle layout** - "Cycle layout to next: full -> compact -> minimal"
 2. **Cycle color-palette** - "Cycle palette to next: vibrant -> muted -> mono"
-3. **Toggle flair** - "Toggle progress bar decorations on/off"
-4. **Setup** - "Run first-time setup (font check, settings.json)"
+3. **Spinner verbs** - "Toggle custom spinner/thinking text"
+4. **Install** - "Run first-time install (font check, settings.json)"
 
 After the user selects an option (or types a custom command), immediately execute it -- do NOT show a second menu.
 
-## Setup
+## Install
 
 ### Step 1: Check Nerd Font
 
@@ -161,11 +162,6 @@ Cycle color palette (vibrant -> muted -> mono):
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" color-palette
 ```
 
-Toggle progress bar decorations (lead icon + texture) on/off:
-```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" flair
-```
-
 Toggle terminal bell on/off (tab indicator on Stop, Notification, PermissionRequest):
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" terminal-bell
@@ -198,10 +194,6 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
   - **auto** (default): 80 columns
   - **50-150**: fixed bar width in columns
 
-### Flair
-- **flair**: toggles progress bar decorations -- the random lead icon and fill texture (on by default)
-- When off, the bar uses a plain solid fill color
-
 ### Terminal Bell
 - **terminal-bell**: toggles the terminal bell (BEL character) on/off (default: on)
   - The BEL fires on 3 hard-coded events only: **Stop**, **Notification**, **PermissionRequest**
@@ -220,8 +212,37 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
   - Available events: Stop, Notification, PermissionRequest, SessionStart, SessionEnd, UserPromptSubmit, PreCompact
   - Toggle individual events with `chime-events <EventName>`
 
+### Spinner Verbs
+- **spinner-verbs**: toggle nerdflair's custom spinner/thinking text on or off
+- The shimmering text shown while Claude is working (e.g. "Thinking...", "Reasoning...")
+- When enabled, loads verbs from `$CLAUDE_PLUGIN_ROOT/assets/text/spinners.txt` (one per line) into `~/.claude/settings.json`
+- When disabled, removes the `spinnerVerbs` field from settings (restores Claude Code defaults)
+- Users can also edit `assets/text/spinners.txt` directly to customize the verb list
+- Changes require a Claude Code restart to take effect
+- **spinner-verbs** (no args): toggle on/off
+- **spinner-verbs enable**: enable nerdflair verbs
+- **spinner-verbs disable**: disable (restore defaults)
+
+Examples:
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs disable
+```
+
 ### Color Palette
 - **color-palette**: cycles the color palette -- vibrant -> muted -> mono -> vibrant
 - **vibrant**: full-color palette (blues, greens, ambers, reds)
 - **muted**: same hues as vibrant but desaturated (~40% saturation) for a subdued look
 - **mono**: grayscale only -- all text and progress bar gradients use shades of gray
+
+### Uninstall
+- **uninstall**: removes all nerdflair traces from `~/.claude/`
+  - Removes `spinnerVerbs` from `~/.claude/settings.json`
+  - Removes `statusLine` from `~/.claude/settings.json`
+  - Removes `~/.claude/nerdflair/` directory (state, flair-sessions, chime-sessions)
+  - The plugin files themselves remain in place — disable or remove the plugin from Claude Code settings to fully remove
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" uninstall
+```

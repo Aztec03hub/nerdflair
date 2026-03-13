@@ -8,7 +8,7 @@ if [[ -f "$_SL_STATE_FILE" ]]; then
   _SL_STATE=$(cat "$_SL_STATE_FILE")
   _SL_MODE=$(echo "$_SL_STATE" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_WIDTH=$(echo "$_SL_STATE" | grep -o '"width"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_FLAIR=$(echo "$_SL_STATE" | grep -o '"flair"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*:[[:space:]]*//')
+  # _SL_FLAIR removed — texture always shown
   _SL_COLOR_MODE=$(echo "$_SL_STATE" | grep -o '"color"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_TERMINAL_BELL=$(echo "$_SL_STATE" | grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   _SL_CHIME_VOLUME=$(echo "$_SL_STATE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
@@ -17,7 +17,6 @@ if [[ -f "$_SL_STATE_FILE" ]]; then
 fi
 _SL_MODE="${_SL_MODE:-full}"
 _SL_WIDTH="${_SL_WIDTH:-auto}"
-_SL_FLAIR="${_SL_FLAIR:-true}"
 _SL_COLOR_MODE="${_SL_COLOR_MODE:-vibrant}"
 # Legacy migration: "default" color → "vibrant"
 if [[ "$_SL_COLOR_MODE" == "default" ]]; then
@@ -1009,128 +1008,18 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
 fi
 
 # ── Random lead icon (selected once per session) ─────────────────
-LEAD_ICONS=(
-  $(printf '\xef\x83\x83')          # U+F0C3  flask
-  $(printf '\xef\x87\xa2')          # U+F1E2  bomb
-  $(printf '\xf3\xb0\xb4\x88')     # U+F0D08
-  $(printf '\xee\xbe\x80')          # U+EF80
-  $(printf '\xee\xbd\xb6')          # U+EF76
-  $(printf '\xef\x80\x93')          # U+F013  gear
-  $(printf '\xef\x8b\x9c')          # U+F2DC  snowflake
-  $(printf '\xee\x8f\xa0')          # U+E3E0
-  $(printf '\xef\x86\xbb')          # U+F1BB  tree
-  $(printf '\xf3\xb0\xb9\xbb')     # U+F0E7B
-  $(printf '\xef\x81\x83')          # U+F043  tint
-  $(printf '\xee\xb9\x86')          # U+EE46
-  $(printf '\xee\xb8\x95')          # U+EE15
-  $(printf '\xf3\xb0\x9a\xa9')     # U+F06A9
-  $(printf '\xf3\xb0\x8c\xaa')     # U+F032A
-  $(printf '\xee\xbc\x9d')          # U+EF1D
-  $(printf '\xef\x80\x84')          # U+F004  heart
-  $(printf '\xf3\xb0\xa9\x83')     # U+F0A43
-  $(printf '\xf3\xb0\x9e\x87')     # U+F0787
-  $(printf '\xf3\xb0\xae\xad')     # U+F0BAD
-  $(printf '\xf3\xb0\x8a\xa0')     # U+F02A0
-  $(printf '\xf3\xb0\x87\x8a')     # U+F01CA
-  $(printf '\xf3\xb0\x87\x8b')     # U+F01CB
-  $(printf '\xf3\xb0\x87\x8c')     # U+F01CC
-  $(printf '\xf3\xb0\x87\x8d')     # U+F01CD
-  $(printf '\xf3\xb0\x87\x8e')     # U+F01CE
-  $(printf '\xf3\xb0\x87\x8f')     # U+F01CF
-  $(printf '\xee\xba\x98')          # U+EE98
-  $(printf '\xf3\xb0\xad\xb9')     # U+F0B79
-  $(printf '\xee\x8a\x9b')          # U+E29B
-  $(printf '\xee\xbd\x99')          # U+EF59
-  $(printf '\xf3\xb1\xa8\xa7')     # U+F1A27
-  $(printf '\xee\xb5\xa1')          # U+ED61
-  $(printf '\xef\x80\x85')          # U+F005
-  $(printf '\xf3\xb0\xbb\x83')     # U+F0EC3
-  $(printf '\xf3\xb0\x8b\xb8')     # U+F02F8
-  $(printf '\xf3\xb0\x9f\x9e')     # U+F07DE
-  $(printf '\xee\xbe\xa7')          # U+EFA7
-  $(printf '\xf3\xb0\x87\xa5')     # U+F01E5
-  $(printf '\xee\xb7\x9c')          # U+EDDC
-  $(printf '\xee\xb9\x81')          # U+EE41
-  $(printf '\xef\x83\xa7')          # U+F0E7  bolt
-  $(printf '\xee\xbc\x90')          # U+EF10
-  $(printf '\xef\x84\xb5')          # U+F135  rocket
-  $(printf '\xee\x8a\x81')          # U+E281
-  $(printf '\xf3\xb0\x99\xb4')     # U+F0674
-  $(printf '\xee\xbc\xae')          # U+EF2E
-
-
-  $(printf '\xee\xba\x9c')          # U+EE9C
-  $(printf '\xee\xb8\x9c')          # U+EE1C
-  $(printf '\xf3\xb0\xb5\xb2')     # U+F0D72
-  $(printf '\xee\xbb\x9f')          # U+EEDF
-  $(printf '\xef\x80\x81')          # U+F001
-  $(printf '\xf3\xb0\x8e\x8d')     # U+F038D
-  $(printf '\xee\xbb\x96')          # U+EED6
-  $(printf '\xf3\xb0\xb2\x89')     # U+F0C89
-  $(printf '\xef\x80\xa4')          # U+F024  flag
-  $(printf '\xf3\xb0\x95\xbc')     # U+F057C
-  $(printf '\xef\x83\x84')          # U+F0C4  scissors
-  $(printf '\xef\x86\xba')          # U+F1BA
-  $(printf '\xf3\xb0\xb7\x9a')     # U+F0DDA
-  $(printf '\xef\x86\x9c')          # U+F19C  university
-  $(printf '\xee\xba\xbd')          # U+EEBD
-  $(printf '\xef\x93\x9e')          # U+F4DE
-  $(printf '\xee\xba\x90')          # U+EE90
-  $(printf '\xee\xa0\x86')          # U+E806
-  $(printf '\xee\x99\xac')          # U+E66C
-  $(printf '\xf3\xb0\xa0\x96')     # U+F0816
-  $(printf '\xee\xbd\x93')          # U+EF53
-  $(printf '\xef\x86\xb3')          # U+F1B3
-  $(printf '\xee\xb6\xa5')          # U+EDA5
-  $(printf '\xef\x86\xb8')          # U+F1B8
-  $(printf '\xef\x80\xa1')          # U+F021
-  $(printf '\xef\x83\xb5')          # U+F0F5
-  $(printf '\xf3\xb0\xaf\x99')     # U+F0BD9
-  $(printf '\xef\x86\x8c')          # U+F18C
-  $(printf '\xef\x92\xa7')          # U+F4A7
-  $(printf '\xee\xb8\xb2')          # U+EE32
-  $(printf '\xf3\xb0\xa2\x9a')     # U+F089A
-  $(printf '\xee\xbc\x84')          # U+EF04
-  $(printf '\xf3\xb0\x9c\x81')     # U+F0701
-  $(printf '\xf3\xb0\xbc\x81')     # U+F0F01
-  $(printf '\xf3\xb0\x88\xb7')     # U+F0237
-  $(printf '\xe2\x8f\xbb')          # U+23FB
-  $(printf '\xf3\xb0\x90\x83')     # U+F0403
-  $(printf '\xee\xbe\x88')          # U+EF88
-  $(printf '\xef\x83\xbb')          # U+F0FB
-  $(printf '\xef\x87\xbd')          # U+F1FD
-  $(printf '\xee\x80\x86')          # U+E006
-  $(printf '\xee\xbe\x8c')          # U+EF8C
-  $(printf '\xef\x89\x85')          # U+F245
-  $(printf '\xee\x89\xaa')          # U+E26A
-  $(printf '\xef\x84\xae')          # U+F12E
-  $(printf '\xf3\xb0\x9a\x80')     # U+F0680
-  $(printf '\xf3\xb0\xae\xaf')     # U+F0BAF
-  $(printf '\xf3\xb0\xb9\xa1')     # U+F0E61
-  $(printf '\xf3\xb0\x86\x8b')     # U+F018B
-  $(printf '\xf3\xb0\x92\x9a')     # U+F049A
-  $(printf '\xf3\xb1\x83\x85')     # U+F10C5
-  $(printf '\xf3\xb1\x81\xa4')     # U+F1064
-  $(printf '\xf3\xb0\x8d\xac')     # U+F036C
-  $(printf '\xee\xbc\xb9')          # U+EF39
-  $(printf '\xee\x80\x81')          # U+E001
-  $(printf '\xf3\xb0\x86\xa4')     # U+F01A4
-  $(printf '\xf3\xb1\xa1\x9d')     # U+F185D
-  $(printf '\xf3\xb0\x97\x91')     # U+F05D1
-  $(printf '\xf3\xb0\x8a\x98')     # U+F0298
-  $(printf '\xee\xb9\xb5')          # U+EE75
-  $(printf '\xef\x81\xab')          # U+F06B
-  $(printf '\xef\x80\x82')          # U+F002
-  $(printf '\xef\x83\xb9')          # U+F0F9
-  $(printf '\xf3\xb0\xa7\xb1')     # U+F09F1
-  $(printf '\xee\xb9\x84')          # U+EE44
-  $(printf '\xf3\xb1\x81\x87')     # U+F1047
-  $(printf '\xf3\xb1\x8c\x99')     # U+F1319
-  $(printf '\xf3\xb0\x82\xbe')     # U+F00BE
-  $(printf '\xf3\xb0\x86\x98')     # U+F0198
-  $(printf '\xef\x84\xb8')          # U+F138
-  $(printf '\xf3\xb0\x9b\x90')     # U+F06D0
-)
+# Icons are loaded from assets/text/icons.txt (one per line)
+_ICONS_FILE="$(cd "$(dirname "$0")/../assets/text" 2>/dev/null && pwd)/icons.txt"
+LEAD_ICONS=()
+if [[ -f "$_ICONS_FILE" ]]; then
+  while IFS= read -r _icon_line; do
+    [[ -n "$_icon_line" ]] && LEAD_ICONS+=("$_icon_line")
+  done < "$_ICONS_FILE"
+fi
+# Fallback if file is missing or empty
+if [[ ${#LEAD_ICONS[@]} -eq 0 ]]; then
+  LEAD_ICONS=("$(printf '\xef\x80\x93')")  # U+F013 gear
+fi
 # Use flair_seed (re-randomized on context clear) for icon selection.
 # Falls back to session_id hash for backwards compatibility.
 if [[ -n "$_flair_seed" ]]; then
@@ -1172,19 +1061,17 @@ _render_bar() {
     "\033[38;2;86;182;194m"
   )
   local _NF_BRAND_COLOR="${_NF_BRAND_COLORS[0]}"
-  if [[ "$_SL_FLAIR" == "true" ]]; then
-    _logo_icons=(
-      "$(printf '\UE838')" " "
-      "$(printf '\U000F0BF7')" " "
-      "$(printf '\U000F0C1E')" " "
-      "$(printf '\U000F0BF4')" " "
-      "$(printf '\UF335')" " "
-      "$(printf '\U000F0C0C')" " "
-      "$(printf '\U000F0BEB')" " "
-      "$(printf '\U000F0C03')" " "
-      "$(printf '\U000F0C1E')"
-    )
-  fi
+  _logo_icons=(
+    "$(printf '\UE838')" " "
+    "$(printf '\U000F0BF7')" " "
+    "$(printf '\U000F0C1E')" " "
+    "$(printf '\U000F0BF4')" " "
+    "$(printf '\UF335')" " "
+    "$(printf '\U000F0C0C')" " "
+    "$(printf '\U000F0BEB')" " "
+    "$(printf '\U000F0C03')" " "
+    "$(printf '\U000F0C1E')"
+  )
   local _logo_end=0  # will be computed after _bar_area is known
 
   # Multi-segment fill: each cell gets its tier color based on what percentage
@@ -1523,16 +1410,9 @@ _render_bar() {
       _bar+="${_cur_empty_bg}${_cur_light_fg}${_rch}"
     else
       if (( _body_i < _filled )); then
-        if [[ "$_SL_FLAIR" != "true" ]]; then
-          # Plain solid fill — no lead icon or texture
-          _bar+="${_cell_bg} "
-        elif (( _lead_done == 0 )); then
-          _bar+="${_cell_bg}${_cell_wind}${_lead_icon}"
-          _lead_done=1
-        elif (( _lead_done == 1 )); then
-          # One space after lead icon before texture starts
-          _bar+="${_cell_bg} "
-          (( _lead_done++ ))
+        # Guard: use middle dot adjacent to label for textures with wide glyphs
+        if [[ "$_texture" == "sparkle" || "$_texture" == "thick_dots" || "$_texture" == "infinity_loop" ]] && (( _label_start >= 0 && ( _vis == _label_start - 1 || _vis == _label_end ) )); then
+          _bar+="${_cell_bg}${_cell_wind}·"
         else
           local _ci_mod=$(( _body_i % _fill_cycle ))
           if (( _ci_mod == 0 )); then

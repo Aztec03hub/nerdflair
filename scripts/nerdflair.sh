@@ -11,13 +11,16 @@
 #   nerdflair chime-volume 50      # set chime volume to 50% (0 = muted)
 #   nerdflair color-palette        # cycle color palette: vibrant → muted → mono → vibrant
 #   nerdflair color-palette mono   # set color palette directly
-#   nerdflair flair                # toggle progress bar decorations on/off (icon + texture)
 #   nerdflair terminal-bell        # toggle terminal bell on/off (BEL char on Stop/Notification/PermissionRequest)
 #   nerdflair width 60             # set layout width to 60
 #   nerdflair width auto           # reset to auto (terminal width)
+#   nerdflair spinner-verbs         # toggle nerdflair spinner verbs on/off
+#   nerdflair spinner-verbs enable  # enable nerdflair spinner verbs
+#   nerdflair spinner-verbs disable # disable (restore Claude Code defaults)
 #   nerdflair info                 # show current settings without changing anything
 #
 # State is persisted in ~/.claude/nerdflair/state.json
+# Spinner verbs are written directly to ~/.claude/settings.json (spinnerVerbs field).
 # The statusline script reads this file on every render.
 
 STATE_FILE="$HOME/.claude/nerdflair/state.json"
@@ -84,7 +87,6 @@ fi
 # ── Parse arguments ──────────────────────────────────────────────
 next_mode=""
 next_width=""
-toggle_flair=false
 cycle_color=false
 set_color=""
 toggle_terminal_bell=false
@@ -131,8 +133,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     flair)
-      toggle_flair=true
-      shift
+      # Legacy: flair is always on (texture always shown)
+      printf '\033[38;2;120;135;155mFlair is always on — texture is always shown.\033[0m\n'
+      exit 0
       ;;
     terminal-bell|bell)
       toggle_terminal_bell=true
@@ -196,6 +199,75 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    spinner-verbs|spinner)
+      # Toggle nerdflair spinner verbs in ~/.claude/settings.json
+      # Reads verbs from assets/text/spinners.txt (one per line)
+      _settings_file="$HOME/.claude/settings.json"
+      SCRIPT_DIR_SV="$(cd "$(dirname "$0")" && pwd)"
+      _verbs_file="$(cd "$SCRIPT_DIR_SV/../assets/text" 2>/dev/null && pwd)/spinners.txt"
+      _sv_action="${2:-__toggle__}"
+      shift
+      [[ "$_sv_action" != "__toggle__" ]] && shift
+
+      CYAN='\033[38;2;86;182;194m'
+      GREEN='\033[38;2;152;195;121m'
+      DIM='\033[38;2;120;135;155m'
+      RED='\033[38;2;224;108;117m'
+      RST='\033[0m'
+
+      # Check if nerdflair verbs are currently enabled
+      _sv_enabled=false
+      if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+        _sv_enabled=true
+      fi
+
+      if [[ "$_sv_action" == "__toggle__" || "$_sv_action" == "enable" || "$_sv_action" == "disable" ]]; then
+        # Determine target state
+        if [[ "$_sv_action" == "enable" ]]; then
+          _target="on"
+        elif [[ "$_sv_action" == "disable" ]]; then
+          _target="off"
+        elif [[ "$_sv_enabled" == "true" ]]; then
+          _target="off"
+        else
+          _target="on"
+        fi
+
+        if [[ "$_target" == "on" ]]; then
+          # Read verbs from file
+          if [[ ! -f "$_verbs_file" ]]; then
+            printf "${RED}✗ Verbs file not found: %s${RST}\n" "$_verbs_file"
+            exit 1
+          fi
+          _verbs_json=$(jq -R -s '[split("\n")[] | select(length > 0)]' < "$_verbs_file")
+          _count=$(echo "$_verbs_json" | jq 'length')
+          if [[ "$_count" -eq 0 ]]; then
+            printf "${RED}✗ No verbs found in %s${RST}\n" "$_verbs_file"
+            exit 1
+          fi
+          # Write to settings.json
+          if [[ ! -f "$_settings_file" ]]; then
+            echo '{}' > "$_settings_file"
+          fi
+          _tmp="$_settings_file.tmp.$$"
+          jq --argjson verbs "$_verbs_json" '.spinnerVerbs = {"mode": "replace", "verbs": $verbs}' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+          printf "${GREEN}✓ Spinner verbs: on${RST} (%s verbs loaded). Restart Claude Code to apply.\n" "$_count"
+        else
+          # Remove spinnerVerbs from settings.json
+          if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+            _tmp="$_settings_file.tmp.$$"
+            jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+          fi
+          printf "${GREEN}✓ Spinner verbs: off${RST} (back to defaults). Restart Claude Code to apply.\n"
+        fi
+        exit 0
+
+      else
+        printf "${RED}✗ Unknown spinner-verbs action \"%s\"${RST}\n" "$_sv_action"
+        printf '  Usage: nerdflair spinner-verbs [enable|disable]\n'
+        exit 1
+      fi
+      ;;
     context-bar)
       # Legacy: silently ignore
       shift
@@ -213,13 +285,56 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    uninstall)
+      # Remove all nerdflair traces from ~/.claude
+      _settings_file="$HOME/.claude/settings.json"
+      _nerdflair_dir="$HOME/.claude/nerdflair"
+
+      RED='\033[38;2;224;108;117m'
+      GREEN='\033[38;2;152;195;121m'
+      DIM='\033[38;2;120;135;155m'
+      RST='\033[0m'
+
+      printf "${DIM}Uninstalling nerdflair...${RST}\n"
+
+      # Remove spinnerVerbs from settings.json
+      if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+        _tmp="$_settings_file.tmp.$$"
+        jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+        printf "  ${GREEN}✓${RST} Removed spinnerVerbs from settings.json\n"
+      else
+        printf "  ${DIM}· No spinnerVerbs in settings.json${RST}\n"
+      fi
+
+      # Remove statusLine from settings.json
+      if [[ -f "$_settings_file" ]] && jq -e '.statusLine' "$_settings_file" &>/dev/null; then
+        _tmp="$_settings_file.tmp.$$"
+        jq 'del(.statusLine)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+        printf "  ${GREEN}✓${RST} Removed statusLine from settings.json\n"
+      else
+        printf "  ${DIM}· No statusLine in settings.json${RST}\n"
+      fi
+
+      # Remove nerdflair data directory
+      if [[ -d "$_nerdflair_dir" ]]; then
+        rm -rf "$_nerdflair_dir"
+        printf "  ${GREEN}✓${RST} Removed ~/.claude/nerdflair/\n"
+      else
+        printf "  ${DIM}· No ~/.claude/nerdflair/ directory${RST}\n"
+      fi
+
+      printf "\n${GREEN}✓ Uninstall complete.${RST} Restart Claude Code to apply.\n"
+      printf "${DIM}  The plugin files themselves remain in place — disable or remove\n"
+      printf "  the plugin from Claude Code settings to fully remove.${RST}\n"
+      exit 0
+      ;;
     *)
       # Treat as layout mode for backwards compat
       if [[ -z "$next_mode" ]]; then
         if ! echo "$VALID_MODES" | grep -qw "$1"; then
           printf '\033[38;2;224;108;117m✗ Unknown command "%s"\033[0m\n' "$1"
           printf '  Commands: chime-events, chime-style, chime-volume, color-palette,\n'
-          printf '            flair, layout, terminal-bell, width\n'
+          printf '            layout, spinner-verbs, terminal-bell, uninstall, width\n'
           exit 1
         fi
         next_mode="$1"
@@ -248,11 +363,6 @@ if [[ "$show_info" == "true" ]]; then
   else
     printf " ${DIM}width: %s${RST}" "$current_width"
   fi
-  if [[ "$current_flair" == "true" ]]; then
-    printf " ${GREEN}flair: on${RST}"
-  else
-    printf " ${DIM}flair: off${RST}"
-  fi
   if [[ "$current_terminal_bell" == "on" ]]; then
     printf " ${GREEN}terminal-bell: on${RST}"
   else
@@ -273,19 +383,19 @@ if [[ "$show_info" == "true" ]]; then
   elif [[ "$current_color" == "muted" ]]; then
     printf " ${GREEN}color-palette: muted${RST}"
   fi
+  _sv_settings="$HOME/.claude/settings.json"
+  if [[ -f "$_sv_settings" ]] && jq -e '.spinnerVerbs' "$_sv_settings" &>/dev/null; then
+    _sv_count=$(jq '.spinnerVerbs.verbs | length' "$_sv_settings")
+    printf " ${GREEN}spinner-verbs: on (%s)${RST}" "$_sv_count"
+  else
+    printf " ${DIM}spinner-verbs: off${RST}"
+  fi
   printf '\n'
   exit 0
 fi
 
 # Handle flair toggle
-next_flair="$current_flair"
-if [[ "$toggle_flair" == "true" ]]; then
-  if [[ "$current_flair" == "true" ]]; then
-    next_flair="false"
-  else
-    next_flair="true"
-  fi
-fi
+next_flair="true"  # flair is always on
 
 # Handle terminal-bell toggle: on → off → on
 next_terminal_bell="$current_terminal_bell"
@@ -398,7 +508,7 @@ elif [[ "$cycle_color" == "true" ]]; then
 fi
 
 # If no action specified at all — cycle layout
-if [[ -z "$next_mode" && "$cycle_layout" == "false" && "$toggle_flair" == "false" && "$toggle_terminal_bell" == "false" && "$cycle_chime_style" == "false" && -z "$set_chime_style" && -z "$toggle_chime_event" && -z "$set_volume" && "$cycle_color" == "false" && -z "$set_color" && -z "$next_width" ]]; then
+if [[ -z "$next_mode" && "$cycle_layout" == "false" && "$toggle_terminal_bell" == "false" && "$cycle_chime_style" == "false" && -z "$set_chime_style" && -z "$toggle_chime_event" && -z "$set_volume" && "$cycle_color" == "false" && -z "$set_color" && -z "$next_width" ]]; then
   cycle_layout=true
 fi
 
@@ -445,12 +555,6 @@ if [[ "$next_width" == "auto" ]]; then
   printf " ${DIM}width: auto${RST}"
 else
   printf " ${DIM}width: %s${RST}" "$next_width"
-fi
-
-if [[ "$next_flair" == "true" ]]; then
-  printf " ${GREEN}flair: on${RST}"
-else
-  printf " ${DIM}flair: off${RST}"
 fi
 
 if [[ "$next_terminal_bell" == "on" ]]; then
