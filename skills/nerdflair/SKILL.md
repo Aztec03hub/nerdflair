@@ -127,9 +127,10 @@ Use Edit to update if settings.json exists, or Write if creating new. Preserve a
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-events
 ```
 
-Display a summary and tell the user to restart Claude Code for the statusline to appear.
+Display a summary table of settings from the `info` output. For chime events, list the actual enabled event names (from the `chime-events` output) instead of just a count. Do NOT include a "Font" row (we only check for fonts to help install -- we can't tell which font the terminal is actually using). Do NOT include the statusline command path. Tell the user to restart Claude Code for the changes to take effect.
 
 ## Configure
 

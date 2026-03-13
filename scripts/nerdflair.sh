@@ -233,6 +233,8 @@ while [[ $# -gt 0 ]]; do
           _target="on"
         fi
 
+        _backup_file="$HOME/.claude/nerdflair/spinnerVerbs.backup.json"
+
         if [[ "$_target" == "on" ]]; then
           # Read verbs from file
           if [[ ! -f "$_verbs_file" ]]; then
@@ -245,6 +247,16 @@ while [[ $# -gt 0 ]]; do
             printf "${RED}✗ No verbs found in %s${RST}\n" "$_verbs_file"
             exit 1
           fi
+          # Back up existing spinnerVerbs if they exist and aren't nerdflair's
+          if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+            # Check for a known nerdflair verb as fingerprint
+            _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Brewing potions"))) | length > 0' "$_settings_file")
+            if [[ "$_is_nerdflair" != "true" ]]; then
+              mkdir -p "$(dirname "$_backup_file")"
+              jq '.spinnerVerbs' "$_settings_file" > "$_backup_file"
+              printf "${CYAN}↗ Backed up existing spinner verbs to %s${RST}\n" "$_backup_file"
+            fi
+          fi
           # Write to settings.json
           if [[ ! -f "$_settings_file" ]]; then
             echo '{}' > "$_settings_file"
@@ -253,12 +265,20 @@ while [[ $# -gt 0 ]]; do
           jq --argjson verbs "$_verbs_json" '.spinnerVerbs = {"mode": "replace", "verbs": $verbs}' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
           printf "${GREEN}✓ Spinner verbs: on${RST} (%s verbs loaded). Restart Claude Code to apply.\n" "$_count"
         else
-          # Remove spinnerVerbs from settings.json
-          if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+          # Restore backed-up spinnerVerbs, or remove entirely
+          if [[ -f "$_backup_file" ]]; then
+            _backup_json=$(cat "$_backup_file")
             _tmp="$_settings_file.tmp.$$"
-            jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+            jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+            rm "$_backup_file"
+            printf "${GREEN}✓ Spinner verbs: restored${RST} (previous verbs recovered from backup). Restart Claude Code to apply.\n"
+          else
+            if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+              _tmp="$_settings_file.tmp.$$"
+              jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+            fi
+            printf "${GREEN}✓ Spinner verbs: off${RST} (back to defaults). Restart Claude Code to apply.\n"
           fi
-          printf "${GREEN}✓ Spinner verbs: off${RST} (back to defaults). Restart Claude Code to apply.\n"
         fi
         exit 0
 
@@ -297,8 +317,14 @@ while [[ $# -gt 0 ]]; do
 
       printf "${DIM}Uninstalling nerdflair...${RST}\n"
 
-      # Remove spinnerVerbs from settings.json
-      if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+      # Restore or remove spinnerVerbs from settings.json
+      _backup_file="$_nerdflair_dir/spinnerVerbs.backup.json"
+      if [[ -f "$_backup_file" ]]; then
+        _backup_json=$(cat "$_backup_file")
+        _tmp="$_settings_file.tmp.$$"
+        jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+        printf "  ${GREEN}✓${RST} Restored previous spinnerVerbs from backup\n"
+      elif [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
         _tmp="$_settings_file.tmp.$$"
         jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
         printf "  ${GREEN}✓${RST} Removed spinnerVerbs from settings.json\n"
