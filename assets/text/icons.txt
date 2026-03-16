@@ -1,129 +1,118 @@
-
-
-󰴈
-
-
-
-
-
-
-󰹻
-
-
-
-󰚩
-󰌪
-
-
-󰩃
-󰞇
-󰮭
-󰊠
-󰇊
-󰇋
-󰇌
-󰇍
-󰇎
-󰇏
-
-󰭹
-
-
-󱨧
-
-
-󰻃
-󰋸
-󰟞
-
-󰇥
-
-
-
-
-
-
-󰙴
-
-
-
-󰵲
-
-
-󰎍
-
-󰲉
-
-󰕼
-
-
-󰷚
-
-
-
-
-
-
-󰠖
-
-
-
-
-
-
-󰯙
-
-
-
-󰢚
-
-󰜁
-󰼁
-󰈷
-⏻
-󰐃
-
-
-
-
-
-
-
-
-󰚀
-󰮯
-󰹡
-󰆋
-󰒚
-󱃅
-󱁤
-󰍬
-
-
-󰆤
-󱡝
-󰗑
-󰊘
-
-
-
-
-󰧱
-
-󱁇
-󱌙
-󰂾
-󰆘
-
-󰛐
-
-
-
-
-
-
-
-󰉁
-󰘳
-󰝨
-󰭎
+ beaker, flask
+ bomb
+󰴈 blossom, flower
+󰋸 blossom, flower
+ egg
+ flame
+ gear
+ snowflake
+ eclipse, moon phase
+ pine tree
+󰹻 orbiting
+ water droplet
+ earth
+ skull
+󰚩 robot head
+󰌪 leaf
+ rainstorm
+ heart
+󰩃 dog face
+󰞇 crossed swords
+󰮭 1-up mario mushroom
+󰊠 pacman ghost
+󰇊 rolled die showing 1
+󰇋 rolled die showing 2
+󰇌 rolled die showing 3
+󰇍 rolled die showing 4
+󰇎 rolled die showing 5
+󰇏 rolled die showing 6
+ apple
+󰭹 conversation bubble
+ two cherries
+ steaming cup of coffee
+ chessboard
+ star
+ pinwheel
+󰇥 rubber ducky
+ fish
+ spider
+ rocketship
+ two bananas
+󰙴 sparkles
+ erupting volcano
+ brain
+ t-shirt
+󰵲 North Star
+ two socks
+ musical notes
+ peace symbol
+󰲉 hazard symbol
+ flag
+ scissors
+ self driving car
+󰷚 mine (destructive)
+ bank, institution
+ ankh
+ target with bullseye
+ tooth
+ rabbit
+󰠖 four leaf clover
+ igloo
+ stacked boxes or blocks
+ ribbon (like for a good cause)
+ recycle icon
+ spinning icon
+ fork and knife
+󰯙 triforce icon
+ olive branch
+ checkbox that's checked
+ drum with drumstick
+ horse
+󰼁 jellyfish
+󰈷 fingerprint
+⏻ power on/off symbol
+󰐃 thumb tack
+ ice cream cone with one scoop
+ fighter jet
+ birthday cake with candles
+ tropical island, palm tree
+ pizza slice
+ cursor pointer
+ coffee beans
+ puzzle piece
+󰚀 yin yang
+󰮯 pacman
+󰹡 circular saw
+󰆋 compass
+󱃅 flying saucer
+󱁤 crossed wrench and screwdriver
+󰍬 microphone
+ tomato
+󰆤 sniper reticle
+󱡝 radioactive symbol
+󰗑 scales of justice
+󰊘 gas pump
+ quill pen
+ wrapped gift
+ magnifying glass
+ ambulance
+󰧱 flower
+ martini
+󱁇 watermelon slice
+󰆘 cookie with bite out of it
+󰛐 eye
+ open book
+ alien head
+ spectacles
+ flame
+ apple corp icon
+ gem
+󰉁 lightning
+ electricity icon
+󰘳 mac command key symbol
+󰝨 electron symbol
+󰭎 telescope
+󰄀 camera
+󱔎 snake
+󰯊 spider web
+󰯉 alien from Space Invaders

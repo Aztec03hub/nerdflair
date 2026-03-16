@@ -11,7 +11,7 @@
 #   nerdflair chime-volume 50      # set chime volume to 50% (0 = muted)
 #   nerdflair color-palette        # cycle color palette: vibrant → muted → mono → vibrant
 #   nerdflair color-palette mono   # set color palette directly
-#   nerdflair terminal-bell        # toggle terminal bell on/off (BEL char on Stop/Notification/PermissionRequest)
+#   nerdflair terminal-bell        # toggle terminal bell on/off (BEL char on Notification/PermissionRequest/Stop)
 #   nerdflair width 60             # set layout width to 60
 #   nerdflair width auto           # reset to auto (terminal width)
 #   nerdflair spinner-verbs         # toggle nerdflair spinner verbs on/off
@@ -37,7 +37,7 @@ current_color="vibrant"
 current_terminal_bell="on"
 current_chime_sound="Glass"
 current_chime_style="random"
-current_chime_events="Stop,Notification,PermissionRequest,SessionStart,SessionEnd"
+current_chime_events="Notification,PermissionRequest,SessionEnd,SessionStart,Stop"
 current_chime_volume="1"
 if [[ -f "$STATE_FILE" ]]; then
   current_mode=$(cat "$STATE_FILE" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
@@ -77,7 +77,7 @@ if [[ -f "$STATE_FILE" ]]; then
   if [[ -z "$current_chime_events" ]]; then
     current_chime_events=$(cat "$STATE_FILE" | grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   fi
-  current_chime_events="${current_chime_events:-Stop,Notification,PermissionRequest,SessionStart,SessionEnd}"
+  current_chime_events="${current_chime_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
   if [[ -z "$current_chime_volume" ]]; then
     current_chime_volume=$(cat "$STATE_FILE" | grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   fi
@@ -477,7 +477,7 @@ elif [[ "$cycle_chime_style" == "true" ]]; then
 fi
 
 # Handle chime-events: toggle individual events or show current
-ALL_CHIME_EVENTS="Stop Notification PermissionRequest SessionStart SessionEnd UserPromptSubmit PreCompact"
+ALL_CHIME_EVENTS="Notification PermissionRequest PreCompact SessionEnd SessionStart Stop UserPromptSubmit"
 next_chime_events="$current_chime_events"
 if [[ "$toggle_chime_event" == "__show__" ]]; then
   CYAN='\033[38;2;86;182;194m'

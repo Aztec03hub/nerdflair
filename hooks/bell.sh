@@ -1,10 +1,10 @@
 #!/bin/bash
 # Audio/visual notifications for Claude Code hook events.
-# Called with event name as $1: Stop, Notification, PermissionRequest,
-# SessionStart, SessionEnd, UserPromptSubmit, PreCompact.
+# Called with event name as $1: Notification, PermissionRequest, PreCompact,
+# SessionEnd, SessionStart, Stop, UserPromptSubmit.
 #
 # Reads settings from ~/.claude/nerdflair/state.json:
-#   terminal_bell: on | off        (BEL char — hard-coded to Stop, Notification, PermissionRequest)
+#   terminal_bell: on | off        (BEL char — hard-coded to Notification, PermissionRequest, Stop)
 #   chime_sound:   macOS system sound name (fallback when no chime style)
 #   chime_style:   style folder name from audio/ (or "random")
 #   chime_events:  comma-separated list of enabled events for chimes
@@ -34,13 +34,13 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIO_DIR="$PLUGIN_ROOT/assets/audio"
 
 # Hard-coded events that trigger the terminal bell (BEL character)
-TERMINAL_BELL_EVENTS="Stop,Notification,PermissionRequest"
+TERMINAL_BELL_EVENTS="Notification,PermissionRequest,Stop"
 
 # Read settings from state file
 terminal_bell="on"
 chime_sound="Glass"
 chime_style="random"
-chime_events="Stop,Notification,PermissionRequest,SessionStart,SessionEnd"
+chime_events="Notification,PermissionRequest,SessionEnd,SessionStart,Stop"
 chime_volume="1"
 STATE_FILE="$HOME/.claude/nerdflair/state.json"
 if [[ -f "$STATE_FILE" ]]; then
@@ -52,7 +52,7 @@ if [[ -f "$STATE_FILE" ]]; then
   terminal_bell="${_tbell:-on}"
   chime_sound="${_sound:-Glass}"
   chime_style="${_style:-random}"
-  chime_events="${_events:-Stop,Notification,PermissionRequest,SessionStart,SessionEnd}"
+  chime_events="${_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
   chime_volume="${_volume:-1}"
   # Legacy migration: read old "bell" field if new fields are missing
   if [[ -z "$_tbell" ]]; then
@@ -70,7 +70,7 @@ if [[ -f "$STATE_FILE" ]]; then
   fi
   if [[ -z "$_events" ]]; then
     _old_events=$(grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    chime_events="${_old_events:-Stop,Notification,PermissionRequest,SessionStart,SessionEnd}"
+    chime_events="${_old_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
   fi
   if [[ -z "$_volume" ]]; then
     _old_volume=$(grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)

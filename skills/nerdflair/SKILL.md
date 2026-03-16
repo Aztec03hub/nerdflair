@@ -130,7 +130,15 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-events
 ```
 
-Display a summary table of settings from the `info` output. For chime events, list the actual enabled event names (from the `chime-events` output) instead of just a count. Do NOT include a "Font" row (we only check for fonts to help install -- we can't tell which font the terminal is actually using). Do NOT include the statusline command path. Tell the user to restart Claude Code for the changes to take effect.
+Display a summary table of settings from the `info` output. Format the table as follows:
+- Bold the **Setting** and **Value** column headers
+- Title-case the values (e.g. "Full", "Vibrant", "On", "Auto", "Random") for readability
+- Alphabetize the rows by setting name
+- For chime events, list the actual enabled event names (from the `chime-events` output) instead of just a count
+- Do NOT include a "Font" row (we only check for fonts to help install -- we can't tell which font the terminal is actually using)
+- Do NOT include the statusline command path
+
+Tell the user to restart Claude Code for the changes to take effect.
 
 ## Configure
 
@@ -163,7 +171,7 @@ Cycle color palette (vibrant -> muted -> mono):
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" color-palette
 ```
 
-Toggle terminal bell on/off (tab indicator on Stop, Notification, PermissionRequest):
+Toggle terminal bell on/off (tab indicator on Notification, PermissionRequest, Stop):
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" terminal-bell
 ```
@@ -197,7 +205,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
 
 ### Terminal Bell
 - **terminal-bell**: toggles the terminal bell (BEL character) on/off (default: on)
-  - The BEL fires on 3 hard-coded events only: **Stop**, **Notification**, **PermissionRequest**
+  - The BEL fires on 3 hard-coded events only: **Notification**, **PermissionRequest**, **Stop**
   - Shows a tab indicator in terminals that support BEL (Ghostty, iTerm2, Terminal.app, Kitty, WezTerm, etc.)
   - The bell events are not user-configurable (use **chime-events** to control which events play audio)
 
@@ -208,9 +216,9 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
   - Shown in the statusline next to chime style when not 100%
 - **chime-style**: cycles through audio styles (run `ls "$CLAUDE_PLUGIN_ROOT/assets/audio/"` to discover available styles; "random" is always an option)
   - "random" picks a style per session (locked to session_id, persists across context clears)
-  - Each style has per-event sounds (Stop, Notification, PermissionRequest, etc.)
-- **chime-events**: user-configurable list of events that play audio chimes (default: Stop, Notification, PermissionRequest, SessionStart, SessionEnd)
-  - Available events: Stop, Notification, PermissionRequest, SessionStart, SessionEnd, UserPromptSubmit, PreCompact
+  - Each style has per-event sounds (Notification, PermissionRequest, Stop, etc.)
+- **chime-events**: user-configurable list of events that play audio chimes (default: Notification, PermissionRequest, SessionEnd, SessionStart, Stop)
+  - Available events: Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop, UserPromptSubmit
   - Toggle individual events with `chime-events <EventName>`
 
 ### Spinner Verbs

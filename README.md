@@ -39,8 +39,9 @@ Restart Claude Code after setup for the statusline to appear.
 - **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row with context pill)
 - **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker and randomizable icon and texture decorations (flair)
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
-- **Terminal bell**: (tab indicator) on Stop, Notification, and PermissionRequest events
+- **Terminal bell**: (tab indicator) on Notification, PermissionRequest, and Stop events
 - **Audio chimes (macOS only)**: 20+ styles, configurable per-event, adjustable volume
+- **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
 - Active MCP servers

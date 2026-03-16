@@ -1,111 +1,118 @@
-  Brewing potions
+  Chugging an estus flask
   Dropping logic bombs
-󰴈  Nipping it in the bud
-  Hatching a plan
-  Burning through the backlog
-  Turning the gears
+󰴈  Cross-pollinating timelines
+󰋸  Fertilizing the genesis planet
+  Hatching a xenomorph
+  This is fine dot jpeg
+  Torquing the differential
   Winter is coming
-  Eclipsing the moon
-  Traversing the tree
-  Hydrating the cache
-  I18ning everything
-  Shotgunning zombies
-󰚩  Domo arigato'ing
-󰌪  Turning over new leaves
-  Rewriting your DNA
-  Riding on the storm
-  Monitoring vital signs
-󰩃  Chasing cars
-󰞇  Leveling up the tank
-󰮭  1UPing
-󰊠  Haunting the mansion
-󰇊  Rolling for the singularity
+  That's no moon
+  Pining for the fjords
+󰹻  Orbiting at Lagrange point five
+  Hydrating the moisture farm
+  Spinning the pale blue dot
+  To be or not to segfault
+󰚩  Bending like Bender
+󰌪  Turning over a new malloc
+  Losing moments like tears in rain
+  Pumping up the health bar
+󰩃  Chasing the tail recursion
+󰞇  There can be only one
+󰮭  Eating suspicious mushrooms
+󰊠  Ghosting through the firewall
+󰇊  Rolling a natural one
 󰇋  Double or nothing
 󰇌  Three shall be the number
 󰇍  Dealing 1d4 damage
-󰇎  High-fiving the compiler
-󰇏  Beating the odds
-󰭹  Monologuing like a villain
-  Cherry picking
-  Brewing more coffee
-  Thinking four moves ahead
-  Wishing upon a merge
-󰋸  Cross-pollinating branches
-  Cooling it down
-󰇥  Rubber ducking
-  Phishing for credentials
-  Hitting 1.21 gigawatts
-  Making the Kessel Run
-  Going bananas
-󰙴  Sparkling
+󰇎  In the pipe, five by five
+󰇏  Critting on a d6
+  Falling on Newton's head
+󰭹  Engaging in witty banter
+  Double cherry power-up acquired
+  Fueling the all-nighter
+  Thinking nine moves ahead
+  Wishing on a GitHub star
+  Intensifying fidget spinning
+󰇥  Rubber duck debugging
+  So long and thanks
+  Tingling the spider sense
+  Engaging infinite improbability drive
+  There's always money in the banana
+󰙴  Glittering like Galadriel's phial
   Spewing liquid hot magma
-  Big braining
-󰵲  North starring
-  Pair programming
-  Dropping beats
-  Making peace with the linter
-󰲉  Living dangerously
-  Capturing the flag
-󰕼  Proceeding with caution
-  Cutting the red wire
+  Abby something, Abby Normal
+  Donning the away team tunic
+󰵲  Charting a course by starlight
+  Configuring SOCKS proxy
+  Whistling the X-Files theme
+  Imagining a merge without conflicts
+󰲉  Turning on the hazards
+  Pledging allegiance to the code
+  Cutting the red wire, maybe
   Hailing a Waymo
-󰷚  Mine sweeping
-  Living forever
-  Hitting the bullseye
-  Pulling teeth
-  Building an igloo
-  Stacking boxes
-  Looping for a cause
-  Awarding myself a medal
-  Garbage collecting
-  Spinning the wheel
-  Eating spaghetti code
+󰷚  Mine sweeping on Windows 3.1
+  Robbing the bit bank
+  Granting eternal uptime
+  Bullseyeing womp rats
+  Chomping on syntactic sugar
+  Going down the rabbit hole
+󰠖  Finding the rare drop
+  Hunkering down on Hoth
+  Crating up the Rust modules
+  Raising awareness for tech debt
+  Reducing, reusing, refactoring
+  Spinning right round baby
+  Dining at the Restaurant at the End
 󰯙  Linking to the past
   Offering a truce to CI
   Checking all the boxes
-  Ba dum tss-ing
-󰢚  Probing the backlog
-󱃅  Wanting to believe
-󰏒  Asking the wise owl
-󰼁  Going with the flow
-󰈷  Fingerprinting
-⏻  Rebooting the matrix
-󰐃  Sticking a pin in it
-  Soft serving
-  Locking on target
-  Baking yummy desserts
-  Tropical vacationing
-  Having another slice
-  Moving the cursor
+  Drumming up a solution
+  Chargin' like Shadowfax
+󰼁  Drifting through the data stream
+󰈷  Scanning for replicants
+⏻  Power cycling the simulation
+󰐃  Connecting strings on the wall
+  One scoop, no dependencies
+  Buzzing the tower, Maverick
+  Promising cake after testing
+  Entering the numbers: 4 8 15 16
+  Indulging in another slice
+  Double clicking to enhance
+  Roasting a fresh batch of code
   Putting the pieces together
-󰚀  Balancing the trade-offs
-󰮯  Nom nom nom-ing
-󰹡  Buzz-sawing tech debt
-󰄀  Snapping a selfie
-󰍬  Testing, testing, one two
-  Being very polite
-  Taking a pomodoro break
-󰆤  Aiming for success
+󰚀  Achieving cosmic equilibrium
+󰮯  Chasing ghosts in the machine
+󰹡  Sawing off dead branches
+󰆋  Not all who wander are lost
+󱃅  Crop circling the server farm
+󱁤  Righty tighty, lefty loosey
+󰍬  Testing, testing, one two three
+  Fighting killer tomatoes
+󰆤  Fragging from across the map
 󱡝  Mutating ninja turtles
-󰗑  Weiging options
-󰊘  Gassing up
-  Penning a treatise
-  Unwrapping a surprise
-  Searching for meaning
-󰧱  Stopping to smell the code
-  Celebrating prematurely
-󱁇  Spitting melon seeds
-󰆘  Accepting all cookies
-󱄟  Moving fast, breaking th%^!#
-󰛐  Unmasking Illuminati
-  RTFM-ing
-󰯉  Invading your files
-  Probing the codebase
-  Adjusting spectacles
-  Everything is fine
+󰗑  Approaching the bench, cautiously
+󰊘  Gassing up the DeLorean
+  Penning an immortal treatise
+  Regifting legacy code
+  Searching for the droids
+  First, do no harm to prod
+󰧱  Tip-toeing through the tulips
+  Mixing a pan-galactic gargle blaster
+󱁇  Seeding the random generator
+󰆘  Accepting all the cookies
+󰛐  Peering through the palantír
+  RTFM'ing
+  Phoning home from localhost
+  Adjusting the nerd glasses
+  Playing with Prometheus' fire
   Thinking different
-󰘳  Pressing all the buttons
+  Socketing into the materia slot
+󰉁  Harnessing 1.21 gigawatts
+  Amping up the voltage
+󰘳  Copy-pasting from Stack Overflow
 󰝨  Getting up and atom
-󰭎  Peering into the void
+󰭎  Spying on neighboring repos
+󰄀  Snapping selfies
 󱔎  Riding the snake
 󰯊  Weaving a tangled web
+󰯉  Invading your filesystem

@@ -63,7 +63,7 @@ render() {
   local tokens=$(( CTX_WINDOW_SIZE * pct / 100 ))
 
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" << EOF
-{"mode": "$mode", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_style": "$chime_style", "chime_events": "Stop,Notification,PermissionRequest,SessionStart,SessionEnd", "chime_volume": "1", "context": "full", "color": "$color", "flair_seed": $SHARED_SEED, "last_tokens": 80000, "last_session": "$SESSION_ID", "chime_recent_styles": ["BalladPiano"]}
+{"mode": "$mode", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_style": "$chime_style", "chime_events": "Notification,PermissionRequest,SessionEnd,SessionStart,Stop", "chime_volume": "1", "context": "full", "color": "$color", "flair_seed": $SHARED_SEED, "last_tokens": 80000, "last_session": "$SESSION_ID", "chime_recent_styles": ["BalladPiano"]}
 EOF
 
   # Write a resolved chime session file so the label shows

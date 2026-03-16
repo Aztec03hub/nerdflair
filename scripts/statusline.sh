@@ -231,12 +231,14 @@ MIN_BRANCH=10
 folder_name=""
 branch=""
 folder_segment=""
-if [[ -n "$cwd" ]]; then
-  # Folder name: always based on cwd
-  if [[ "$cwd" == "$HOME" ]]; then
+_display_dir="${project_dir:-$cwd}"
+if [[ -n "$_display_dir" ]]; then
+  # Folder name: based on project_dir (launch directory) so it stays stable
+  # even when Claude cd's into subdirectories during a session
+  if [[ "$_display_dir" == "$HOME" ]]; then
     folder_name="~"
   else
-    folder_name=$(_sanitize "$(basename "$cwd")")
+    folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
   # Branch: from whichever git repo we detected
   if [[ -n "$git_dir" ]]; then
@@ -793,19 +795,6 @@ TIER_WIND=(
   "\033[38;2;112;92;24m"    # 81–90
   "\033[38;2;134;96;24m"    # 91–100
 )
-# Lead icon: darker than wind (~60-70 units below fill BG)
-TIER_LEAD=(
-  "\033[38;2;12;18;16m"     # 0–10
-  "\033[38;2;14;22;16m"     # 11–20
-  "\033[38;2;16;28;18m"     # 21–30
-  "\033[38;2;20;36;16m"     # 31–40
-  "\033[38;2;24;46;14m"     # 41–50
-  "\033[38;2;30;52;10m"     # 51–60
-  "\033[38;2;42;50;8m"      # 61–70
-  "\033[38;2;68;66;10m"     # 71–80
-  "\033[38;2;96;76;12m"     # 81–90
-  "\033[38;2;118;78;10m"    # 91–100
-)
 EMPTY_BG="\033[48;2;35;38;45m"
 EMPTY_FG="\033[38;2;35;38;45m"
 LIGHT_FG="\033[38;2;85;90;100m"    # dim text on empty bg
@@ -861,18 +850,6 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
     "\033[38;2;132;132;132m"
     "\033[38;2;152;152;152m"
   )
-  TIER_LEAD=(
-    "\033[38;2;18;18;18m"
-    "\033[38;2;25;25;25m"
-    "\033[38;2;35;35;35m"
-    "\033[38;2;45;45;45m"
-    "\033[38;2;57;57;57m"
-    "\033[38;2;69;69;69m"
-    "\033[38;2;84;84;84m"
-    "\033[38;2;99;99;99m"
-    "\033[38;2;119;119;119m"
-    "\033[38;2;139;139;139m"
-  )
   EMPTY_BG="\033[48;2;38;38;38m"
   EMPTY_FG="\033[38;2;38;38;38m"
   LIGHT_FG="\033[38;2;90;90;90m"
@@ -926,18 +903,6 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
     "\033[38;2;125;98;37m"
     "\033[38;2;145;98;35m"
   )
-  TIER_LEAD=(
-    "\033[38;2;20;34;18m"
-    "\033[38;2;22;36;20m"
-    "\033[38;2;24;40;21m"
-    "\033[38;2;27;42;19m"
-    "\033[38;2;30;44;18m"
-    "\033[38;2;35;47;16m"
-    "\033[38;2;50;54;14m"
-    "\033[38;2;80;72;17m"
-    "\033[38;2;108;80;19m"
-    "\033[38;2;128;82;17m"
-  )
   EMPTY_BG="\033[48;2;38;40;45m"
   EMPTY_FG="\033[38;2;38;40;45m"
   LIGHT_FG="\033[38;2;88;92;102m"
@@ -952,9 +917,9 @@ GRAD_BG_B=(48 48 50 52  54  55  58  60  58  50)
 GRAD_TX_R=(72 74 40 40 52  65  80  94  104 118)
 GRAD_TX_G=(78 82 52 58 65  70  76  78  74  38)
 GRAD_TX_B=(74 74 38 33 30  30  33  35  34  30)
-GRAD_WN_R=(22 24 28 36 50  68  90  116 136 160)
-GRAD_WN_G=(28 34 42 55 64  74  84  88  82  34)
-GRAD_WN_B=(26 26 28 26 23  20  22  24  22  18)
+GRAD_WN_R=(38 40 44 53 72  95  120 142 162 184)
+GRAD_WN_G=(48 58 70 84 92  98  107 110 104 46)
+GRAD_WN_B=(40 40 42 42 42  42  44  46  44  38)
 
 if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   # Monochrome: dark grey → bright grey, subtle brightness ramp
@@ -964,9 +929,9 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   GRAD_TX_R=(85 90 95 105 50  55  62  72  90  110)
   GRAD_TX_G=(85 90 95 105 50  55  62  72  90  110)
   GRAD_TX_B=(85 90 95 105 50  55  62  72  90  110)
-  GRAD_WN_R=(20 26 32 40 52  64  78  95  118 148)
-  GRAD_WN_G=(20 26 32 40 52  64  78  95  118 148)
-  GRAD_WN_B=(20 26 32 40 52  64  78  95  118 148)
+  GRAD_WN_R=(35 43 52 62 74  86  100 118 140 170)
+  GRAD_WN_G=(35 43 52 62 74  86  100 118 140 170)
+  GRAD_WN_B=(35 43 52 62 74  86  100 118 140 170)
 elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   # Muted: same hue progression as default but desaturated (~40% saturation)
   GRAD_BG_R=(48 52 55 62 76  92  110 132 150 168)
@@ -975,9 +940,9 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   GRAD_TX_R=(74 76 44 45 54  66  78  90  100 110)
   GRAD_TX_G=(78 80 54 58 64  68  72  74  70  46)
   GRAD_TX_B=(74 74 42 38 34  34  36  38  37  34)
-  GRAD_WN_R=(26 30 32 38 48  60  76  96  114 132)
-  GRAD_WN_G=(30 36 42 50 58  66  72  76  70  42)
-  GRAD_WN_B=(28 28 30 30 28  26  26  28  26  22)
+  GRAD_WN_R=(40 44 46 53 65  80  96  118 136 154)
+  GRAD_WN_G=(44 50 57 65 75  84  91  95  90  58)
+  GRAD_WN_B=(42 42 44 46 46  46  46  48  46  42)
 fi
 
 # Powerline semicircle glyphs
@@ -1007,20 +972,8 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
   _justified_row "$ROW_WIDTH" "$row1_left" "\033[0m"
 fi
 
-# ── Random lead icon (selected once per session) ─────────────────
-# Icons are loaded from assets/text/icons.txt (one per line)
-_ICONS_FILE="$(cd "$(dirname "$0")/../assets/text" 2>/dev/null && pwd)/icons.txt"
-LEAD_ICONS=()
-if [[ -f "$_ICONS_FILE" ]]; then
-  while IFS= read -r _icon_line; do
-    [[ -n "$_icon_line" ]] && LEAD_ICONS+=("$_icon_line")
-  done < "$_ICONS_FILE"
-fi
-# Fallback if file is missing or empty
-if [[ ${#LEAD_ICONS[@]} -eq 0 ]]; then
-  LEAD_ICONS=("$(printf '\xef\x80\x93')")  # U+F013 gear
-fi
-# Use flair_seed (re-randomized on context clear) for icon selection.
+# ── Session hash for texture selection ─────────────────
+# Use flair_seed (re-randomized on context clear) for stable per-session picks.
 # Falls back to session_id hash for backwards compatibility.
 if [[ -n "$_flair_seed" ]]; then
   _icon_hash=$_flair_seed
@@ -1029,7 +982,6 @@ elif [[ -n "$session_id" ]]; then
 else
   _icon_hash=$PPID
 fi
-BAR_LEAD_ICON="${LEAD_ICONS[$((_icon_hash % ${#LEAD_ICONS[@]}))]}"
 
 # ── _render_bar: render a progress bar given pct and label ──────
 # Usage: _render_bar <pct> <label> [suffix_colored] [texture] [compact_mark_pct] [right_label]
@@ -1091,9 +1043,7 @@ _render_bar() {
   local _FILL_BG="${TIER_BG[$_top_tier_idx]}"
   local _FILL_FG="${TIER_FG[$_top_tier_idx]}"
   local _FILL_TEXT="${TIER_TEXT[$_top_tier_idx]}"
-  local _FILL_ICON_FG="$EMPTY_FG"  # lead icon: same dark grey as unfilled bar
   local _WIND_FG="${TIER_WIND[$_top_tier_idx]}"  # wind icons: darker than fill
-  local _LEAD_FG="${TIER_LEAD[$_top_tier_idx]}"  # lead icon: slightly darker than wind
 
   # Bar area: fixed width, clamped to MAX_BAR
   local _bar_area=$(( bar_width - 2 ))
@@ -1153,7 +1103,6 @@ _render_bar() {
   # Darker empty BG for the compaction zone (beyond the mark)
   local _COMPACT_EMPTY_BG="\033[48;2;18;20;25m"
   local _COMPACT_EMPTY_FG="\033[38;2;18;20;25m"
-  local _COMPACT_DIVIDER_FG="\033[38;2;65;68;78m"  # subtle divider
   if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
     _compact_mark_pos=$(( _bar_area * _compact_mark_pct / 100 ))
   fi
@@ -1221,7 +1170,6 @@ _render_bar() {
   local _vis=0  # visual position (0..bar_area-1)
   local _body_i=0  # body cell index (0..body_area-1)
   local _fill_icon_a _fill_icon_b _fill_icon_c _fill_cycle=2
-  local _lead_icon="$BAR_LEAD_ICON"
   # Select texture icons
   case "$_texture" in
     wind)
@@ -1327,7 +1275,6 @@ _render_bar() {
     fi
   fi
 
-  local _lead_done=0
   while (( _vis < _bar_area )); do
     # Insert inner transition cap at the fill boundary (fill → empty)
     if (( _has_inner_cap && _body_i == _filled )); then
