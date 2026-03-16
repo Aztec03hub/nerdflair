@@ -123,7 +123,15 @@ Resolve the absolute path: `$CLAUDE_PLUGIN_ROOT/scripts/statusline.sh`
 
 Use Edit to update if settings.json exists, or Write if creating new. Preserve all other existing settings.
 
-### Step 3: Verify and summarize
+### Step 3: Enable spinner verbs
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
+```
+
+This loads the custom thinking/spinner phrases from `assets/text/spinners.txt` into `~/.claude/settings.json`. If existing non-nerdflair spinner verbs are present, they are backed up first. If nerdflair verbs are already installed, they are refreshed in place (no backup needed).
+
+### Step 4: Verify and summarize
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info

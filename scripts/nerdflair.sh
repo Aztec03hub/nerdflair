@@ -250,7 +250,7 @@ while [[ $# -gt 0 ]]; do
           # Back up existing spinnerVerbs if they exist and aren't nerdflair's
           if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
             # Check for a known nerdflair verb as fingerprint
-            _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Brewing potions"))) | length > 0' "$_settings_file")
+            _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Chugging an estus flask"))) | length > 0' "$_settings_file")
             if [[ "$_is_nerdflair" != "true" ]]; then
               mkdir -p "$(dirname "$_backup_file")"
               jq '.spinnerVerbs' "$_settings_file" > "$_backup_file"

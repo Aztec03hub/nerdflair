@@ -58,7 +58,6 @@
   Going down the rabbit hole
 󰠖  Finding the rare drop
   Hunkering down on Hoth
-  Crating up the Rust modules
   Raising awareness for tech debt
   Reducing, reusing, refactoring
   Spinning right round baby
