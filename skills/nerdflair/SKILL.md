@@ -43,17 +43,7 @@ Commands:
   /nerdflair width [auto|50-150]   Set layout width
 ```
 
-Then ask with AskUserQuestion (header: "nerdflair", single question, 4 options):
-
-**Question:** "Pick a quick action, or type any command above:"
-
-**Options:**
-1. **Cycle layout** - "Cycle layout to next: full -> compact -> minimal"
-2. **Cycle color-palette** - "Cycle palette to next: vibrant -> muted -> mono"
-3. **Spinner verbs** - "Toggle custom spinner/thinking text"
-4. **Install** - "Run first-time install (font check, settings.json)"
-
-After the user selects an option (or types a custom command), immediately execute it -- do NOT show a second menu.
+Stop after displaying the help. Do NOT prompt the user or use AskUserQuestion — just print the settings and commands, then wait for the user to run a command themselves.
 
 ## Install
 

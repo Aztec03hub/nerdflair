@@ -14,7 +14,7 @@
   To be or not to segfault
 󰚩  Bending like Bender
 󰌪  Turning over a new malloc
-  Losing moments like tears in rain
+  Riding on the storm
   Pumping up the health bar
 󰩃  Chasing the tail recursion
 󰞇  There can be only one
@@ -56,7 +56,6 @@
   Bullseyeing womp rats
   Chomping on syntactic sugar
   Going down the rabbit hole
-󰠖  Finding the rare drop
   Hunkering down on Hoth
   Raising awareness for tech debt
   Reducing, reusing, refactoring

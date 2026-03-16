@@ -70,6 +70,10 @@ EOF
   mkdir -p "$FAKE_HOME/.claude/nerdflair/chime-sessions"
   echo "DelicateBells" > "$FAKE_HOME/.claude/nerdflair/chime-sessions/$SESSION_ID"
 
+  # Write flair session file so the seed is used for texture selection
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/flair-sessions"
+  printf '%s' "$SHARED_SEED" > "$FAKE_HOME/.claude/nerdflair/flair-sessions/$SESSION_ID"
+
   local json
   json=$(cat << EOF
 {
@@ -105,17 +109,17 @@ show_frame() {
 }
 
 # ── Frame sequence ────────────────────────────────────────────────
-# 1. Full vibrant (normal usage)
-show_frame "Full — vibrant"          full    default
+# 1. Full vibrant
+show_frame "Vibrant"                 full    default
 
-# 2. Compact vibrant
+# 2. Full muted
+show_frame "Muted"                   full    muted
+
+# 3. Full monochrome
+show_frame "Monochrome"              full    mono
+
+# 4. Compact vibrant
 show_frame "Compact"                 compact default
 
-# 3. Minimal vibrant
+# 5. Minimal vibrant
 show_frame "Minimal"                 minimal default
-
-# 4. Muted colors
-show_frame "Muted colors"            full    muted
-
-# 5. Monochrome
-show_frame "Monochrome"              full    mono
