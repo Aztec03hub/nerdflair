@@ -405,12 +405,16 @@ elif [[ -n "$session_id" ]]; then
   mv "$_tmp_state" "$_SL_STATE_FILE"
 fi
 
-if (( total_used >= 1000 )); then
+if (( total_used >= 1000000 )); then
+  used_fmt="$(( total_used / 1000000 ))M"
+elif (( total_used >= 1000 )); then
   used_fmt="$(( total_used / 1000 ))k"
 else
   used_fmt="$total_used"
 fi
-if (( ctx_total >= 1000 )); then
+if (( ctx_total >= 1000000 )); then
+  size_fmt="$(( ctx_total / 1000000 ))M"
+elif (( ctx_total >= 1000 )); then
   size_fmt="$(( ctx_total / 1000 ))k"
 else
   size_fmt="$ctx_total"
