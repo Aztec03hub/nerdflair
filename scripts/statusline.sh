@@ -1184,7 +1184,7 @@ _render_bar() {
       _fill_icon_a=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
       _fill_icon_b=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
       ;;
-    jagged_wave)
+    square_wave)
       _fill_icon_a=$(printf '\xee\xbe\x9d')  # U+EF9D
       _fill_icon_b=$(printf '\xee\xbe\x9d')  # U+EF9D
       ;;
@@ -1394,7 +1394,7 @@ _render_bar() {
 }
 
 # Select texture per session (stable like the icon)
-BAR_TEXTURES=(wind thick_dots sin_wave jagged_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
+BAR_TEXTURES=(wind thick_dots sin_wave square_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
 BAR_TEXTURE="${BAR_TEXTURES[$((_icon_hash % ${#BAR_TEXTURES[@]}))]}"
 
 _bar_label="$ctx_label"

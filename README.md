@@ -10,15 +10,15 @@
 </p>
 
 <p align="center">
-  <strong>A pure bash statusline and audio pack for Claude Code</strong>
+  <strong>A configurable bash statusline and audio/spinner pack for Claude Code</strong>
 </p>
 
-![nerdflair preview](assets/images/preview.gif)
+![nerdflair preview](assets/images/preview-main.png)
 
 <details>
-<summary><strong>Full resolution screenshot</strong></summary>
+<summary><strong>Layout and color variations</strong></summary>
 
-![nerdflair screenshot](assets/images/preview.png)
+![nerdflair variations](assets/images/preview-variations.png)
 
 </details>
 
@@ -28,10 +28,10 @@
 ```
 /plugin marketplace add jcraigk/nerdflair
 /plugin install nerdflair@jcraigk-nerdflair
-/nerdflair setup
+/nerdflair install
 ```
 
-Restart Claude Code after setup for the statusline to appear.
+Restart Claude Code after install for the changes to take effect.
 
 
 ## Features
@@ -39,8 +39,9 @@ Restart Claude Code after setup for the statusline to appear.
 - **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row with context pill)
 - **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker and randomizable icon and texture decorations (flair)
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
+- **Custom spinner verbs:** 100+ themed thinking/working phrases
 - **Terminal bell**: (tab indicator) on Notification, PermissionRequest, and Stop events
-- **Audio chimes (macOS only)**: 20+ styles, configurable per-event, adjustable volume
+- **Audio chimes (macOS only)**: 20 styles, configurable per-event, adjustable volume
 - **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
@@ -52,7 +53,7 @@ Restart Claude Code after setup for the statusline to appear.
 
 **A Nerd Font is required.** The statusline uses [Nerd Font](https://www.nerdfonts.com/) glyphs for icons, Powerline caps, and context bar textures. Without one installed, characters render as boxes.
 
-Install via Homebrew:
+Install via Homebrew or download from [nerdfonts.com](https://www.nerdfonts.com/):
 
 ```bash
 brew install --cask font-jetbrains-mono-nerd-font
@@ -83,15 +84,16 @@ Use the `/nerdflair` command to configure the statusline:
 
 | Command | Effect |
 |---------|--------|
-| `/nerdflair` | Interactive menu (setup, cycle layout/color, toggle flair) |
+| `/nerdflair` | Show current settings and command reference |
+| `/nerdflair install` | First-time install (font check, settings.json config) |
+| `/nerdflair uninstall` | Remove nerdflair from settings and clean up data |
 | `/nerdflair info` | Show current settings without changing anything |
 | `/nerdflair chime-events` | Show/toggle which events play chimes |
-| `/nerdflair chime-style` | Cycle chime style (random, BalladPiano, ...) |
+| `/nerdflair chime-style [style]` | Set or cycle chime style (random, BalladPiano, ...) |
 | `/nerdflair chime-volume [0-100]` | Set chime volume (0 = muted) |
-| `/nerdflair color-palette` | Cycle palette: vibrant, muted, mono |
-| `/nerdflair flair` | Toggle context bar decorations (icon + texture) |
+| `/nerdflair color-palette [mode]` | Set or cycle palette (vibrant, muted, mono) |
 | `/nerdflair layout [mode]` | Set or cycle layout (full, compact, minimal) |
-| `/nerdflair setup` | First-time setup (font check, settings.json config) |
+| `/nerdflair spinner-verbs` | Toggle custom spinner verbs on/off |
 | `/nerdflair terminal-bell` | Toggle terminal bell on/off (tab indicator) |
 | `/nerdflair width [auto\|50-150]` | Set layout width |
 
@@ -100,12 +102,12 @@ Use the `/nerdflair` command to configure the statusline:
 
 ## How It Works
 
-Three bash scripts, one JSON state file, zero background processes.
+Three bash scripts and one JSON state file.
 
 ![NerdFlair architecture](assets/images/architecture.svg)
 
-- **Renderer** (`statusline.sh`) — Claude Code pipes session JSON on every refresh. Reads state, outputs ANSI-colored statusline.
-- **Configurator** (`nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
-- **Hook Handler** (`bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS) based on user-defined config.
+- **Renderer** (`scripts/statusline.sh`) — Claude Code pipes session JSON on every refresh. Reads state, outputs ANSI-colored statusline.
+- **Configurator** (`scripts/nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
+- **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS) based on user-defined config.
 
 All settings persist in `~/.claude/nerdflair/state.json`. Per-session data is stored in `~/.claude/nerdflair/chime-sessions/` and cleaned up automatically.

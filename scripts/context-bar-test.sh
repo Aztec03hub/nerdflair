@@ -36,7 +36,7 @@ cat > "$FAKE_HOME/.claude.json" << 'EOF'
 {"mcpServers":{}}
 EOF
 
-TEXTURES=(wind thick_dots sin_wave jagged_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
+TEXTURES=(wind thick_dots sin_wave square_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
 WIDTHS=(50 70 80 100 150)
 
 render_bar() {

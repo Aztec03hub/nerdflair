@@ -114,3 +114,4 @@
 󱔎 snake
 󰯊 spider web
 󰯉 alien from Space Invaders
+ HackerNews icons
