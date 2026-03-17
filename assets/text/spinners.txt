@@ -41,7 +41,7 @@
   Spewing liquid hot magma
   Abby something...Abby Normal
   Donning the away team tunic
-󰵲  Charting a course by starlight
+󰵲  Counting commits by starlight
   Configuring SOCKS proxy
   Whistling the X-Files theme
   Imagining a merge without conflicts
