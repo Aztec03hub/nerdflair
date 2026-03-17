@@ -1,10 +1,13 @@
 {
   "name": "nerdflair",
+  "owner": {
+    "name": "Justin Craig-Kuhn"
+  },
   "plugins": [
     {
       "name": "nerdflair",
-      "source": ".",
-      "description": "Nerd Font-powered statusline with configurable layout, color themes, progress bar flair, and audio chime notifications."
+      "source": "./",
+      "description": "Nerd Font statusline with configurable layouts, color themes, spinner verbs, and audio chimes."
     }
   ]
 }
