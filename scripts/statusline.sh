@@ -1,4 +1,7 @@
 #!/bin/bash
+set -uo pipefail
+# Note: -e is intentionally omitted because arithmetic expressions like
+# (( x == 0 )) return exit code 1, which would cause spurious termination.
 
 input=$(cat)
 
@@ -8,29 +11,21 @@ _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX")
 exec 3>&1 1>"$_SL_BUF"
 trap 'cat "$_SL_BUF" >&3; rm -f "$_SL_BUF"' EXIT
 
+# ── Shared library ────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+_nf_require_jq
+
 # ── Layout mode & width from state file ──────────────────────────
-_SL_STATE_FILE="$HOME/.claude/nerdflair/state.json"
-if [[ -f "$_SL_STATE_FILE" ]]; then
-  _SL_STATE=$(cat "$_SL_STATE_FILE")
-  _SL_MODE=$(echo "$_SL_STATE" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_WIDTH=$(echo "$_SL_STATE" | grep -o '"width"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  # _SL_FLAIR removed — texture always shown
-  _SL_COLOR_MODE=$(echo "$_SL_STATE" | grep -o '"color"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_TERMINAL_BELL=$(echo "$_SL_STATE" | grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_CHIME_VOLUME=$(echo "$_SL_STATE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_CHIME_STYLE=$(echo "$_SL_STATE" | grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  _SL_LAST_SESSION=$(echo "$_SL_STATE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-fi
-_SL_MODE="${_SL_MODE:-full}"
-_SL_WIDTH="${_SL_WIDTH:-auto}"
-_SL_COLOR_MODE="${_SL_COLOR_MODE:-vibrant}"
-# Legacy migration: "default" color → "vibrant"
-if [[ "$_SL_COLOR_MODE" == "default" ]]; then
-  _SL_COLOR_MODE="vibrant"
-fi
-_SL_TERMINAL_BELL="${_SL_TERMINAL_BELL:-on}"
-_SL_CHIME_VOLUME="${_SL_CHIME_VOLUME:-1}"
-_SL_CHIME_STYLE="${_SL_CHIME_STYLE:-random}"
+_nf_read_state
+_SL_MODE="$NF_CUR_MODE"
+_SL_WIDTH="$NF_CUR_WIDTH"
+_SL_COLOR_MODE="$NF_CUR_COLOR"
+_SL_TERMINAL_BELL="$NF_CUR_TERMINAL_BELL"
+_SL_CHIME_VOLUME="$NF_CUR_CHIME_VOLUME"
+_SL_CHIME_STYLE="$NF_CUR_CHIME_STYLE"
+_SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 # Per-session data (chime style, bar texture) is stored in ~/.claude/nerdflair/sessions/<session_id>
 # by bell.sh on SessionStart. The statusline reads it from there.
 # ── Sanitize external strings ─────────────────────────────────────
@@ -41,15 +36,11 @@ _SL_CHIME_STYLE="${_SL_CHIME_STYLE:-random}"
 _sanitize() { printf '%s' "$1" | sed 's/\\//g'; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
-if ! command -v jq &>/dev/null; then
-  echo "jq not found — install with: brew install jq"
-  exit 1
-fi
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 
 # Model: extract friendly name + version from ID
-raw_model=$(echo "$input" | jq -r '.model.id // .model.display_name // .model // empty')
+raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // .model.display_name // empty) else (.model // empty) end')
 model=""
 if [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
   name="${BASH_REMATCH[1]}"
@@ -323,6 +314,8 @@ fi
 # ── Context usage segment ───────────────────────────────────────
 ctx_segment=""
 ctx_total=200000  # default context window size
+total_used=0
+pct=0
 
 if [[ -n "$used_pct" && -n "$input_tokens" && -n "$ctx_size" ]]; then
   # We have full context_window data from Claude Code
@@ -355,7 +348,7 @@ fi
 # ── Per-session data: chime style + bar texture ────
 # bell.sh writes ~/.claude/nerdflair/sessions/<session_id> on SessionStart:
 #   {"chime":"StyleName","texture":"wind"}
-_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
+_SESSION_DIR="$NF_SESSION_DIR"
 _session_file=""
 _session_texture=""
 _session_chime=""
@@ -369,38 +362,10 @@ if [[ -n "$session_id" ]]; then
 fi
 
 # Persist last_session to shared state file (used by bell.sh to suppress
-# duplicate SessionStart on compaction). Re-read to avoid clobbering
-# changes made by nerdflair.sh or bell.sh.
-if [[ -n "$session_id" && -f "$_SL_STATE_FILE" ]]; then
-  _fresh_state=$(cat "$_SL_STATE_FILE")
-  # If essential fields are missing (corrupt state), rebuild with defaults
-  # while preserving chime_recent_styles and last_session
-  if ! echo "$_fresh_state" | grep -q '"mode"'; then
-    _recent=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1)
-    _extra=""
-    [[ -n "$_recent" ]] && _extra=", $_recent"
-    _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-    printf '{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Notification,PermissionRequest,SessionEnd,SessionStart,Stop", "color": "vibrant", "last_session": "%s"%s}\n' "$session_id" "$_extra" > "$_tmp_state"
-    mv "$_tmp_state" "$_SL_STATE_FILE"
-  else
-    _new_state=$(echo "$_fresh_state" \
-      | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
-      | sed 's/"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*//' \
-      | sed 's/"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*//' \
-      | sed 's/}[[:space:]]*$//' \
-      | sed 's/,[[:space:]]*,/,/g' \
-      | sed 's/,[[:space:]]*,/,/g' \
-      | sed 's/,[[:space:]]*$//' \
-      | sed 's/{[[:space:]]*,/{/')
-    _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-    printf '%s, "last_session": "%s"}\n' "$_new_state" "$session_id" > "$_tmp_state"
-    mv "$_tmp_state" "$_SL_STATE_FILE"
-  fi
-elif [[ -n "$session_id" ]]; then
-  mkdir -p "$(dirname "$_SL_STATE_FILE")"
-  _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Notification,PermissionRequest,SessionEnd,SessionStart,Stop", "color": "vibrant", "last_session": "%s"}\n' "$session_id" > "$_tmp_state"
-  mv "$_tmp_state" "$_SL_STATE_FILE"
+# duplicate SessionStart on compaction). Uses _nf_update_field for atomic
+# jq-based update, avoiding the fragile sed-chain approach.
+if [[ -n "$session_id" ]]; then
+  _nf_update_field "last_session" "$session_id"
 fi
 
 if (( total_used >= 1000000 )); then
@@ -662,9 +627,9 @@ if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
   _session_resolved="$_session_chime"
   if [[ -n "$_session_resolved" && "$_session_resolved" != "random" ]]; then
     _chime_label="$_session_resolved"
-  elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$_SL_STATE_FILE" ]]; then
+  elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$NF_STATE_FILE" ]]; then
     # No per-session style yet — show the last entry from chime_recent_styles
-    _last_recent=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' | awk -F',' '{print $NF}')
+    _last_recent=$(jq -r '.chime_recent_styles // [] | last // empty' "$NF_STATE_FILE" 2>/dev/null || true)
     _chime_label="${_last_recent:-random}"
   elif [[ -n "$_SL_CHIME_STYLE" ]]; then
     _chime_label="$_SL_CHIME_STYLE"
@@ -984,194 +949,11 @@ fi
 
 # ── Bar texture: resolved per-session by bell.sh ─────────────────
 
-# ── _render_bar: render a progress bar given pct and label ──────
-# Usage: _render_bar <pct> <label> [suffix_colored] [texture] [compact_mark_pct] [right_label]
-# Textures: "wind" (default), or named texture from BAR_TEXTURES
-# compact_mark_pct: if set (0–100), draws a vertical divider at that % and
-#   darkens the empty region beyond it.
-# right_label: if set, displayed right-aligned in the empty area with 2-char padding.
-_render_bar() {
-  local _pct=$1
-  local _label="$2"
-  local _suffix="${3:-}"
-  local _texture="${4:-wind}"
-  local _compact_mark_pct="${5:-}"
-  local _right_label="${6:-}"
-
-  # NerdFlair logo: shown right-aligned in empty area of bar
-  local _logo_icons=()
-  local _logo_start=0
-  # Logo color: consistent mauve matching MCP list
-  local _NF_BRAND_COLORS=(
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m" "\033[38;2;145;130;155m"
-    "\033[38;2;145;130;155m"
-  )
-  local _NF_BRAND_COLOR="${_NF_BRAND_COLORS[0]}"
-  _logo_icons=(
-    "$(printf '\UE838')" " "
-    "$(printf '\U000F0BF7')" " "
-    "$(printf '\U000F0C1E')" " "
-    "$(printf '\U000F0BF4')" " "
-    "$(printf '\UF335')" " "
-    "$(printf '\U000F0C0C')" " "
-    "$(printf '\U000F0BEB')" " "
-    "$(printf '\U000F0C03')" " "
-    "$(printf '\U000F0C1E')"
-  )
-  local _logo_end=0  # will be computed after _bar_area is known
-
-  # Multi-segment fill: each cell gets its tier color based on what percentage
-  # of the bar that position represents. Tier boundaries get curved cap transitions.
-  # When a compact mark is set, scale so the mark pct reaches tier 9 (full orange).
-  # We compute per-cell colors in the render loop below; here we just set up
-  # the top-tier values for the outer cap and label colors.
-  local _tier_pct=$_pct
-  if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
-    _tier_pct=$(( _pct * 100 / _compact_mark_pct ))
-    (( _tier_pct > 100 )) && _tier_pct=100
-  fi
-  local _top_tier_idx=$(( _tier_pct / 10 ))
-  (( _top_tier_idx > 9 )) && _top_tier_idx=9
-  (( _top_tier_idx < 0 )) && _top_tier_idx=0
-  # These are used for outer caps and label text (use the highest tier reached)
-  local _FILL_BG="${TIER_BG[$_top_tier_idx]}"
-  local _FILL_FG="${TIER_FG[$_top_tier_idx]}"
-  local _FILL_TEXT="${TIER_TEXT[$_top_tier_idx]}"
-  local _WIND_FG="${TIER_WIND[$_top_tier_idx]}"  # wind icons: darker than fill
-
-  # Bar area: fixed width, clamped to MAX_BAR
-  local _bar_area=$(( bar_width - 2 ))
-  (( _bar_area > MAX_BAR )) && _bar_area=$MAX_BAR
-  (( _bar_area < 20 )) && _bar_area=20
-
-  # Position logo centered in the bar area (only when bar is empty)
-  # Once context is used, the label comes back and the logo goes away forever.
-  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
-    _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
-    (( _logo_start < 0 )) && _logo_start=0
-    _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
-  elif (( _pct > 0 )); then
-    _logo_icons=()
-  fi
-
-  # ── Logo background gradient: light → dark → light across the bar ──
-  # Pre-compute per-cell BG when logo is showing for a smooth ambient glow.
-  local _logo_bg_cache=()
-  local _logo_fg_cache=()
-  if (( ${#_logo_icons[@]} > 0 )); then
-    # Endpoints: dark center (near terminal black), light edges (visible glow)
-    local _lg_dark_r=8 _lg_dark_g=8 _lg_dark_b=12
-    local _lg_peak_r _lg_peak_g _lg_peak_b
-    case "$_SL_COLOR_MODE" in
-      mono)  _lg_peak_r=38; _lg_peak_g=38; _lg_peak_b=38 ;;
-      muted) _lg_peak_r=38; _lg_peak_g=40; _lg_peak_b=45 ;;
-      *)     _lg_peak_r=35; _lg_peak_g=38; _lg_peak_b=45 ;;
-    esac
-    # Dark zone = center 35% of bar; gradient wings = outer 32.5% each side
-    local _dark_start=$(( _bar_area * 325 / 1000 ))
-    local _dark_end=$(( _bar_area * 675 / 1000 ))
-    for (( _gi=0; _gi<_bar_area; _gi++ )); do
-      # Cells in center dark zone → t=0 (darkest). Wings interpolate
-      # from 0 at dark zone edge to 100 at bar edge.
-      local _t=0
-      if (( _gi < _dark_start )); then
-        # Left wing: 100 at bar edge (gi=0), 0 at dark zone start
-        _t=$(( 100 - _gi * 100 / _dark_start ))
-      elif (( _gi >= _dark_end )); then
-        # Right wing: 0 at dark zone end, 100 at bar edge
-        local _wing_len=$(( _bar_area - _dark_end ))
-        if (( _wing_len > 0 )); then
-          _t=$(( (_gi - _dark_end) * 100 / _wing_len ))
-        fi
-      fi
-      local _r=$(( _lg_dark_r + (_lg_peak_r - _lg_dark_r) * _t / 100 ))
-      local _g=$(( _lg_dark_g + (_lg_peak_g - _lg_dark_g) * _t / 100 ))
-      local _b=$(( _lg_dark_b + (_lg_peak_b - _lg_dark_b) * _t / 100 ))
-      _logo_bg_cache[$_gi]="\033[48;2;${_r};${_g};${_b}m"
-      _logo_fg_cache[$_gi]="\033[38;2;${_r};${_g};${_b}m"
-    done
-  fi
-
-  # Compact mark: visual position of the compaction divider (-1 = none)
-  local _compact_mark_pos=-1
-  # Darker empty BG for the compaction zone (beyond the mark)
-  local _COMPACT_EMPTY_BG="\033[48;2;18;20;25m"
-  local _COMPACT_EMPTY_FG="\033[38;2;18;20;25m"
-  if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
-    _compact_mark_pos=$(( _bar_area * _compact_mark_pct / 100 ))
-  fi
-
-  # When partially filled, one cell is consumed by the inner transition cap
-  local _has_inner_cap=0
-  if (( _pct > 0 && _pct < 100 )); then
-    _has_inner_cap=1
-  fi
-  local _body_area=$(( _bar_area - _has_inner_cap ))
-
-  local _filled=$(( _body_area * _pct / 100 ))
-  (( _filled > _body_area )) && _filled=$_body_area
-
-  # Padded label centered in the full bar_area (visual width)
-  # When logo is showing (pct==0, flair on), suppress the label entirely.
-  local _label_padded=" ${_label} "
-  local _label_len=${#_label_padded}
-  local _label_start=$(( (_bar_area - _label_len) / 2 ))
-  (( _label_start < 0 )) && _label_start=0
-  local _label_end=$(( _label_start + _label_len ))
-  if (( ${#_logo_icons[@]} > 0 )); then
-    _label_start=-1
-    _label_end=-1
-  fi
-
-  # Right-aligned label in empty area (2-char padding from right edge)
-  local _rlabel_start=-1
-  local _rlabel_end=-1
-  local _rlabel_padded=""
-  if [[ -n "$_right_label" ]]; then
-    _rlabel_padded="${_right_label}"
-    local _rlabel_len=${#_rlabel_padded}
-    _rlabel_start=$(( _bar_area - _rlabel_len ))
-    (( _rlabel_start < 0 )) && _rlabel_start=0
-    _rlabel_end=$(( _rlabel_start + _rlabel_len ))
-  fi
-
-  # Outer cap colors — left cap uses first filled cell, right cap uses last
-  local _left_cap_fg _right_cap_fg
-  if (( _pct > 0 )); then
-    _left_cap_fg="${TIER_FG[0]}"  # will be overridden after cache is built
-  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
-    _left_cap_fg="${_logo_fg_cache[0]}"
-  elif (( ${#_logo_icons[@]} > 0 )); then
-    _left_cap_fg="$_COMPACT_EMPTY_FG"
-  else
-    _left_cap_fg="$EMPTY_FG"
-  fi
-
-  if (( _pct >= 100 )); then
-    _right_cap_fg="$_FILL_FG"
-  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
-    _right_cap_fg="${_logo_fg_cache[$((_bar_area - 1))]}"
-  elif (( ${#_logo_icons[@]} > 0 )); then
-    _right_cap_fg="$_COMPACT_EMPTY_FG"
-  elif (( _compact_mark_pos >= 0 )); then
-    _right_cap_fg="$_COMPACT_EMPTY_FG"
-  else
-    _right_cap_fg="$EMPTY_FG"
-  fi
-
-  # Build bar body with solid fill color
-  local _bar=""
-  local _vis=0  # visual position (0..bar_area-1)
-  local _body_i=0  # body cell index (0..body_area-1)
-  local _fill_icon_a _fill_icon_b _fill_icon_c _fill_cycle=2
-  # Select texture icons
+# ── _select_texture_icons: resolve fill icons for a texture name ──
+# Sets _fill_icon_a, _fill_icon_b, _fill_cycle in the caller's scope.
+_select_texture_icons() {
+  local _texture="$1"
+  _fill_cycle=2
   case "$_texture" in
     Wind)
       _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16
@@ -1226,55 +1008,233 @@ _render_bar() {
       _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
       ;;
   esac
-  # ── Smooth per-cell gradient: interpolate RGB between control points ──
-  # Uses GRAD_BG/TX/WN arrays set per color mode above.
+}
 
-  # Pre-compute ANSI escape strings for each filled cell position.
-  # Maps cell position → fractional tier (0–900 scale, i.e. 100ths of a tier).
-  local _cell_bg_cache=()
-  local _cell_text_cache=()
-  local _cell_wind_cache=()
-  local _cell_fg_cache=()
+# ── _compute_gradient_cache: pre-compute per-cell ANSI colors ────
+# Populates _cell_bg_cache, _cell_fg_cache, _cell_text_cache, _cell_wind_cache
+# in the caller's scope. Interpolates RGB between GRAD_* control points.
+_compute_gradient_cache() {
+  local _filled=$1 _body_area=$2 _compact_mark_pct="$3"
+  _cell_bg_cache=()
+  _cell_text_cache=()
+  _cell_wind_cache=()
+  _cell_fg_cache=()
   for (( _ci=0; _ci<_filled; _ci++ )); do
-    # Cell's percentage of the total bar
     local _cpct=$(( (_ci + 1) * 100 / _body_area ))
     if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
       _cpct=$(( _cpct * 100 / _compact_mark_pct ))
       (( _cpct > 100 )) && _cpct=100
     fi
-    # Map to 0–900 scale (fractional tier × 100)
     local _ft=$(( _cpct * 9 ))
     (( _ft > 900 )) && _ft=900
-    # Integer tier and fractional part (0–99)
     local _lo=$(( _ft / 100 ))
     (( _lo > 8 )) && _lo=8
     local _hi=$(( _lo + 1 ))
     local _frac=$(( _ft - _lo * 100 ))
-    # Interpolate BG
     local _r=$(( GRAD_BG_R[_lo] + (GRAD_BG_R[_hi] - GRAD_BG_R[_lo]) * _frac / 100 ))
     local _g=$(( GRAD_BG_G[_lo] + (GRAD_BG_G[_hi] - GRAD_BG_G[_lo]) * _frac / 100 ))
     local _b=$(( GRAD_BG_B[_lo] + (GRAD_BG_B[_hi] - GRAD_BG_B[_lo]) * _frac / 100 ))
     _cell_bg_cache[$_ci]="\033[48;2;${_r};${_g};${_b}m"
     _cell_fg_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
-    # Interpolate text
     _r=$(( GRAD_TX_R[_lo] + (GRAD_TX_R[_hi] - GRAD_TX_R[_lo]) * _frac / 100 ))
     _g=$(( GRAD_TX_G[_lo] + (GRAD_TX_G[_hi] - GRAD_TX_G[_lo]) * _frac / 100 ))
     _b=$(( GRAD_TX_B[_lo] + (GRAD_TX_B[_hi] - GRAD_TX_B[_lo]) * _frac / 100 ))
     _cell_text_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
-    # Interpolate wind
     _r=$(( GRAD_WN_R[_lo] + (GRAD_WN_R[_hi] - GRAD_WN_R[_lo]) * _frac / 100 ))
     _g=$(( GRAD_WN_G[_lo] + (GRAD_WN_G[_hi] - GRAD_WN_G[_lo]) * _frac / 100 ))
     _b=$(( GRAD_WN_B[_lo] + (GRAD_WN_B[_hi] - GRAD_WN_B[_lo]) * _frac / 100 ))
     _cell_wind_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
   done
+}
 
-  # Override outer caps with smooth gradient endpoints
+# ── _compute_logo_gradient: pre-compute per-cell BG/FG for logo ──
+# Populates _logo_bg_cache, _logo_fg_cache in the caller's scope.
+# Creates a dark center → light edges ambient glow effect.
+_compute_logo_gradient() {
+  local _bar_area=$1
+  _logo_bg_cache=()
+  _logo_fg_cache=()
+  local _lg_dark_r=8 _lg_dark_g=8 _lg_dark_b=12
+  local _lg_peak_r _lg_peak_g _lg_peak_b
+  case "$_SL_COLOR_MODE" in
+    mono)  _lg_peak_r=38; _lg_peak_g=38; _lg_peak_b=38 ;;
+    muted) _lg_peak_r=38; _lg_peak_g=40; _lg_peak_b=45 ;;
+    *)     _lg_peak_r=35; _lg_peak_g=38; _lg_peak_b=45 ;;
+  esac
+  local _dark_start=$(( _bar_area * 325 / 1000 ))
+  local _dark_end=$(( _bar_area * 675 / 1000 ))
+  for (( _gi=0; _gi<_bar_area; _gi++ )); do
+    local _t=0
+    if (( _gi < _dark_start )); then
+      _t=$(( 100 - _gi * 100 / _dark_start ))
+    elif (( _gi >= _dark_end )); then
+      local _wing_len=$(( _bar_area - _dark_end ))
+      if (( _wing_len > 0 )); then
+        _t=$(( (_gi - _dark_end) * 100 / _wing_len ))
+      fi
+    fi
+    local _r=$(( _lg_dark_r + (_lg_peak_r - _lg_dark_r) * _t / 100 ))
+    local _g=$(( _lg_dark_g + (_lg_peak_g - _lg_dark_g) * _t / 100 ))
+    local _b=$(( _lg_dark_b + (_lg_peak_b - _lg_dark_b) * _t / 100 ))
+    _logo_bg_cache[$_gi]="\033[48;2;${_r};${_g};${_b}m"
+    _logo_fg_cache[$_gi]="\033[38;2;${_r};${_g};${_b}m"
+  done
+}
+
+# ── _render_bar: render a progress bar given pct and label ──────
+# Usage: _render_bar <pct> <label> [suffix_colored] [texture] [compact_mark_pct] [right_label]
+# Textures: "wind" (default), or named texture from BAR_TEXTURES
+# compact_mark_pct: if set (0–100), draws a vertical divider at that % and
+#   darkens the empty region beyond it.
+# right_label: if set, displayed right-aligned in the empty area with 2-char padding.
+_render_bar() {
+  local _pct=$1
+  local _label="$2"
+  local _suffix="${3:-}"
+  local _texture="${4:-wind}"
+  local _compact_mark_pct="${5:-}"
+  local _right_label="${6:-}"
+
+  # NerdFlair logo: shown right-aligned in empty area of bar
+  local _logo_icons=()
+  local _logo_start=0
+  local _NF_BRAND_COLOR="\033[38;2;145;130;155m"
+  local _NF_BRAND_COLORS=()
+  local _i
+  for (( _i=0; _i<17; _i++ )); do _NF_BRAND_COLORS+=("$_NF_BRAND_COLOR"); done
+  _logo_icons=(
+    "$(printf '\UE838')" " "
+    "$(printf '\U000F0BF7')" " "
+    "$(printf '\U000F0C1E')" " "
+    "$(printf '\U000F0BF4')" " "
+    "$(printf '\UF335')" " "
+    "$(printf '\U000F0C0C')" " "
+    "$(printf '\U000F0BEB')" " "
+    "$(printf '\U000F0C03')" " "
+    "$(printf '\U000F0C1E')"
+  )
+  local _logo_end=0
+
+  # Compute top tier for outer caps and label text
+  local _tier_pct=$_pct
+  if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
+    _tier_pct=$(( _pct * 100 / _compact_mark_pct ))
+    (( _tier_pct > 100 )) && _tier_pct=100
+  fi
+  local _top_tier_idx=$(( _tier_pct / 10 ))
+  (( _top_tier_idx > 9 )) && _top_tier_idx=9
+  (( _top_tier_idx < 0 )) && _top_tier_idx=0
+  local _FILL_BG="${TIER_BG[$_top_tier_idx]}"
+  local _FILL_FG="${TIER_FG[$_top_tier_idx]}"
+  local _FILL_TEXT="${TIER_TEXT[$_top_tier_idx]}"
+  local _WIND_FG="${TIER_WIND[$_top_tier_idx]}"
+
+  # Bar area: fixed width, clamped to MAX_BAR
+  local _bar_area=$(( bar_width - 2 ))
+  (( _bar_area > MAX_BAR )) && _bar_area=$MAX_BAR
+  (( _bar_area < 20 )) && _bar_area=20
+
+  # Position logo centered in the bar area (only when bar is empty)
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
+    _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
+    (( _logo_start < 0 )) && _logo_start=0
+    _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
+  elif (( _pct > 0 )); then
+    _logo_icons=()
+  fi
+
+  # Pre-compute logo background gradient
+  local _logo_bg_cache=()
+  local _logo_fg_cache=()
+  if (( ${#_logo_icons[@]} > 0 )); then
+    _compute_logo_gradient "$_bar_area"
+  fi
+
+  # Compact mark: visual position of the compaction divider (-1 = none)
+  local _compact_mark_pos=-1
+  local _COMPACT_EMPTY_BG="\033[48;2;18;20;25m"
+  local _COMPACT_EMPTY_FG="\033[38;2;18;20;25m"
+  if [[ -n "$_compact_mark_pct" ]] && (( _compact_mark_pct > 0 && _compact_mark_pct < 100 )); then
+    _compact_mark_pos=$(( _bar_area * _compact_mark_pct / 100 ))
+  fi
+
+  # When partially filled, one cell is consumed by the inner transition cap
+  local _has_inner_cap=0
+  if (( _pct > 0 && _pct < 100 )); then
+    _has_inner_cap=1
+  fi
+  local _body_area=$(( _bar_area - _has_inner_cap ))
+
+  local _filled=$(( _body_area * _pct / 100 ))
+  (( _filled > _body_area )) && _filled=$_body_area
+
+  # Padded label centered in the full bar_area
+  local _label_padded=" ${_label} "
+  local _label_len=${#_label_padded}
+  local _label_start=$(( (_bar_area - _label_len) / 2 ))
+  (( _label_start < 0 )) && _label_start=0
+  local _label_end=$(( _label_start + _label_len ))
+  if (( ${#_logo_icons[@]} > 0 )); then
+    _label_start=-1
+    _label_end=-1
+  fi
+
+  # Right-aligned label in empty area
+  local _rlabel_start=-1
+  local _rlabel_end=-1
+  local _rlabel_padded=""
+  if [[ -n "$_right_label" ]]; then
+    _rlabel_padded="${_right_label}"
+    local _rlabel_len=${#_rlabel_padded}
+    _rlabel_start=$(( _bar_area - _rlabel_len ))
+    (( _rlabel_start < 0 )) && _rlabel_start=0
+    _rlabel_end=$(( _rlabel_start + _rlabel_len ))
+  fi
+
+  # Select texture icons
+  local _fill_icon_a _fill_icon_b _fill_icon_c _fill_cycle
+  _select_texture_icons "$_texture"
+
+  # Pre-compute per-cell gradient colors
+  local _cell_bg_cache=() _cell_text_cache=() _cell_wind_cache=() _cell_fg_cache=()
+  _compute_gradient_cache "$_filled" "$_body_area" "$_compact_mark_pct"
+
+  # Outer cap colors — left cap uses first filled cell, right cap uses last
+  local _left_cap_fg _right_cap_fg
+  if (( _pct > 0 )); then
+    _left_cap_fg="${TIER_FG[0]}"
+  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
+    _left_cap_fg="${_logo_fg_cache[0]}"
+  elif (( ${#_logo_icons[@]} > 0 )); then
+    _left_cap_fg="$_COMPACT_EMPTY_FG"
+  else
+    _left_cap_fg="$EMPTY_FG"
+  fi
+
+  if (( _pct >= 100 )); then
+    _right_cap_fg="$_FILL_FG"
+  elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
+    _right_cap_fg="${_logo_fg_cache[$((_bar_area - 1))]}"
+  elif (( ${#_logo_icons[@]} > 0 )); then
+    _right_cap_fg="$_COMPACT_EMPTY_FG"
+  elif (( _compact_mark_pos >= 0 )); then
+    _right_cap_fg="$_COMPACT_EMPTY_FG"
+  else
+    _right_cap_fg="$EMPTY_FG"
+  fi
+
+  # Override caps with smooth gradient endpoints
   if (( _filled > 0 )); then
     _left_cap_fg="${_cell_fg_cache[0]}"
     if (( _pct >= 100 )); then
       _right_cap_fg="${_cell_fg_cache[$((_filled - 1))]}"
     fi
   fi
+
+  # Build bar body cell by cell
+  local _bar=""
+  local _vis=0  # visual position (0..bar_area-1)
+  local _body_i=0  # body cell index (0..body_area-1)
 
   while (( _vis < _bar_area )); do
     # Insert inner transition cap at the fill boundary (fill → empty)

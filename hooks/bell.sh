@@ -20,62 +20,29 @@ if ! [ -t 0 ]; then
   _stdin_data=$(cat)
 fi
 
-# Suppress SessionStart for resumed sessions and post-compaction restarts.
-# We check the state file's last_session (written by the statusline) to see if
-# this session_id has already been seen. This persists across process restarts,
-# so /resume (which reuses the same session_id) won't re-trigger the sound.
-_session_id=""
-if [[ -n "$_stdin_data" ]]; then
-  _session_id=$(echo "$_stdin_data" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-fi
-
 # Resolve plugin root (hooks/ is one level down from plugin root)
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIO_DIR="$PLUGIN_ROOT/assets/audio"
 
+# shellcheck source=../scripts/lib.sh
+source "$PLUGIN_ROOT/scripts/lib.sh"
+_nf_require_jq
+
+# Read state (populates NF_CUR_* with legacy migration)
+_nf_read_state
+terminal_bell="$NF_CUR_TERMINAL_BELL"
+chime_sound="$NF_CUR_CHIME_SOUND"
+chime_style="$NF_CUR_CHIME_STYLE"
+chime_events="$NF_CUR_CHIME_EVENTS"
+chime_volume="$NF_CUR_CHIME_VOLUME"
+
 # Hard-coded events that trigger the terminal bell (BEL character)
 TERMINAL_BELL_EVENTS="Notification,PermissionRequest,Stop"
 
-# Read settings from state file
-terminal_bell="on"
-chime_sound="Glass"
-chime_style="random"
-chime_events="Notification,PermissionRequest,SessionEnd,SessionStart,Stop"
-chime_volume="1"
-STATE_FILE="$HOME/.claude/nerdflair/state.json"
-if [[ -f "$STATE_FILE" ]]; then
-  _tbell=$(grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-  _sound=$(grep -o '"chime_sound"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-  _style=$(grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-  _events=$(grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-  _volume=$(grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-  terminal_bell="${_tbell:-on}"
-  chime_sound="${_sound:-Glass}"
-  chime_style="${_style:-random}"
-  chime_events="${_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
-  chime_volume="${_volume:-1}"
-  # Legacy migration: read old "bell" field if new fields are missing
-  if [[ -z "$_tbell" ]]; then
-    _old_bell=$(grep -o '"bell"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    case "$_old_bell" in
-      both)   terminal_bell="on" ;;
-      visual) terminal_bell="on"; chime_volume="0" ;;
-      audio)  terminal_bell="off" ;;
-      off)    terminal_bell="off"; chime_volume="0" ;;
-    esac
-  fi
-  if [[ -z "$_style" ]]; then
-    _old_style=$(grep -o '"audio_style"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    chime_style="${_old_style:-random}"
-  fi
-  if [[ -z "$_events" ]]; then
-    _old_events=$(grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    chime_events="${_old_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
-  fi
-  if [[ -z "$_volume" ]]; then
-    _old_volume=$(grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    chime_volume="${_old_volume:-1}"
-  fi
+# Extract session_id from stdin payload
+_session_id=""
+if [[ -n "$_stdin_data" ]]; then
+  _session_id=$(echo "$_stdin_data" | jq -r '.session_id // empty' 2>/dev/null || true)
 fi
 
 # Suppress SessionStart for resumed sessions and post-compaction restarts.
@@ -87,14 +54,13 @@ _COMPACT_MARKER="$HOME/.claude/nerdflair/.pre-compact"
 if [[ "$EVENT" == "SessionStart" ]]; then
   _source=""
   if [[ -n "$_stdin_data" ]]; then
-    _source=$(echo "$_stdin_data" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+    _source=$(echo "$_stdin_data" | jq -r '.source // empty' 2>/dev/null || true)
   fi
   if [[ "$_source" == "resume" ]]; then
     exit 0
   fi
-  if [[ -n "$_session_id" && -f "$STATE_FILE" ]]; then
-    _last_session=$(grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
-    if [[ "$_session_id" == "$_last_session" ]]; then
+  if [[ -n "$_session_id" && -n "$NF_CUR_LAST_SESSION" ]]; then
+    if [[ "$_session_id" == "$NF_CUR_LAST_SESSION" ]]; then
       exit 0
     fi
   fi
@@ -116,11 +82,10 @@ fi
 #   {"chime":"StyleName","texture":"wind"}
 # The global chime_recent_styles list in the shared state file prevents
 # repeats across sessions. The statusline reads the per-session file.
-_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
-mkdir -p "$_SESSION_DIR"
+mkdir -p "$NF_SESSION_DIR"
 _session_file=""
 if [[ -n "$_session_id" ]]; then
-  _session_file="$_SESSION_DIR/${_session_id}"
+  _session_file="$NF_SESSION_DIR/${_session_id}"
 fi
 
 _resolved_style="$chime_style"
@@ -132,12 +97,10 @@ if [[ "$_resolved_style" == "random" ]]; then
       _styles+=("$(basename "$d")")
     done < <(find "$AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
     if [[ ${#_styles[@]} -gt 0 ]]; then
+      _recent_csv=$(_nf_read_recent_styles)
       _recent=()
-      if [[ -f "$STATE_FILE" ]]; then
-        _recent_raw=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$STATE_FILE" | head -1 | sed 's/.*\[\(.*\)\]/\1/' | tr -d '"' | tr -d ' ' || true)
-        if [[ -n "$_recent_raw" ]]; then
-          IFS=',' read -ra _recent <<< "$_recent_raw"
-        fi
+      if [[ -n "$_recent_csv" ]]; then
+        IFS=',' read -ra _recent <<< "$_recent_csv"
       fi
       _candidates=()
       for s in "${_styles[@]}"; do
@@ -160,19 +123,12 @@ if [[ "$_resolved_style" == "random" ]]; then
       while [[ ${#_recent[@]} -gt 10 ]]; do
         _recent=("${_recent[@]:1}")
       done
-      _recent_json=$(printf '"%s",' "${_recent[@]}")
-      _recent_json="[${_recent_json%,}]"
-      if [[ -f "$STATE_FILE" ]]; then
-        if grep -q '"chime_recent_styles"' "$STATE_FILE"; then
-          sed -i '' "s/\"chime_recent_styles\"[[:space:]]*:[[:space:]]*\[[^]]*\]/\"chime_recent_styles\": $_recent_json/" "$STATE_FILE"
-        else
-          sed -i '' "s/}$/,\"chime_recent_styles\": $_recent_json}/" "$STATE_FILE"
-        fi
-      fi
+      _recent_joined=$(IFS=','; printf '%s' "${_recent[*]}")
+      _nf_update_recent_styles "$_recent_joined"
     fi
   elif [[ -n "$_session_file" && -f "$_session_file" ]]; then
     # Non-SessionStart: reuse this session's resolved style from session JSON
-    _prev=$(grep -o '"chime"[[:space:]]*:[[:space:]]*"[^"]*"' "$_session_file" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
+    _prev=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
     if [[ -n "$_prev" && "$_prev" != "random" ]]; then
       _resolved_style="$_prev"
     fi
@@ -202,7 +158,7 @@ fi
 
 # On SessionStart, prune stale session files older than 7 days
 if [[ "$EVENT" == "SessionStart" ]]; then
-  find "$_SESSION_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+  find "$NF_SESSION_DIR" -type f -mtime +7 -delete 2>/dev/null || true
 fi
 
 # Exit early if terminal bell is off and chime volume is 0

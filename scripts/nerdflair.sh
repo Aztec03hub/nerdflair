@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # nerdflair — Configure Claude Code statusline layout and width.
 #
 # Usage:
@@ -23,67 +24,26 @@
 # Spinner verbs are written directly to ~/.claude/settings.json (spinnerVerbs field).
 # The statusline script reads this file on every render.
 
-STATE_FILE="$HOME/.claude/nerdflair/state.json"
-VALID_MODES="full compact minimal"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+_nf_require_jq
 
 # Ensure the directory exists
-mkdir -p "$(dirname "$STATE_FILE")"
+mkdir -p "$(dirname "$NF_STATE_FILE")"
 
-# Read current state
-current_mode="full"
-current_width="auto"
-current_flair="true"
-current_color="vibrant"
-current_terminal_bell="on"
-current_chime_sound="Glass"
-current_chime_style="random"
-current_chime_events="Notification,PermissionRequest,SessionEnd,SessionStart,Stop"
-current_chime_volume="1"
-if [[ -f "$STATE_FILE" ]]; then
-  current_mode=$(cat "$STATE_FILE" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_width=$(cat "$STATE_FILE" | grep -o '"width"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_flair=$(cat "$STATE_FILE" | grep -o '"flair"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*:[[:space:]]*//')
-  current_color=$(cat "$STATE_FILE" | grep -o '"color"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_terminal_bell=$(cat "$STATE_FILE" | grep -o '"terminal_bell"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_chime_sound=$(cat "$STATE_FILE" | grep -o '"chime_sound"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_chime_style=$(cat "$STATE_FILE" | grep -o '"chime_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_chime_events=$(cat "$STATE_FILE" | grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_chime_volume=$(cat "$STATE_FILE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_last_session=$(cat "$STATE_FILE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  current_chime_recent_styles=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$STATE_FILE" | head -1)
-  current_mode="${current_mode:-full}"
-  current_width="${current_width:-auto}"
-  current_flair="${current_flair:-true}"
-  # Legacy migration: "default" color → "vibrant"
-  if [[ "$current_color" == "default" ]]; then
-    current_color="vibrant"
-  fi
-  current_color="${current_color:-vibrant}"
-  # Legacy migration: read old "bell" field if new fields are missing
-  if [[ -z "$current_terminal_bell" ]]; then
-    _old_bell=$(cat "$STATE_FILE" | grep -o '"bell"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-    case "$_old_bell" in
-      both)   current_terminal_bell="on" ;;
-      visual) current_terminal_bell="on"; current_chime_volume="0" ;;
-      audio)  current_terminal_bell="off" ;;
-      off)    current_terminal_bell="off"; current_chime_volume="0" ;;
-    esac
-  fi
-  current_terminal_bell="${current_terminal_bell:-on}"
-  current_chime_sound="${current_chime_sound:-Glass}"
-  if [[ -z "$current_chime_style" ]]; then
-    current_chime_style=$(cat "$STATE_FILE" | grep -o '"audio_style"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  fi
-  current_chime_style="${current_chime_style:-random}"
-  if [[ -z "$current_chime_events" ]]; then
-    current_chime_events=$(cat "$STATE_FILE" | grep -o '"audio_events"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  fi
-  current_chime_events="${current_chime_events:-Notification,PermissionRequest,SessionEnd,SessionStart,Stop}"
-  if [[ -z "$current_chime_volume" ]]; then
-    current_chime_volume=$(cat "$STATE_FILE" | grep -o '"bell_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  fi
-  current_chime_volume="${current_chime_volume:-1}"
-fi
+# Read current state (populates NF_CUR_* variables with legacy migration)
+_nf_read_state
+
+# Alias NF_CUR_* to current_* for readability in this script
+current_mode="$NF_CUR_MODE"
+current_width="$NF_CUR_WIDTH"
+current_color="$NF_CUR_COLOR"
+current_terminal_bell="$NF_CUR_TERMINAL_BELL"
+current_chime_sound="$NF_CUR_CHIME_SOUND"
+current_chime_style="$NF_CUR_CHIME_STYLE"
+current_chime_events="$NF_CUR_CHIME_EVENTS"
+current_chime_volume="$NF_CUR_CHIME_VOLUME"
 
 # ── Parse arguments ──────────────────────────────────────────────
 next_mode=""
@@ -106,9 +66,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     layout)
       if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
-        if ! echo "$VALID_MODES" | grep -qw "$2"; then
-          printf '\033[38;2;224;108;117m✗ Unknown layout "%s"\033[0m\n' "$2"
-          printf '  Valid layouts: %s\n' "$VALID_MODES"
+        if ! echo "$NF_VALID_MODES" | grep -qw "$2"; then
+          printf '%b✗ Unknown layout "%s"%b\n' "$NF_RED" "$2" "$NF_RST"
+          printf '  Valid layouts: %s\n' "$NF_VALID_MODES"
           exit 1
         fi
         next_mode="$2"
@@ -120,7 +80,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     width|--width|-w)
       if [[ -z "${2:-}" ]]; then
-        printf '\033[38;2;224;108;117m✗ width requires a value (number or "auto")\033[0m\n'
+        printf '%b✗ width requires a value (number or "auto")%b\n' "$NF_RED" "$NF_RST"
         exit 1
       fi
       if [[ "$2" == "auto" ]]; then
@@ -128,14 +88,14 @@ while [[ $# -gt 0 ]]; do
       elif [[ "$2" =~ ^[0-9]+$ ]] && (( $2 >= 50 && $2 <= 150 )); then
         next_width="$2"
       else
-        printf '\033[38;2;224;108;117m✗ Width must be 50-150 or "auto"\033[0m\n'
+        printf '%b✗ Width must be 50-150 or "auto"%b\n' "$NF_RED" "$NF_RST"
         exit 1
       fi
       shift 2
       ;;
     flair)
       # Legacy: flair is always on (texture always shown)
-      printf '\033[38;2;120;135;155mFlair is always on — texture is always shown.\033[0m\n'
+      printf '%bFlair is always on — texture is always shown.%b\n' "$NF_DIM" "$NF_RST"
       exit 0
       ;;
     terminal-bell|bell)
@@ -183,19 +143,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     chime-volume|volume)
       if [[ -z "${2:-}" ]]; then
-        printf '\033[38;2;224;108;117m✗ chime-volume requires a value (0-100)\033[0m\n'
+        printf '%b✗ chime-volume requires a value (0-100)%b\n' "$NF_RED" "$NF_RST"
         exit 1
       fi
       _vol="$2"
       if [[ "$_vol" =~ ^[0-9]+%?$ ]]; then
         _vol="${_vol%\%}"
         if (( _vol < 0 || _vol > 100 )); then
-          printf '\033[38;2;224;108;117m✗ Volume must be 0-100\033[0m\n'
+          printf '%b✗ Volume must be 0-100%b\n' "$NF_RED" "$NF_RST"
           exit 1
         fi
         set_volume=$(awk -v v="$_vol" 'BEGIN {printf "%.2f", v / 100}')
       else
-        printf '\033[38;2;224;108;117m✗ Volume must be 0-100 (integer)\033[0m\n'
+        printf '%b✗ Volume must be 0-100 (integer)%b\n' "$NF_RED" "$NF_RST"
         exit 1
       fi
       shift 2
@@ -203,22 +163,14 @@ while [[ $# -gt 0 ]]; do
     spinner-verbs|spinner)
       # Toggle nerdflair spinner verbs in ~/.claude/settings.json
       # Reads verbs from assets/text/spinners.txt (one per line)
-      _settings_file="$HOME/.claude/settings.json"
-      SCRIPT_DIR_SV="$(cd "$(dirname "$0")" && pwd)"
-      _verbs_file="$(cd "$SCRIPT_DIR_SV/../assets/text" 2>/dev/null && pwd)/spinners.txt"
+      _verbs_file="$(cd "$SCRIPT_DIR/../assets/text" 2>/dev/null && pwd)/spinners.txt"
       _sv_action="${2:-__toggle__}"
       shift
       [[ "$_sv_action" != "__toggle__" ]] && shift
 
-      CYAN='\033[38;2;86;182;194m'
-      GREEN='\033[38;2;152;195;121m'
-      DIM='\033[38;2;120;135;155m'
-      RED='\033[38;2;224;108;117m'
-      RST='\033[0m'
-
       # Check if nerdflair verbs are currently enabled
       _sv_enabled=false
-      if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+      if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
         _sv_enabled=true
       fi
 
@@ -239,52 +191,52 @@ while [[ $# -gt 0 ]]; do
         if [[ "$_target" == "on" ]]; then
           # Read verbs from file
           if [[ ! -f "$_verbs_file" ]]; then
-            printf "${RED}✗ Verbs file not found: %s${RST}\n" "$_verbs_file"
+            printf '%b✗ Verbs file not found: %s%b\n' "$NF_RED" "$_verbs_file" "$NF_RST"
             exit 1
           fi
           _verbs_json=$(jq -R -s '[split("\n")[] | select(length > 0)]' < "$_verbs_file")
           _count=$(echo "$_verbs_json" | jq 'length')
           if [[ "$_count" -eq 0 ]]; then
-            printf "${RED}✗ No verbs found in %s${RST}\n" "$_verbs_file"
+            printf '%b✗ No verbs found in %s%b\n' "$NF_RED" "$_verbs_file" "$NF_RST"
             exit 1
           fi
           # Back up existing spinnerVerbs if they exist and aren't nerdflair's
-          if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
+          if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
             # Check for a known nerdflair verb as fingerprint
-            _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Chugging an estus flask"))) | length > 0' "$_settings_file")
+            _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Chugging an estus flask"))) | length > 0' "$NF_SETTINGS_FILE")
             if [[ "$_is_nerdflair" != "true" ]]; then
               mkdir -p "$(dirname "$_backup_file")"
-              jq '.spinnerVerbs' "$_settings_file" > "$_backup_file"
-              printf "${CYAN}↗ Backed up existing spinner verbs to %s${RST}\n" "$_backup_file"
+              jq '.spinnerVerbs' "$NF_SETTINGS_FILE" > "$_backup_file"
+              printf '%b↗ Backed up existing spinner verbs to %s%b\n' "$NF_CYAN" "$_backup_file" "$NF_RST"
             fi
           fi
           # Write to settings.json
-          if [[ ! -f "$_settings_file" ]]; then
-            echo '{}' > "$_settings_file"
+          if [[ ! -f "$NF_SETTINGS_FILE" ]]; then
+            echo '{}' > "$NF_SETTINGS_FILE"
           fi
-          _tmp="$_settings_file.tmp.$$"
-          jq --argjson verbs "$_verbs_json" '.spinnerVerbs = {"mode": "replace", "verbs": $verbs}' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
-          printf "${GREEN}✓ Spinner verbs: on${RST} (%s verbs loaded). Restart Claude Code to apply.\n" "$_count"
+          _tmp="$NF_SETTINGS_FILE.tmp.$$"
+          jq --argjson verbs "$_verbs_json" '.spinnerVerbs = {"mode": "replace", "verbs": $verbs}' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+          printf '%b✓ Spinner verbs: on%b (%s verbs loaded). Restart Claude Code to apply.\n' "$NF_GREEN" "$NF_RST" "$_count"
         else
           # Restore backed-up spinnerVerbs, or remove entirely
           if [[ -f "$_backup_file" ]]; then
             _backup_json=$(cat "$_backup_file")
-            _tmp="$_settings_file.tmp.$$"
-            jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+            _tmp="$NF_SETTINGS_FILE.tmp.$$"
+            jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
             rm "$_backup_file"
-            printf "${GREEN}✓ Spinner verbs: restored${RST} (previous verbs recovered from backup). Restart Claude Code to apply.\n"
+            printf '%b✓ Spinner verbs: restored%b (previous verbs recovered from backup). Restart Claude Code to apply.\n' "$NF_GREEN" "$NF_RST"
           else
-            if [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
-              _tmp="$_settings_file.tmp.$$"
-              jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
+            if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
+              _tmp="$NF_SETTINGS_FILE.tmp.$$"
+              jq 'del(.spinnerVerbs)' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
             fi
-            printf "${GREEN}✓ Spinner verbs: off${RST} (back to defaults). Restart Claude Code to apply.\n"
+            printf '%b✓ Spinner verbs: off%b (back to defaults). Restart Claude Code to apply.\n' "$NF_GREEN" "$NF_RST"
           fi
         fi
         exit 0
 
       else
-        printf "${RED}✗ Unknown spinner-verbs action \"%s\"${RST}\n" "$_sv_action"
+        printf '%b✗ Unknown spinner-verbs action "%s"%b\n' "$NF_RED" "$_sv_action" "$NF_RST"
         printf '  Usage: nerdflair spinner-verbs [enable|disable]\n'
         exit 1
       fi
@@ -297,7 +249,7 @@ while [[ $# -gt 0 ]]; do
       if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
         case "$2" in
           vibrant|muted|mono) set_color="$2"; shift 2 ;;
-          *) printf '\033[38;2;224;108;117m✗ Unknown palette "%s"\033[0m\n' "$2"
+          *) printf '%b✗ Unknown palette "%s"%b\n' "$NF_RED" "$2" "$NF_RST"
              printf '  Valid palettes: vibrant, muted, mono\n'
              exit 1 ;;
         esac
@@ -308,58 +260,52 @@ while [[ $# -gt 0 ]]; do
       ;;
     uninstall)
       # Remove all nerdflair traces from ~/.claude
-      _settings_file="$HOME/.claude/settings.json"
       _nerdflair_dir="$HOME/.claude/nerdflair"
 
-      RED='\033[38;2;224;108;117m'
-      GREEN='\033[38;2;152;195;121m'
-      DIM='\033[38;2;120;135;155m'
-      RST='\033[0m'
-
-      printf "${DIM}Uninstalling nerdflair...${RST}\n"
+      printf '%bUninstalling nerdflair...%b\n' "$NF_DIM" "$NF_RST"
 
       # Restore or remove spinnerVerbs from settings.json
       _backup_file="$_nerdflair_dir/spinnerVerbs.backup.json"
       if [[ -f "$_backup_file" ]]; then
         _backup_json=$(cat "$_backup_file")
-        _tmp="$_settings_file.tmp.$$"
-        jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
-        printf "  ${GREEN}✓${RST} Restored previous spinnerVerbs from backup\n"
-      elif [[ -f "$_settings_file" ]] && jq -e '.spinnerVerbs' "$_settings_file" &>/dev/null; then
-        _tmp="$_settings_file.tmp.$$"
-        jq 'del(.spinnerVerbs)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
-        printf "  ${GREEN}✓${RST} Removed spinnerVerbs from settings.json\n"
+        _tmp="$NF_SETTINGS_FILE.tmp.$$"
+        jq --argjson sv "$_backup_json" '.spinnerVerbs = $sv' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+        printf '  %b✓%b Restored previous spinnerVerbs from backup\n' "$NF_GREEN" "$NF_RST"
+      elif [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
+        _tmp="$NF_SETTINGS_FILE.tmp.$$"
+        jq 'del(.spinnerVerbs)' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+        printf '  %b✓%b Removed spinnerVerbs from settings.json\n' "$NF_GREEN" "$NF_RST"
       else
-        printf "  ${DIM}· No spinnerVerbs in settings.json${RST}\n"
+        printf '  %b· No spinnerVerbs in settings.json%b\n' "$NF_DIM" "$NF_RST"
       fi
 
       # Remove statusLine from settings.json
-      if [[ -f "$_settings_file" ]] && jq -e '.statusLine' "$_settings_file" &>/dev/null; then
-        _tmp="$_settings_file.tmp.$$"
-        jq 'del(.statusLine)' "$_settings_file" > "$_tmp" && mv "$_tmp" "$_settings_file"
-        printf "  ${GREEN}✓${RST} Removed statusLine from settings.json\n"
+      if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.statusLine' "$NF_SETTINGS_FILE" &>/dev/null; then
+        _tmp="$NF_SETTINGS_FILE.tmp.$$"
+        jq 'del(.statusLine)' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+        printf '  %b✓%b Removed statusLine from settings.json\n' "$NF_GREEN" "$NF_RST"
       else
-        printf "  ${DIM}· No statusLine in settings.json${RST}\n"
+        printf '  %b· No statusLine in settings.json%b\n' "$NF_DIM" "$NF_RST"
       fi
 
       # Remove nerdflair data directory
       if [[ -d "$_nerdflair_dir" ]]; then
         rm -rf "$_nerdflair_dir"
-        printf "  ${GREEN}✓${RST} Removed ~/.claude/nerdflair/\n"
+        printf '  %b✓%b Removed ~/.claude/nerdflair/\n' "$NF_GREEN" "$NF_RST"
       else
-        printf "  ${DIM}· No ~/.claude/nerdflair/ directory${RST}\n"
+        printf '  %b· No ~/.claude/nerdflair/ directory%b\n' "$NF_DIM" "$NF_RST"
       fi
 
-      printf "\n${GREEN}✓ Uninstall complete.${RST} Restart Claude Code to apply.\n"
-      printf "${DIM}  The plugin files themselves remain in place — disable or remove\n"
-      printf "  the plugin from Claude Code settings to fully remove.${RST}\n"
+      printf '\n%b✓ Uninstall complete.%b Restart Claude Code to apply.\n' "$NF_GREEN" "$NF_RST"
+      printf '%b  The plugin files themselves remain in place — disable or remove\n' "$NF_DIM"
+      printf '  the plugin from Claude Code settings to fully remove.%b\n' "$NF_RST"
       exit 0
       ;;
     *)
       # Treat as layout mode for backwards compat
       if [[ -z "$next_mode" ]]; then
-        if ! echo "$VALID_MODES" | grep -qw "$1"; then
-          printf '\033[38;2;224;108;117m✗ Unknown command "%s"\033[0m\n' "$1"
+        if ! echo "$NF_VALID_MODES" | grep -qw "$1"; then
+          printf '%b✗ Unknown command "%s"%b\n' "$NF_RED" "$1" "$NF_RST"
           printf '  Commands: chime-events, chime-style, chime-volume, color-palette,\n'
           printf '            layout, spinner-verbs, terminal-bell, uninstall, width\n'
           exit 1
@@ -373,49 +319,43 @@ done
 
 # ── Info mode: print current state and exit ─────────────────────
 if [[ "$show_info" == "true" ]]; then
-  CYAN='\033[38;2;86;182;194m'
-  DIM='\033[38;2;120;135;155m'
-  GREEN='\033[38;2;152;195;121m'
-  RST='\033[0m'
-
   case "$current_mode" in
     full)    mode_desc="3 rows -- folder/branch, progress bar, mcp/cost" ;;
     compact) mode_desc="2 rows -- folder/branch, progress bar (cost in bar)" ;;
     minimal) mode_desc="1 row  -- progress bar only" ;;
   esac
 
-  printf "${CYAN}Statusline: %s${RST} (%s)" "$current_mode" "$mode_desc"
+  printf '%bStatusline: %s%b (%s)' "$NF_CYAN" "$current_mode" "$NF_RST" "$mode_desc"
   if [[ "$current_width" == "auto" ]]; then
-    printf " ${DIM}width: auto${RST}"
+    printf ' %bwidth: auto%b' "$NF_DIM" "$NF_RST"
   else
-    printf " ${DIM}width: %s${RST}" "$current_width"
+    printf ' %bwidth: %s%b' "$NF_DIM" "$current_width" "$NF_RST"
   fi
   if [[ "$current_terminal_bell" == "on" ]]; then
-    printf " ${GREEN}terminal-bell: on${RST}"
+    printf ' %bterminal-bell: on%b' "$NF_GREEN" "$NF_RST"
   else
-    printf " ${DIM}terminal-bell: off${RST}"
+    printf ' %bterminal-bell: off%b' "$NF_DIM" "$NF_RST"
   fi
   _vol_pct=$(awk -v v="$current_chime_volume" 'BEGIN {printf "%g", v * 100}')
   if [[ "$_vol_pct" == "0" ]]; then
-    printf " ${DIM}chime-volume: muted${RST}"
+    printf ' %bchime-volume: muted%b' "$NF_DIM" "$NF_RST"
   else
-    printf " ${GREEN}chime-volume: %s%%${RST} ${DIM}(%s)${RST}" "$_vol_pct" "$current_chime_style"
+    printf ' %bchime-volume: %s%%%b %b(%s)%b' "$NF_GREEN" "$_vol_pct" "$NF_RST" "$NF_DIM" "$current_chime_style" "$NF_RST"
     _evt_count=$(echo "$current_chime_events" | tr ',' '\n' | grep -c . || true)
-    printf " ${DIM}(%s events)${RST}" "$_evt_count"
+    printf ' %b(%s events)%b' "$NF_DIM" "$_evt_count" "$NF_RST"
   fi
   if [[ "$current_color" == "vibrant" ]]; then
-    printf " ${DIM}color-palette: vibrant${RST}"
+    printf ' %bcolor-palette: vibrant%b' "$NF_DIM" "$NF_RST"
   elif [[ "$current_color" == "mono" ]]; then
-    printf " ${GREEN}color-palette: mono${RST}"
+    printf ' %bcolor-palette: mono%b' "$NF_GREEN" "$NF_RST"
   elif [[ "$current_color" == "muted" ]]; then
-    printf " ${GREEN}color-palette: muted${RST}"
+    printf ' %bcolor-palette: muted%b' "$NF_GREEN" "$NF_RST"
   fi
-  _sv_settings="$HOME/.claude/settings.json"
-  if [[ -f "$_sv_settings" ]] && jq -e '.spinnerVerbs' "$_sv_settings" &>/dev/null; then
-    _sv_count=$(jq '.spinnerVerbs.verbs | length' "$_sv_settings")
-    printf " ${GREEN}spinner-verbs: on (%s)${RST}" "$_sv_count"
+  if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
+    _sv_count=$(jq '.spinnerVerbs.verbs | length' "$NF_SETTINGS_FILE")
+    printf ' %bspinner-verbs: on (%s)%b' "$NF_GREEN" "$_sv_count" "$NF_RST"
   else
-    printf " ${DIM}spinner-verbs: off${RST}"
+    printf ' %bspinner-verbs: off%b' "$NF_DIM" "$NF_RST"
   fi
   printf '\n'
   exit 0
@@ -437,7 +377,6 @@ fi
 next_chime_sound="$current_chime_sound"
 
 # Handle chime-style: cycle or set directly
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AUDIO_DIR="$(cd "$SCRIPT_DIR/../assets/audio" 2>/dev/null && pwd)" || AUDIO_DIR=""
 _available_styles=("random")
 if [[ -n "$AUDIO_DIR" && -d "$AUDIO_DIR" ]]; then
@@ -458,7 +397,7 @@ if [[ -n "$set_chime_style" ]]; then
   if [[ -n "$_matched" ]]; then
     next_chime_style="$_matched"
   else
-    printf '\033[38;2;224;108;117m✗ Unknown chime style "%s"\033[0m\n' "$set_chime_style"
+    printf '%b✗ Unknown chime style "%s"%b\n' "$NF_RED" "$set_chime_style" "$NF_RST"
     printf '  Available: %s\n' "${_available_styles[*]}"
     exit 1
   fi
@@ -478,34 +417,29 @@ elif [[ "$cycle_chime_style" == "true" ]]; then
 fi
 
 # Handle chime-events: toggle individual events or show current
-ALL_CHIME_EVENTS="Notification PermissionRequest PreCompact SessionEnd SessionStart Stop UserPromptSubmit"
 next_chime_events="$current_chime_events"
 if [[ "$toggle_chime_event" == "__show__" ]]; then
-  CYAN='\033[38;2;86;182;194m'
-  GREEN='\033[38;2;152;195;121m'
-  DIM='\033[38;2;120;135;155m'
-  RST='\033[0m'
-  printf "${CYAN}Chime events:${RST}\n"
-  for evt in $ALL_CHIME_EVENTS; do
+  printf '%bChime events:%b\n' "$NF_CYAN" "$NF_RST"
+  for evt in $NF_ALL_CHIME_EVENTS; do
     if echo ",$current_chime_events," | grep -q ",$evt,"; then
-      printf "  ${GREEN}✓ %s${RST}\n" "$evt"
+      printf '  %b✓ %s%b\n' "$NF_GREEN" "$evt" "$NF_RST"
     else
-      printf "  ${DIM}✗ %s${RST}\n" "$evt"
+      printf '  %b✗ %s%b\n' "$NF_DIM" "$evt" "$NF_RST"
     fi
   done
-  printf "\n${DIM}Toggle with: nerdflair chime-events <EventName>${RST}\n"
+  printf '\n%bToggle with: nerdflair chime-events <EventName>%b\n' "$NF_DIM" "$NF_RST"
   exit 0
 elif [[ -n "$toggle_chime_event" ]]; then
   _valid_event=false
-  for evt in $ALL_CHIME_EVENTS; do
+  for evt in $NF_ALL_CHIME_EVENTS; do
     if [[ "$evt" == "$toggle_chime_event" ]]; then
       _valid_event=true
       break
     fi
   done
   if [[ "$_valid_event" == "false" ]]; then
-    printf '\033[38;2;224;108;117m✗ Unknown event "%s"\033[0m\n' "$toggle_chime_event"
-    printf '  Valid events: %s\n' "$ALL_CHIME_EVENTS"
+    printf '%b✗ Unknown event "%s"%b\n' "$NF_RED" "$toggle_chime_event" "$NF_RST"
+    printf '  Valid events: %s\n' "$NF_ALL_CHIME_EVENTS"
     exit 1
   fi
   if echo ",$current_chime_events," | grep -q ",$toggle_chime_event,"; then
@@ -552,60 +486,52 @@ next_mode="${next_mode:-$current_mode}"
 next_width="${next_width:-$current_width}"
 next_chime_volume="${set_volume:-$current_chime_volume}"
 
-# Write new state (preserve renderer-managed fields)
-_extra=""
-if [[ -n "$current_last_session" ]]; then
-  _extra=", \"last_session\": \"${current_last_session}\""
-fi
-if [[ -n "$current_chime_recent_styles" ]]; then
-  _extra="${_extra}, ${current_chime_recent_styles}"
-fi
-_tmp_state="${STATE_FILE}.tmp.$$"
-cat > "$_tmp_state" << EOF
-{"mode": "$next_mode", "width": "$next_width", "flair": $next_flair, "terminal_bell": "$next_terminal_bell", "chime_sound": "$next_chime_sound", "chime_volume": "$next_chime_volume", "chime_style": "$next_chime_style", "chime_events": "$next_chime_events", "color": "$next_color"${_extra}}
-EOF
-mv "$_tmp_state" "$STATE_FILE"
+# Write new state using jq (preserves chime_recent_styles automatically)
+NF_CUR_MODE="$next_mode"
+NF_CUR_WIDTH="$next_width"
+NF_CUR_FLAIR="$next_flair"
+NF_CUR_TERMINAL_BELL="$next_terminal_bell"
+NF_CUR_CHIME_SOUND="$next_chime_sound"
+NF_CUR_CHIME_VOLUME="$next_chime_volume"
+NF_CUR_CHIME_STYLE="$next_chime_style"
+NF_CUR_CHIME_EVENTS="$next_chime_events"
+NF_CUR_COLOR="$next_color"
+_nf_write_state
 
 # ── Visual feedback ──────────────────────────────────────────────
-CYAN='\033[38;2;86;182;194m'
-DIM='\033[38;2;120;135;155m'
-GREEN='\033[38;2;152;195;121m'
-RED='\033[38;2;224;108;117m'
-RST='\033[0m'
-
 case "$next_mode" in
   full)    mode_desc="3 rows -- folder/branch, progress bar, mcp/cost" ;;
   compact) mode_desc="2 rows -- folder/branch, progress bar (cost in bar)" ;;
   minimal) mode_desc="1 row  -- progress bar only" ;;
 esac
 
-printf "${CYAN}⟳ Statusline → %s${RST} (%s)" "$next_mode" "$mode_desc"
+printf '%b⟳ Statusline → %s%b (%s)' "$NF_CYAN" "$next_mode" "$NF_RST" "$mode_desc"
 
 if [[ "$next_width" == "auto" ]]; then
-  printf " ${DIM}width: auto${RST}"
+  printf ' %bwidth: auto%b' "$NF_DIM" "$NF_RST"
 else
-  printf " ${DIM}width: %s${RST}" "$next_width"
+  printf ' %bwidth: %s%b' "$NF_DIM" "$next_width" "$NF_RST"
 fi
 
 if [[ "$next_terminal_bell" == "on" ]]; then
-  printf " ${GREEN}terminal-bell: on${RST}"
+  printf ' %bterminal-bell: on%b' "$NF_GREEN" "$NF_RST"
 else
-  printf " ${DIM}terminal-bell: off${RST}"
+  printf ' %bterminal-bell: off%b' "$NF_DIM" "$NF_RST"
 fi
 _vol_pct=$(awk -v v="$next_chime_volume" 'BEGIN {printf "%g", v * 100}')
 if [[ "$_vol_pct" == "0" ]]; then
-  printf " ${DIM}chime-volume: muted${RST}"
+  printf ' %bchime-volume: muted%b' "$NF_DIM" "$NF_RST"
 else
-  printf " ${GREEN}chime-volume: %s%%${RST} ${DIM}(%s)${RST}" "$_vol_pct" "$next_chime_style"
+  printf ' %bchime-volume: %s%%%b %b(%s)%b' "$NF_GREEN" "$_vol_pct" "$NF_RST" "$NF_DIM" "$next_chime_style" "$NF_RST"
   _evt_count=$(echo "$next_chime_events" | tr ',' '\n' | grep -c . || true)
-  printf " ${DIM}(%s events)${RST}" "$_evt_count"
+  printf ' %b(%s events)%b' "$NF_DIM" "$_evt_count" "$NF_RST"
 fi
 
 if [[ "$next_color" == "vibrant" ]]; then
-  printf " ${DIM}color-palette: vibrant${RST}"
+  printf ' %bcolor-palette: vibrant%b' "$NF_DIM" "$NF_RST"
 elif [[ "$next_color" == "mono" ]]; then
-  printf " ${GREEN}color-palette: mono${RST}"
+  printf ' %bcolor-palette: mono%b' "$NF_GREEN" "$NF_RST"
 elif [[ "$next_color" == "muted" ]]; then
-  printf " ${GREEN}color-palette: muted${RST}"
+  printf ' %bcolor-palette: muted%b' "$NF_GREEN" "$NF_RST"
 fi
 printf '\n'
