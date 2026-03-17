@@ -701,6 +701,18 @@ fi
 row3_left="\033[0m"
 if [[ -n "$_mcp_to_use" ]]; then
   row3_left+="${_mcp_to_use}"
+elif [[ -n "$time_segment" || -n "$cost_segment" ]]; then
+  # No MCP servers — show time/cost on the left instead of right
+  if [[ -n "$time_segment" ]]; then
+    row3_left+="$time_segment"
+    [[ -n "$cost_segment" ]] && row3_left+="${BULLET}${cost_segment}"
+  else
+    row3_left+="$cost_segment"
+  fi
+  # Clear from right side to avoid duplication
+  row3_right="\033[0m"
+  [[ -n "$_chime_segment" ]] && row3_right+="$_chime_segment"
+  _row3_right_len=$(_vis_len "$row3_right")
 fi
 
 # ── Row 2: progress bar with Powerline caps ─────────────────────
