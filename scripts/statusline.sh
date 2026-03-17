@@ -236,7 +236,8 @@ if [[ -n "$_display_dir" ]]; then
   # Folder name: based on project_dir (launch directory) so it stays stable
   # even when Claude cd's into subdirectories during a session
   if [[ "$_display_dir" == "$HOME" ]]; then
-    folder_name="~"
+    folder_name=""
+    _is_home=1
   else
     folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
@@ -500,8 +501,14 @@ if [[ -n "$output_style" && "$output_style" != "default" ]]; then
 fi
 
 # Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
-chrome=7  # folder_icon(2) + bullet(3) + model_icon(2)
-[[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
+# Home icon is just 1 char with no folder name text, so chrome is smaller
+if [[ "${_is_home:-0}" == "1" ]]; then
+  chrome=7  # home_icon(2) + bullet(3) + model_icon(2)
+  [[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
+else
+  chrome=7  # folder_icon(2) + bullet(3) + model_icon(2)
+  [[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
+fi
 
 # Available text budget after chrome
 text_budget=$(( left_budget - chrome ))
@@ -574,7 +581,13 @@ if (( model_text_len > model_budget )); then
 fi
 
 # Assemble folder segment
-if [[ -n "$folder_name" ]]; then
+if [[ "${_is_home:-0}" == "1" ]]; then
+  if [[ -n "$branch" ]]; then
+    folder_segment="${BLUE} ${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+  else
+    folder_segment="${BLUE} ${RESET}"
+  fi
+elif [[ -n "$folder_name" ]]; then
   if [[ -n "$branch" ]]; then
     folder_segment="${BLUE}󰉋 ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
   else
