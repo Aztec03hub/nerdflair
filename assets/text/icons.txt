@@ -136,7 +136,7 @@
 󰲴 parachute
 󰸮 fireplace, hearth
  satellite
- lightbulb
+󰚵 lamp
 󰠆 basketball
  bell
 󰔬 train

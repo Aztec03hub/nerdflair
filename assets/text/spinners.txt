@@ -62,8 +62,8 @@
 󰯙  Linking to the past
   Offering a truce to CI
   Checking all the boxes
-  Drummin' up a solution
-  Chargin' like Shadowfax
+  Drumming up a solution
+  Charging like Shadowfax
 󰼁  Drifting through the data stream
 󰈷  Scanning for replicants
 ⏻  Power cycling the simulation
@@ -98,7 +98,7 @@
 󰛐  Peering into the palantír
   RTFM'ing
   Phoning localhost
-  Adjusting the nerd glasses
+  Adjusting nerd glasses
   Playing with Prometheus' fire
   Thinking different
   Socketing into the materia slot
@@ -118,5 +118,33 @@
 󰥫  Drinking from the Fountain of `sudo`
   Judging the book by its cover
   Being touched by His Noodly Appendage
-󰣙 So nice they built it twice
-󰙽 Tickling the algorithmic ivories
+󰣙  So nice they built it twice
+󰙽  Tickling the algorithmic ivories
+󰁥  @here'ing the entire universe
+  Unlocking the Konami code
+  Approaching Kardashev Type II
+  Kissing frogs, expecting princes
+  Extending an olive branch to main
+  Leaving the back door open
+  Yer a wizard, Harry
+  Gorging on forbidden donut
+  Unlocking tier 5 achievements
+  Painting with all the colors of hex
+󰫂  Playing Ride of the Valkyries
+  Floating like a butterfly
+  It's five o'clock somewhere in UTC
+󰲴  Controlling descent into madness
+󰸮  Keeping the home fires compiling
+  Bouncing signals off Sputnik
+󰚵  Loving lamp
+󰠆  Being like Mike
+  Asking not for whom it compiles
+󰔬  I think I can, I think I can
+󰈊  Extracting the hex color
+󱀇  Breaking the piggy bank
+  Coding with a twist of limon
+  Catching rays and raising PRs
+󰙨  Testing in production, YOLO
+  Driving down the fairway
+  Adding to cart, checking out never
+  Watson, come here, I need you

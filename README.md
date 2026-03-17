@@ -36,10 +36,10 @@ Restart Claude Code after install for the changes to take effect.
 
 ## Features
 
-- **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row with context pill)
+- **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row)
 - **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker and randomizable icon and texture decorations (flair)
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
-- **Custom spinner verbs:** 100+ themed thinking/working phrases
+- **Custom spinner verbs:** 150 themed thinking/working phrases
 - **Terminal bell**: (tab indicator) on Notification, PermissionRequest, and Stop events
 - **Audio chimes (macOS only)**: 20 styles, configurable per-event, adjustable volume
 - **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
