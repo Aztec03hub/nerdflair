@@ -2,6 +2,12 @@
 
 input=$(cat)
 
+# Buffer all output and flush at exit so Claude Code sees complete output
+# atomically — prevents partial first-render from locking statusline height.
+_SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX")
+exec 3>&1 1>"$_SL_BUF"
+trap 'cat "$_SL_BUF" >&3; rm -f "$_SL_BUF"' EXIT
+
 # ── Layout mode & width from state file ──────────────────────────
 _SL_STATE_FILE="$HOME/.claude/nerdflair/state.json"
 if [[ -f "$_SL_STATE_FILE" ]]; then

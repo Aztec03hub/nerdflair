@@ -130,7 +130,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-events
 
 Display a summary table of settings from the `info` output. Format the table as follows:
 - Bold the **Setting** and **Value** column headers
-- Title-case the values (e.g. "Full", "Vibrant", "On", "Auto", "Random") for readability
+- Title-case the values (e.g. "Full", "Vibrant", "On", "Auto", "Random (per session)") for readability
 - Alphabetize the rows by setting name
 - For chime events, list the actual enabled event names (from the `chime-events` output) instead of just a count
 - Do NOT include a "Font" row (we only check for fonts to help install -- we can't tell which font the terminal is actually using)
