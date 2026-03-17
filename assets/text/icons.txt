@@ -33,7 +33,7 @@
  star
  pinwheel
 󰇥 rubber ducky
- fish
+󰼙 oil lamp
  spider
  rocketship
  two bananas
@@ -136,7 +136,7 @@
 󰲴 parachute
 󰸮 fireplace, hearth
  satellite
-󰚵 lamp
+󰺵 videogame controller
 󰠆 basketball
  bell
 󰔬 train

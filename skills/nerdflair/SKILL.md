@@ -247,7 +247,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs disable
 - **uninstall**: removes all nerdflair traces from `~/.claude/`
   - Removes `spinnerVerbs` from `~/.claude/settings.json`
   - Removes `statusLine` from `~/.claude/settings.json`
-  - Removes `~/.claude/nerdflair/` directory (state, flair-sessions, chime-sessions)
+  - Removes `~/.claude/nerdflair/` directory (state, sessions)
   - The plugin files themselves remain in place — disable or remove the plugin from Claude Code settings to fully remove
 
 ```bash

@@ -33,7 +33,7 @@
   Wishing on a GitHub star
   Intensifying fidget spinning
 󰇥  Rubber ducky debugging
-  So long and thanks
+󰼙  Rubbing Aladdin's lamp
   Tingling the spider sense
   Engaging infinite improbability drive
   Torching the banana stand
@@ -49,7 +49,7 @@
   Pledging allegiance to the code
   Cutting the red wire
   Hailing a robotaxi
-󰷚  Mine sweeping on Windows 3.1
+󰷚  Playing Minesweeper on Windows 3.1
   Robbing the bit bank
   Granting eternal uptime
   Bullseyeing womp rats
@@ -106,7 +106,7 @@
 󰘳  Copy-pasting from Stack Overflow
 󰝨  Getting up and atom
 󰭎  Spying on neighboring repos
-󰄀  Snapping fire selfies
+󰄀  Snapping bussin selfies
 󱔎  Riding the snake
 󰯊  Weaving a tangled web
 󰯉  Invading your filesystem
@@ -136,7 +136,7 @@
 󰲴  Controlling descent into madness
 󰸮  Keeping the home fires compiling
   Bouncing signals off Sputnik
-󰚵  Loving lamp
+󰺵  Up up down down left right
 󰠆  Being like Mike
   Asking not for whom it compiles
 󰔬  I think I can, I think I can

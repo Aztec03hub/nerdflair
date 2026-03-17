@@ -111,16 +111,16 @@ if [[ "$EVENT" == "PreCompact" ]]; then
   printf '%s' "$(date +%s)" > "$_COMPACT_MARKER"
 fi
 
-# ── Resolve chime style (per-session) ──
-# Each session gets its own resolved style stored in a small file:
-#   ~/.claude/nerdflair/chime-sessions/<session_id>
+# ── Resolve chime style and bar texture (per-session) ──
+# Each session gets a JSON file: ~/.claude/nerdflair/sessions/<session_id>
+#   {"chime":"StyleName","texture":"wind"}
 # The global chime_recent_styles list in the shared state file prevents
 # repeats across sessions. The statusline reads the per-session file.
-_CHIME_STYLE_DIR="$HOME/.claude/nerdflair/chime-sessions"
-mkdir -p "$_CHIME_STYLE_DIR"
-_session_style_file=""
+_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
+mkdir -p "$_SESSION_DIR"
+_session_file=""
 if [[ -n "$_session_id" ]]; then
-  _session_style_file="$_CHIME_STYLE_DIR/${_session_id}"
+  _session_file="$_SESSION_DIR/${_session_id}"
 fi
 
 _resolved_style="$chime_style"
@@ -168,28 +168,39 @@ if [[ "$_resolved_style" == "random" ]]; then
         fi
       fi
     fi
-  elif [[ -n "$_session_style_file" && -f "$_session_style_file" ]]; then
-    # Non-SessionStart: reuse this session's resolved style
-    _prev=$(cat "$_session_style_file" 2>/dev/null || true)
+  elif [[ -n "$_session_file" && -f "$_session_file" ]]; then
+    # Non-SessionStart: reuse this session's resolved style from session JSON
+    _prev=$(grep -o '"chime"[[:space:]]*:[[:space:]]*"[^"]*"' "$_session_file" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"/\1/' || true)
     if [[ -n "$_prev" && "$_prev" != "random" ]]; then
       _resolved_style="$_prev"
     fi
   fi
 fi
 
-# Write resolved style to per-session file so the statusline can read it
-if [[ "$_resolved_style" != "random" && -n "$_session_style_file" ]]; then
-  printf '%s' "$_resolved_style" > "$_session_style_file"
+# On SessionStart, pick a random bar texture
+_BAR_TEXTURES=(Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop)
+_resolved_texture=""
+if [[ "$EVENT" == "SessionStart" ]]; then
+  _resolved_texture="${_BAR_TEXTURES[$((RANDOM % ${#_BAR_TEXTURES[@]}))]}"
+fi
+
+# Write session file as JSON
+if [[ -n "$_session_file" ]]; then
+  if [[ "$EVENT" == "SessionStart" ]]; then
+    printf '{"chime":"%s","texture":"%s"}\n' "$_resolved_style" "$_resolved_texture" > "$_session_file"
+  elif [[ "$_resolved_style" != "random" && ! -f "$_session_file" ]]; then
+    printf '{"chime":"%s"}\n' "$_resolved_style" > "$_session_file"
+  fi
 fi
 
 # Clean up per-session file on SessionEnd
-if [[ "$EVENT" == "SessionEnd" && -n "$_session_style_file" && -f "$_session_style_file" ]]; then
-  rm -f "$_session_style_file"
+if [[ "$EVENT" == "SessionEnd" && -n "$_session_file" && -f "$_session_file" ]]; then
+  rm -f "$_session_file"
 fi
 
 # On SessionStart, prune stale session files older than 7 days
 if [[ "$EVENT" == "SessionStart" ]]; then
-  find "$_CHIME_STYLE_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+  find "$_SESSION_DIR" -type f -mtime +7 -delete 2>/dev/null || true
 fi
 
 # Exit early if terminal bell is off and chime volume is 0

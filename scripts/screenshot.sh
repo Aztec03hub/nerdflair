@@ -89,7 +89,7 @@ MCPEOF
 render_variation() {
   local mode="$1"
   local color="$2"
-  local flair_seed="${3:-42}"
+  local texture="${3:-wind}"
   local pct_override="${4:-}"
   local label="$5"
   local bar_only="${6:-false}"
@@ -114,12 +114,12 @@ render_variation() {
 
   # Write state file into the sandboxed HOME
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" << STATEEOF
-{"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "flair_seed": $flair_seed, "last_tokens": 80000, "last_session": "$SESSION_ID"}
+{"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "last_tokens": 80000, "last_session": "$SESSION_ID"}
 STATEEOF
 
-  # Write flair seed to per-session file (statusline reads from here, not state.json)
-  mkdir -p "$FAKE_HOME/.claude/nerdflair/flair-sessions"
-  printf '%s' "$flair_seed" > "$FAKE_HOME/.claude/nerdflair/flair-sessions/$SESSION_ID"
+  # Write session file as JSON (chime style + bar texture)
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
+  printf '{"chime":"TestStyle","texture":"%s"}\n' "$texture" > "$FAKE_HOME/.claude/nerdflair/sessions/$SESSION_ID"
 
   # Build JSON payload
   local json_input json_pct json_tokens json_cost json_api_ms
@@ -169,26 +169,24 @@ JSONEOF
   fi
 }
 
-# ── Deterministic seed for layout variations ─────────────────────
-# seed % 118 == 0 → flask icon; seed % 11 == 1 → thick_dots texture
-SHARED_SEED=826
+# ── Shared texture for layout variations ─────────────────────────
+SHARED_TEXTURE="ThickDots"
 
 # ── (1) Full layout × 3 color modes ─────────────────────────────
-render_variation "full" "default" "$SHARED_SEED"  "" "Color: vibrant"
+render_variation "full" "default" "$SHARED_TEXTURE"  "" "Color: vibrant"
 
-render_variation "full" "muted"   "$SHARED_SEED"  "" "Color: muted"
+render_variation "full" "muted"   "$SHARED_TEXTURE"  "" "Color: muted"
 
-render_variation "full" "mono"    "$SHARED_SEED"  "" "Color: mono"
+render_variation "full" "mono"    "$SHARED_TEXTURE"  "" "Color: mono"
 
 # ── (2) Compact layout ───────────────────────────────────────────
-render_variation "compact" "default" "$SHARED_SEED" "" "Layout: compact"
+render_variation "compact" "default" "$SHARED_TEXTURE" "" "Layout: compact"
 
 # ── (3) Minimal layout ──────────────────────────────────────────
-render_variation "minimal" "default" "$SHARED_SEED" "" "Layout: minimal"
+render_variation "minimal" "default" "$SHARED_TEXTURE" "" "Layout: minimal"
 
 # ── (4) Context bar gallery ──────────────────────────────────────
 # Logo bar (0% context) + one bar per texture (11 textures).
-# Seeds 0-10 map to texture indices 0-10, each with a different icon.
 # Percentages are spread across the range to show the color gradient.
 
 # Centered header
@@ -202,19 +200,19 @@ _spaces=$(printf '%*s' "$_pad" '')
 printf '\n\n%s%b%s%b' "$_spaces" "$LABEL_COLOR" "$_gallery_label" "$HEADER_RESET"
 
 # Logo bar at 0%
-render_variation "compact" "default" "$SHARED_SEED"  "0"   ""  true  "0.00"  "0"
+render_variation "compact" "default" "$SHARED_TEXTURE"  "0"   ""  true  "0.00"  "0"
 
-# One bar per texture: seeds 0-10, spread across percentages
-render_variation "compact" "default" 0   "8"   ""  true  "0.47"   "120000"
-render_variation "compact" "default" 1   "15"  ""  true  "2.18"   "300000"
-render_variation "compact" "default" 2   "23"  ""  true  "5.93"   "540000"
-render_variation "compact" "default" 3   "30"  ""  true  "11.07"  "960000"
-render_variation "compact" "default" 4   "38"  ""  true  "18.42"  "1500000"
-render_variation "compact" "default" 5   "45"  ""  true  "27.65"  "2100000"
-render_variation "compact" "default" 6   "53"  ""  true  "43.19"  "3000000"
-render_variation "compact" "default" 7   "60"  ""  true  "61.84"  "4200000"
-render_variation "compact" "default" 8   "68"  ""  true  "89.37"  "5700000"
-render_variation "compact" "default" 9   "75"  ""  true  "112.50" "7800000"
-render_variation "compact" "default" 10  "83"  ""  true  "147.03" "12600000"
+# One bar per texture, spread across percentages
+render_variation "compact" "default" "Wind"           "8"   ""  true  "0.47"   "120000"
+render_variation "compact" "default" "ThickDots"      "15"  ""  true  "2.18"   "300000"
+render_variation "compact" "default" "SinWave"        "23"  ""  true  "5.93"   "540000"
+render_variation "compact" "default" "SquareWave"     "30"  ""  true  "11.07"  "960000"
+render_variation "compact" "default" "Beads"          "38"  ""  true  "18.42"  "1500000"
+render_variation "compact" "default" "Arrows"         "45"  ""  true  "27.65"  "2100000"
+render_variation "compact" "default" "DotChain"       "53"  ""  true  "43.19"  "3000000"
+render_variation "compact" "default" "Soundwaves"     "60"  ""  true  "61.84"  "4200000"
+render_variation "compact" "default" "Pulse"          "68"  ""  true  "89.37"  "5700000"
+render_variation "compact" "default" "Sparkle"        "75"  ""  true  "112.50" "7800000"
+render_variation "compact" "default" "InfinityLoop"   "83"  ""  true  "147.03" "12600000"
 
 printf '\n\n'

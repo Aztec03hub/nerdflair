@@ -18,7 +18,7 @@ TMPDIR_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 FAKE_HOME="$TMPDIR_ROOT/home"
-mkdir -p "$FAKE_HOME/.claude/nerdflair/flair-sessions"
+mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
 FAKE_CWD="$TMPDIR_ROOT/workspace/test-app"
 mkdir -p "$FAKE_CWD"
 
@@ -36,18 +36,18 @@ cat > "$FAKE_HOME/.claude.json" << 'EOF'
 {"mcpServers":{}}
 EOF
 
-TEXTURES=(wind thick_dots sin_wave square_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
+TEXTURES=(Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop)
 WIDTHS=(50 70 80 100 150)
 
 render_bar() {
-  local seed="$1"
+  local texture="$1"
   local width="$2"
 
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" << STATEEOF
 {"mode": "compact", "width": "$width", "flair": true, "color": "default", "last_session": "$SESSION_ID"}
 STATEEOF
 
-  printf '%s' "$seed" > "$FAKE_HOME/.claude/nerdflair/flair-sessions/$SESSION_ID"
+  printf '{"chime":"TestStyle","texture":"%s"}\n' "$texture" > "$FAKE_HOME/.claude/nerdflair/sessions/$SESSION_ID"
 
   local json_input
   json_input=$(cat << JSONEOF
@@ -74,12 +74,11 @@ LABEL_COLOR='\033[1;38;2;35;38;42m'
 DIM='\033[38;2;100;105;115m'
 RST='\033[0m'
 
-for seed in "${!TEXTURES[@]}"; do
-  texture="${TEXTURES[$seed]}"
+for texture in "${TEXTURES[@]}"; do
   printf '\n%b%s%b' "$LABEL_COLOR" "$texture" "$RST"
   for w in "${WIDTHS[@]}"; do
     printf '\n%b w=%s%b' "$DIM" "$w" "$RST"
-    render_bar "$seed" "$w"
+    render_bar "$texture" "$w"
   done
 done
 

@@ -364,12 +364,14 @@ test_config_width_validation() {
   _teardown
 }
 
-test_config_flair_toggle() {
+test_config_flair_always_on() {
   _setup
   _configure layout full >/dev/null 2>&1
   assert_equals "flair default true" "$(_state_field_raw "flair")" "true"
-  _configure flair >/dev/null 2>&1
-  assert_equals "flair toggled false" "$(_state_field_raw "flair")" "false"
+  # flair command is legacy — should exit 0 without changing state
+  local output
+  output=$(_configure flair 2>&1)
+  assert_contains "flair prints always-on message" "$output" "always on"
   _teardown
 }
 
@@ -521,8 +523,8 @@ test_config_legacy_default_color_migrated() {
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "default"}
 EOF
-  # Any action should migrate "default" -> "vibrant"
-  _configure flair >/dev/null 2>&1
+  # Any state-writing action should migrate "default" -> "vibrant"
+  _configure layout >/dev/null 2>&1
   assert_equals "default migrated to vibrant" "$(_state_field "color")" "vibrant"
   _teardown
 }
@@ -565,9 +567,9 @@ EOF
   echo '{"session_id":"test-new-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
   # bell.sh should pick a real style on SessionStart and write it to per-session file
   local resolved=""
-  local _session_file="$FAKE_HOME/.claude/nerdflair/chime-sessions/test-new-session"
+  local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/test-new-session"
   if [[ -f "$_session_file" ]]; then
-    resolved=$(cat "$_session_file")
+    resolved=$(head -1 "$_session_file")
   fi
   if [[ -n "$resolved" && "$resolved" != "random" ]]; then
     (( _pass++ ))
@@ -586,12 +588,80 @@ EOF
   # source=resume should cause bell.sh to exit early without creating a per-session style file
   local rc=0
   echo '{"session_id":"old-session","source":"resume"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || rc=$?
-  local _session_file="$FAKE_HOME/.claude/nerdflair/chime-sessions/old-session"
+  local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/old-session"
   if [[ ! -f "$_session_file" ]]; then
     (( _pass++ ))
   else
     (( _fail++ ))
     _errors+=("FAIL: resume should not create per-session style file, but it exists")
+  fi
+  _teardown
+}
+
+test_bell_writes_texture_on_session_start() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
+EOF
+  echo '{"session_id":"texture-test-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/texture-test-session"
+  local texture=""
+  if [[ -f "$_session_file" ]]; then
+    texture=$(grep -o '"texture"[[:space:]]*:[[:space:]]*"[^"]*"' "$_session_file" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+  fi
+  # Texture should be a known texture name
+  local _valid_textures="Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop"
+  if [[ -n "$texture" && " $_valid_textures " == *" $texture "* ]]; then
+    (( _pass++ ))
+  else
+    (( _fail++ ))
+    _errors+=("FAIL: texture should be a valid name, got '$texture'")
+  fi
+  _teardown
+}
+
+test_bell_cleans_up_session_file_on_session_end() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart,SessionEnd", "color": "vibrant"}
+EOF
+  # Create a session file via SessionStart
+  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/cleanup-session"
+  # Verify it exists
+  if [[ ! -f "$_session_file" ]]; then
+    (( _fail++ ))
+    _errors+=("FAIL: session file should exist after SessionStart")
+    _teardown
+    return
+  fi
+  # SessionEnd should remove it
+  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionEnd >/dev/null 2>&1 || true
+  if [[ ! -f "$_session_file" ]]; then
+    (( _pass++ ))
+  else
+    (( _fail++ ))
+    _errors+=("FAIL: session file should be removed after SessionEnd")
+  fi
+  _teardown
+}
+
+test_renderer_reads_texture_from_session_file() {
+  _setup
+  local state='{"mode": "full", "width": "80", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  # Write a session file with one texture
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
+  printf '{"chime":"BalladPiano","texture":"Wind"}\n' > "$FAKE_HOME/.claude/nerdflair/sessions/test-session-001"
+  local output1 output2
+  output1=$(_render "$state" "$(_make_input 42 5.00)")
+  # Change the texture — output should differ
+  printf '{"chime":"BalladPiano","texture":"Beads"}\n' > "$FAKE_HOME/.claude/nerdflair/sessions/test-session-001"
+  output2=$(_render "$state" "$(_make_input 42 5.00)")
+  if [[ "$output1" != "$output2" ]]; then
+    (( _pass++ ))
+  else
+    (( _fail++ ))
+    _errors+=("FAIL: different textures should produce different output")
   fi
   _teardown
 }

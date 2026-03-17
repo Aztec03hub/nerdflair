@@ -25,7 +25,7 @@ fi
 _SL_TERMINAL_BELL="${_SL_TERMINAL_BELL:-on}"
 _SL_CHIME_VOLUME="${_SL_CHIME_VOLUME:-1}"
 _SL_CHIME_STYLE="${_SL_CHIME_STYLE:-random}"
-# The resolved chime style is stored per-session in ~/.claude/nerdflair/chime-sessions/<session_id>
+# Per-session data (chime style, bar texture) is stored in ~/.claude/nerdflair/sessions/<session_id>
 # by bell.sh on SessionStart. The statusline reads it from there.
 # ── Sanitize external strings ─────────────────────────────────────
 # Strip backslashes so that printf '%b' cannot expand backslash-escape
@@ -345,41 +345,18 @@ if [[ -z "$total_used" ]] || ! (( total_used > 0 )) 2>/dev/null; then
   pct=0
 fi
 
-# ── Flair seed: per-session, re-randomize on 0→nonzero context ────
-# Stored in ~/.claude/nerdflair/flair-sessions/<session_id> so parallel
-# sessions don't clobber each other. Re-seeded when context transitions
-# from 0 to nonzero (new conversation or after /clear).
-_FLAIR_SESSION_DIR="$HOME/.claude/nerdflair/flair-sessions"
-mkdir -p "$_FLAIR_SESSION_DIR"
-_flair_session_file=""
-_flair_seed=""
+# ── Per-session data: chime style + bar texture ────
+# bell.sh writes ~/.claude/nerdflair/sessions/<session_id> on SessionStart:
+#   {"chime":"StyleName","texture":"wind"}
+_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
+_session_file=""
+_session_texture=""
 if [[ -n "$session_id" ]]; then
-  _flair_session_file="$_FLAIR_SESSION_DIR/${session_id}"
-  if [[ -f "$_flair_session_file" ]]; then
-    _flair_seed=$(cat "$_flair_session_file" 2>/dev/null || true)
+  _session_file="$_SESSION_DIR/${session_id}"
+  if [[ -f "$_session_file" ]]; then
+    _session_texture=$(jq -r '.texture // empty' "$_session_file" 2>/dev/null || true)
   fi
 fi
-
-if [[ -z "$_flair_seed" ]] && (( total_used > 0 )); then
-  # Context just became nonzero (first prompt, or first prompt after /clear)
-  _flair_seed=$(( $(date +%s) * 1000 + RANDOM ))
-  if [[ -n "$_flair_session_file" ]]; then
-    printf '%s' "$_flair_seed" > "$_flair_session_file"
-  fi
-elif [[ -n "$_flair_seed" ]] && (( total_used == 0 )); then
-  # Context reset to zero (/clear) — remove seed so next nonzero re-picks
-  _flair_seed=""
-  if [[ -n "$_flair_session_file" && -f "$_flair_session_file" ]]; then
-    rm -f "$_flair_session_file"
-  fi
-fi
-# On SessionStart, prune stale flair session files older than 7 days
-if [[ -n "$session_id" && -n "$_SL_LAST_SESSION" && "$session_id" != "$_SL_LAST_SESSION" ]]; then
-  find "$_FLAIR_SESSION_DIR" -type f -mtime +7 -delete 2>/dev/null || true
-fi
-
-# Chime style: bell.sh picks random styles on SessionStart and writes
-# them to per-session files in ~/.claude/nerdflair/chime-sessions/.
 
 # Persist last_session to shared state file (used by bell.sh to suppress
 # duplicate SessionStart on compaction). Re-read to avoid clobbering
@@ -648,11 +625,10 @@ row3_right="\033[0m"
 # Always resolve chime style label for display
 _chime_label=""
 if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
-  # Read this session's resolved style from its per-session file
-  _session_style_file="$HOME/.claude/nerdflair/chime-sessions/${session_id}"
+  # Read this session's resolved style from the session JSON
   _session_resolved=""
-  if [[ -n "$session_id" && -f "$_session_style_file" ]]; then
-    _session_resolved=$(cat "$_session_style_file" 2>/dev/null || true)
+  if [[ -n "$session_id" && -n "$_session_file" && -f "$_session_file" ]]; then
+    _session_resolved=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
   fi
   if [[ -n "$_session_resolved" && "$_session_resolved" != "random" ]]; then
     _chime_label="$_session_resolved"
@@ -788,16 +764,16 @@ TIER_TEXT=(
 )
 # Wind icons: darker than fill BG (~30-40 units)
 TIER_WIND=(
-  "\033[38;2;22;28;26m"     # 0–10
-  "\033[38;2;24;34;26m"     # 11–20
-  "\033[38;2;28;42;28m"     # 21–30
-  "\033[38;2;32;50;28m"     # 31–40
-  "\033[38;2;36;58;26m"     # 41–50
-  "\033[38;2;44;66;24m"     # 51–60
-  "\033[38;2;62;72;20m"     # 61–70
-  "\033[38;2;86;82;22m"     # 71–80
-  "\033[38;2;112;92;24m"    # 81–90
-  "\033[38;2;134;96;24m"    # 91–100
+  "\033[38;2;27;35;30m"     # 0–10
+  "\033[38;2;29;43;30m"     # 11–20
+  "\033[38;2;32;52;31m"     # 21–30
+  "\033[38;2;38;63;31m"     # 31–40
+  "\033[38;2;50;71;30m"     # 41–50
+  "\033[38;2;66;78;29m"     # 51–60
+  "\033[38;2;86;84;28m"     # 61–70
+  "\033[38;2;109;91;30m"    # 71–80
+  "\033[38;2;131;93;30m"    # 81–90
+  "\033[38;2;153;66;27m"    # 91–100
 )
 EMPTY_BG="\033[48;2;35;38;45m"
 EMPTY_FG="\033[38;2;35;38;45m"
@@ -843,16 +819,16 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
     "\033[38;2;110;110;110m"
   )
   TIER_WIND=(
-    "\033[38;2;30;30;30m"
-    "\033[38;2;38;38;38m"
-    "\033[38;2;48;48;48m"
-    "\033[38;2;58;58;58m"
-    "\033[38;2;70;70;70m"
-    "\033[38;2;82;82;82m"
-    "\033[38;2;97;97;97m"
-    "\033[38;2;112;112;112m"
-    "\033[38;2;132;132;132m"
-    "\033[38;2;152;152;152m"
+    "\033[38;2;28;28;28m"
+    "\033[38;2;35;35;35m"
+    "\033[38;2;44;44;44m"
+    "\033[38;2;54;54;54m"
+    "\033[38;2;66;66;66m"
+    "\033[38;2;78;78;78m"
+    "\033[38;2;92;92;92m"
+    "\033[38;2;107;107;107m"
+    "\033[38;2;126;126;126m"
+    "\033[38;2;146;146;146m"
   )
   EMPTY_BG="\033[48;2;38;38;38m"
   EMPTY_FG="\033[38;2;38;38;38m"
@@ -896,16 +872,16 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
     "\033[38;2;115;88;42m"
   )
   TIER_WIND=(
-    "\033[38;2;36;50;34m"
-    "\033[38;2;38;52;36m"
-    "\033[38;2;40;55;37m"
-    "\033[38;2;43;57;35m"
-    "\033[38;2;47;60;34m"
-    "\033[38;2;52;63;32m"
-    "\033[38;2;67;70;30m"
-    "\033[38;2;97;88;35m"
-    "\033[38;2;125;98;37m"
-    "\033[38;2;145;98;35m"
+    "\033[38;2;33;47;31m"
+    "\033[38;2;35;49;33m"
+    "\033[38;2;37;52;34m"
+    "\033[38;2;40;54;32m"
+    "\033[38;2;44;57;31m"
+    "\033[38;2;48;60;30m"
+    "\033[38;2;62;66;28m"
+    "\033[38;2;92;83;32m"
+    "\033[38;2;120;93;34m"
+    "\033[38;2;140;93;32m"
   )
   EMPTY_BG="\033[48;2;38;40;45m"
   EMPTY_FG="\033[38;2;38;40;45m"
@@ -921,9 +897,9 @@ GRAD_BG_B=(48 48 50 52  54  55  58  60  58  50)
 GRAD_TX_R=(72 74 40 40 52  65  80  94  104 118)
 GRAD_TX_G=(78 82 52 58 65  70  76  78  74  38)
 GRAD_TX_B=(74 74 38 33 30  30  33  35  34  30)
-GRAD_WN_R=(38 40 44 53 72  95  120 142 162 184)
-GRAD_WN_G=(48 58 70 84 92  98  107 110 104 46)
-GRAD_WN_B=(40 40 42 42 42  42  44  46  44  38)
+GRAD_WN_R=(27 29 32 38 50  66  86  109 131 153)
+GRAD_WN_G=(35 43 52 63 71  78  84  91  93  66)
+GRAD_WN_B=(30 30 31 31 30  29  28  30  30  27)
 
 if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   # Monochrome: dark grey → bright grey, subtle brightness ramp
@@ -933,9 +909,9 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   GRAD_TX_R=(85 90 95 105 50  55  62  72  90  110)
   GRAD_TX_G=(85 90 95 105 50  55  62  72  90  110)
   GRAD_TX_B=(85 90 95 105 50  55  62  72  90  110)
-  GRAD_WN_R=(35 43 52 62 74  86  100 118 140 170)
-  GRAD_WN_G=(35 43 52 62 74  86  100 118 140 170)
-  GRAD_WN_B=(35 43 52 62 74  86  100 118 140 170)
+  GRAD_WN_R=(28 35 44 54 66  78  92  107 126 146)
+  GRAD_WN_G=(28 35 44 54 66  78  92  107 126 146)
+  GRAD_WN_B=(28 35 44 54 66  78  92  107 126 146)
 elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   # Muted: same hue progression as default but desaturated (~40% saturation)
   GRAD_BG_R=(48 52 55 62 76  92  110 132 150 168)
@@ -944,9 +920,9 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   GRAD_TX_R=(74 76 44 45 54  66  78  90  100 110)
   GRAD_TX_G=(78 80 54 58 64  68  72  74  70  46)
   GRAD_TX_B=(74 74 42 38 34  34  36  38  37  34)
-  GRAD_WN_R=(40 44 46 53 65  80  96  118 136 154)
-  GRAD_WN_G=(44 50 57 65 75  84  91  95  90  58)
-  GRAD_WN_B=(42 42 44 46 46  46  46  48  46  42)
+  GRAD_WN_R=(33 35 37 40 44  48  62  92  120 140)
+  GRAD_WN_G=(47 49 52 54 57  60  66  83  93  93)
+  GRAD_WN_B=(31 33 34 32 31  30  28  32  34  32)
 fi
 
 # Powerline semicircle glyphs
@@ -976,16 +952,7 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
   _justified_row "$ROW_WIDTH" "$row1_left" "\033[0m"
 fi
 
-# ── Session hash for texture selection ─────────────────
-# Use flair_seed (re-randomized on context clear) for stable per-session picks.
-# Falls back to session_id hash for backwards compatibility.
-if [[ -n "$_flair_seed" ]]; then
-  _icon_hash=$_flair_seed
-elif [[ -n "$session_id" ]]; then
-  _icon_hash=$(cksum <<< "$session_id" | cut -d' ' -f1)
-else
-  _icon_hash=$PPID
-fi
+# ── Bar texture: resolved per-session by bell.sh ─────────────────
 
 # ── _render_bar: render a progress bar given pct and label ──────
 # Usage: _render_bar <pct> <label> [suffix_colored] [texture] [compact_mark_pct] [right_label]
@@ -1176,56 +1143,56 @@ _render_bar() {
   local _fill_icon_a _fill_icon_b _fill_icon_c _fill_cycle=2
   # Select texture icons
   case "$_texture" in
-    wind)
+    Wind)
       _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16
       _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
       ;;
-    thick_dots)
+    ThickDots)
       _fill_icon_a=$(printf '\xc2\xb7')      # U+00B7 middle dot (bullet)
       _fill_icon_b=$(printf '\xef\x91\x84')  # U+F444
       ;;
-    sin_wave)
+    SinWave)
       _fill_icon_a=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
       _fill_icon_b=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
       ;;
-    square_wave)
+    SquareWave)
       _fill_icon_a=$(printf '\xee\xbe\x9d')  # U+EF9D
       _fill_icon_b=$(printf '\xee\xbe\x9d')  # U+EF9D
       ;;
-    beads)
+    Beads)
       _fill_icon_a=$(printf '\xef\x85\xb2')  # U+F172
       _fill_icon_b=$(printf '\xef\x92\x8b')  # U+F48B
       ;;
-    arrows)
+    Arrows)
       _fill_icon_a=$(printf '\xef\x91\x8a')  # U+F44A (small arrow)
       _fill_icon_b=$(printf '\xee\xad\xb0')  # U+EB70
       ;;
-    sparkle)
+    Sparkle)
       _fill_icon_a=$(printf '\xf3\xb1\x8d\xbf')  # U+F137F
       _fill_icon_b=$(printf '\xc2\xb7')            # U+00B7 middle dot (bullet)
       ;;
-    dot_chain)
+    DotChain)
       _fill_icon_a=$(printf '\xef\x85\x81')  # U+F141 ellipsis (nf-fa-ellipsis_h)
       _fill_icon_b=$(printf '\xef\x85\x81')  # U+F141 ellipsis (repeated)
       ;;
-    donuts)
+    Donuts)
       _fill_icon_a=$(printf '\xee\x89\xb3')  # U+E273
       _fill_icon_b=$(printf '\xc2\xb7')      # U+00B7 middle dot (bullet)
       ;;
-    soundwaves)
+    Soundwaves)
       _fill_icon_a=$(printf '\xf3\xb1\x91\xbd')  # U+F147D
       _fill_icon_b=$(printf '\xf3\xb1\x91\xbd')  # U+F147D (repeated)
       ;;
-    pulse)
+    Pulse)
       _fill_icon_a=$(printf '\xee\x88\xb4')  # U+E234
       _fill_icon_b=$(printf '\xee\x88\xb4')  # U+E234 (repeated)
       ;;
-    infinity_loop)
+    InfinityLoop)
       _fill_icon_a=$(printf '\xef\x93\xa6')  # U+F4E6
       _fill_icon_b=$(printf '\xc2\xb7')    # U+00B7 middle dot (bullet)
       ;;
     *)
-      _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16 (fallback to wind)
+      _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16 (fallback to Wind)
       _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
       ;;
   esac
@@ -1362,7 +1329,7 @@ _render_bar() {
     else
       if (( _body_i < _filled )); then
         # Guard: use middle dot adjacent to label for textures with wide glyphs
-        if [[ "$_texture" == "sparkle" || "$_texture" == "thick_dots" || "$_texture" == "infinity_loop" ]] && (( _label_start >= 0 && ( _vis == _label_start - 1 || _vis == _label_end ) )); then
+        if [[ "$_texture" == "Sparkle" || "$_texture" == "ThickDots" || "$_texture" == "InfinityLoop" ]] && (( _label_start >= 0 && ( _vis == _label_start - 1 || _vis == _label_end ) )); then
           _bar+="${_cell_bg}${_cell_wind}·"
         else
           local _ci_mod=$(( _body_i % _fill_cycle ))
@@ -1397,9 +1364,9 @@ _render_bar() {
     "${RESET}"
 }
 
-# Select texture per session (stable like the icon)
-BAR_TEXTURES=(wind thick_dots sin_wave square_wave beads arrows dot_chain soundwaves pulse sparkle infinity_loop)
-BAR_TEXTURE="${BAR_TEXTURES[$((_icon_hash % ${#BAR_TEXTURES[@]}))]}"
+# Select texture per session (resolved by bell.sh, fallback to Wind)
+BAR_TEXTURES=(Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop)
+BAR_TEXTURE="${_session_texture:-Wind}"
 
 _bar_label="$ctx_label"
 
