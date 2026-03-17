@@ -50,6 +50,7 @@ if [[ -f "$STATE_FILE" ]]; then
   current_chime_events=$(cat "$STATE_FILE" | grep -o '"chime_events"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   current_chime_volume=$(cat "$STATE_FILE" | grep -o '"chime_volume"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   current_last_session=$(cat "$STATE_FILE" | grep -o '"last_session"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+  current_chime_recent_styles=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$STATE_FILE" | head -1)
   current_mode="${current_mode:-full}"
   current_width="${current_width:-auto}"
   current_flair="${current_flair:-true}"
@@ -555,6 +556,9 @@ next_chime_volume="${set_volume:-$current_chime_volume}"
 _extra=""
 if [[ -n "$current_last_session" ]]; then
   _extra=", \"last_session\": \"${current_last_session}\""
+fi
+if [[ -n "$current_chime_recent_styles" ]]; then
+  _extra="${_extra}, ${current_chime_recent_styles}"
 fi
 _tmp_state="${STATE_FILE}.tmp.$$"
 cat > "$_tmp_state" << EOF

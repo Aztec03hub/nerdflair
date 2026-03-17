@@ -367,18 +367,29 @@ fi
 # changes made by nerdflair.sh or bell.sh.
 if [[ -n "$session_id" && -f "$_SL_STATE_FILE" ]]; then
   _fresh_state=$(cat "$_SL_STATE_FILE")
-  _new_state=$(echo "$_fresh_state" \
-    | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
-    | sed 's/"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*//' \
-    | sed 's/"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*//' \
-    | sed 's/}[[:space:]]*$//' \
-    | sed 's/,[[:space:]]*,/,/g' \
-    | sed 's/,[[:space:]]*,/,/g' \
-    | sed 's/,[[:space:]]*$//' \
-    | sed 's/{[[:space:]]*,/{/')
-  _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '%s, "last_session": "%s"}\n' "$_new_state" "$session_id" > "$_tmp_state"
-  mv "$_tmp_state" "$_SL_STATE_FILE"
+  # If essential fields are missing (corrupt state), rebuild with defaults
+  # while preserving chime_recent_styles and last_session
+  if ! echo "$_fresh_state" | grep -q '"mode"'; then
+    _recent=$(grep -o '"chime_recent_styles"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$_SL_STATE_FILE" | head -1)
+    _extra=""
+    [[ -n "$_recent" ]] && _extra=", $_recent"
+    _tmp_state="${_SL_STATE_FILE}.tmp.$$"
+    printf '{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Notification,PermissionRequest,SessionEnd,SessionStart,Stop", "color": "vibrant", "last_session": "%s"%s}\n' "$session_id" "$_extra" > "$_tmp_state"
+    mv "$_tmp_state" "$_SL_STATE_FILE"
+  else
+    _new_state=$(echo "$_fresh_state" \
+      | sed 's/"last_session"[[:space:]]*:[[:space:]]*"[^"]*"//' \
+      | sed 's/"flair_seed"[[:space:]]*:[[:space:]]*[0-9]*//' \
+      | sed 's/"last_tokens"[[:space:]]*:[[:space:]]*[0-9]*//' \
+      | sed 's/}[[:space:]]*$//' \
+      | sed 's/,[[:space:]]*,/,/g' \
+      | sed 's/,[[:space:]]*,/,/g' \
+      | sed 's/,[[:space:]]*$//' \
+      | sed 's/{[[:space:]]*,/{/')
+    _tmp_state="${_SL_STATE_FILE}.tmp.$$"
+    printf '%s, "last_session": "%s"}\n' "$_new_state" "$session_id" > "$_tmp_state"
+    mv "$_tmp_state" "$_SL_STATE_FILE"
+  fi
 elif [[ -n "$session_id" ]]; then
   mkdir -p "$(dirname "$_SL_STATE_FILE")"
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
