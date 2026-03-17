@@ -1,7 +1,6 @@
  beaker, flask
  bomb
 󰴈 blossom, flower
-󰋸 blossom, flower
  egg
  flame
  gear
@@ -54,7 +53,6 @@
  bank, institution
  ankh
  target with bullseye
- tooth
  rabbit
  igloo
  ribbon for raising awareness
@@ -80,10 +78,9 @@
  puzzle piece
 󰚀 yin yang
 󰮯 pacman
-󰹡 circular saw
 󰆋 compass
 󱃅 flying saucer
-󱁤 crossed wrench and screwdriver
+󰖷 wrench
 󰍬 microphone
  tomato
 󰆤 sniper reticle
@@ -106,7 +103,6 @@
  apple corp icon
  gem
 󰉁 lightning
- electricity icon
 󰘳 mac command key symbol
 󰝨 electron symbol
 󰭎 telescope
@@ -115,3 +111,40 @@
 󰯊 spider web
 󰯉 alien from Space Invaders
  HackerNews icons
+ medal of honor
+ paintbrush
+󰣈 axe
+󰻳 fishbowl
+󰥫 water fountain
+ closed book
+ spaghetti monster
+󰣙 Death Start, under construction
+󰙽 piano keyboard
+󰁥 "at" symbol, signifying a username
+ key
+ shining sun or light
+ frog
+ dove
+ unlocked padlock
+ magic wand
+ frosted donut
+ trophy
+ rainbow
+󰫂 helicopter
+ butterfly
+ mug of beer
+󰲴 parachute
+󰸮 fireplace, hearth
+ satellite
+ lightbulb
+󰠆 basketball
+ bell
+󰔬 train
+󰈊 eye dropper
+󱀇 piggy bank
+ lemon
+ beach umbrella
+󰙨 test tube
+ golf ball on a tee
+ shopping cart
+ ringing telephone

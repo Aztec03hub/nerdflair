@@ -1,7 +1,6 @@
   Chugging an estus flask
   Dropping logic bombs
 󰴈  Cross-pollinating timelines
-󰋸  Fertilizing the genesis planet
   Hatching a xenomorph
   This is fine dot jpeg
   Torquing the differential
@@ -18,7 +17,7 @@
   Pumping up the health bar
 󰩃  Chasing the tail recursion
 󰞇  There can be only one
-󰮭  Eating suspicious mushrooms
+󰮭  Eating a suspicious mushroom
 󰊠  Ghosting through the firewall
 󰇊  Rolling a natural one
 󰇋  Double or nothing
@@ -28,19 +27,19 @@
 󰇏  Critting on a d6
   Falling on Newton's head
 󰭹  Engaging in witty banter
-  Double cherry power-up acquired
+  Acquiring double cherry power-up
   Fueling the all-nighter
-  Thinking nine moves ahead
+  Thinking four moves ahead
   Wishing on a GitHub star
   Intensifying fidget spinning
-󰇥  Rubber duck debugging
+󰇥  Rubber ducky debugging
   So long and thanks
   Tingling the spider sense
   Engaging infinite improbability drive
   Torching the banana stand
 󰙴  Glittering like Galadriel's phial
   Spewing liquid hot magma
-  Abby something, Abby Normal
+  Abby something...Abby Normal
   Donning the away team tunic
 󰵲  Charting a course by starlight
   Configuring SOCKS proxy
@@ -48,15 +47,14 @@
   Imagining a merge without conflicts
 󰲉  Turning on the hazards
   Pledging allegiance to the code
-  Cutting the red wire, maybe
+  Cutting the red wire
   Hailing a robotaxi
 󰷚  Mine sweeping on Windows 3.1
   Robbing the bit bank
   Granting eternal uptime
   Bullseyeing womp rats
-  Chomping on syntactic sugar
   Going down the rabbit hole
-  Hunkering down on Hoth
+  Building an igloo on Hoth
   Raising awareness for tech debt
   Reducing, reusing, refactoring
   Spinning right round baby
@@ -64,12 +62,12 @@
 󰯙  Linking to the past
   Offering a truce to CI
   Checking all the boxes
-  Drumming up a solution
+  Drummin' up a solution
   Chargin' like Shadowfax
 󰼁  Drifting through the data stream
 󰈷  Scanning for replicants
 ⏻  Power cycling the simulation
-󰐃  Connecting strings on the wall
+󰐃  Connecting red strings on the wall
   One scoop, no dependencies
   Buzzing the tower, Maverick
   Promising cake after testing
@@ -80,15 +78,14 @@
   Putting the pieces together
 󰚀  Achieving cosmic equilibrium
 󰮯  Chasing ghosts in the machine
-󰹡  Sawing off dead branches
 󰆋  Not all who wander are lost
 󱃅  Crop circling the server farm
-󱁤  Righty tighty, lefty loosey
+󰖷  Righty tighty, lefty loosey
 󰍬  Testing, testing, one two three
   Fighting killer tomatoes
 󰆤  Fragging from across the map
 󱡝  Mutating ninja turtles
-󰗑  Approaching the bench, cautiously
+󰗑  Weighing all the options
 󰊘  Gassing up the DeLorean
   Penning an immortal treatise
   Regifting legacy code
@@ -98,20 +95,28 @@
   Mixing a pan-galactic gargle blaster
 󱁇  Seeding the random generator
 󰆘  Accepting all the cookies
-󰛐  Peering through the palantír
+󰛐  Peering into the palantír
   RTFM'ing
-  Phoning home from localhost
+  Phoning localhost
   Adjusting the nerd glasses
   Playing with Prometheus' fire
   Thinking different
   Socketing into the materia slot
 󰉁  Harnessing 1.21 gigawatts
-  Amping up the voltage
 󰘳  Copy-pasting from Stack Overflow
 󰝨  Getting up and atom
 󰭎  Spying on neighboring repos
-󰄀  Snapping selfies
+󰄀  Snapping fire selfies
 󱔎  Riding the snake
 󰯊  Weaving a tangled web
 󰯉  Invading your filesystem
-  Posting for upvotes
+  Upvoting hot takes on HN
+  Awarding Chewbacca a medal
+  Painting the roses red
+󰣈  Careful with that axe, Eugene
+󰻳  We're just two lost souls
+󰥫  Drinking from the Fountain of `sudo`
+  Judging the book by its cover
+  Being touched by His Noodly Appendage
+󰣙 So nice they built it twice
+󰙽 Tickling the algorithmic ivories
