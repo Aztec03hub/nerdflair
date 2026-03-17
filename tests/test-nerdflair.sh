@@ -569,7 +569,7 @@ EOF
   local resolved=""
   local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/test-new-session"
   if [[ -f "$_session_file" ]]; then
-    resolved=$(head -1 "$_session_file")
+    resolved=$(grep -o '"chime"[[:space:]]*:[[:space:]]*"[^"]*"' "$_session_file" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
   fi
   if [[ -n "$resolved" && "$resolved" != "random" ]]; then
     (( _pass++ ))

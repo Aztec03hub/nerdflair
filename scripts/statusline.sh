@@ -351,10 +351,13 @@ fi
 _SESSION_DIR="$HOME/.claude/nerdflair/sessions"
 _session_file=""
 _session_texture=""
+_session_chime=""
 if [[ -n "$session_id" ]]; then
   _session_file="$_SESSION_DIR/${session_id}"
   if [[ -f "$_session_file" ]]; then
-    _session_texture=$(jq -r '.texture // empty' "$_session_file" 2>/dev/null || true)
+    _session_pair=$(jq -r '[.texture // empty, .chime // empty] | @tsv' "$_session_file" 2>/dev/null || true)
+    _session_texture="${_session_pair%%	*}"
+    _session_chime="${_session_pair#*	}"
   fi
 fi
 
@@ -625,11 +628,8 @@ row3_right="\033[0m"
 # Always resolve chime style label for display
 _chime_label=""
 if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
-  # Read this session's resolved style from the session JSON
-  _session_resolved=""
-  if [[ -n "$session_id" && -n "$_session_file" && -f "$_session_file" ]]; then
-    _session_resolved=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
-  fi
+  # Use cached chime value from session JSON (read earlier)
+  _session_resolved="$_session_chime"
   if [[ -n "$_session_resolved" && "$_session_resolved" != "random" ]]; then
     _chime_label="$_session_resolved"
   elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$_SL_STATE_FILE" ]]; then
