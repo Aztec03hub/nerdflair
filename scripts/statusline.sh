@@ -382,7 +382,7 @@ if [[ -n "$session_id" && -f "$_SL_STATE_FILE" ]]; then
 elif [[ -n "$session_id" ]]; then
   mkdir -p "$(dirname "$_SL_STATE_FILE")"
   _tmp_state="${_SL_STATE_FILE}.tmp.$$"
-  printf '{"last_session": "%s"}\n' "$session_id" > "$_tmp_state"
+  printf '{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_sound": "Glass", "chime_volume": "1", "chime_style": "random", "chime_events": "Notification,PermissionRequest,SessionEnd,SessionStart,Stop", "color": "vibrant", "last_session": "%s"}\n' "$session_id" > "$_tmp_state"
   mv "$_tmp_state" "$_SL_STATE_FILE"
 fi
 
