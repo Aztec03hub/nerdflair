@@ -142,9 +142,11 @@ if [[ "$_resolved_style" == "random" ]]; then
       _candidates=()
       for s in "${_styles[@]}"; do
         _is_recent=false
-        for r in "${_recent[@]}"; do
-          if [[ "$s" == "$r" ]]; then _is_recent=true; break; fi
-        done
+        if [[ ${#_recent[@]} -gt 0 ]]; then
+          for r in "${_recent[@]}"; do
+            if [[ "$s" == "$r" ]]; then _is_recent=true; break; fi
+          done
+        fi
         if [[ "$_is_recent" == "false" ]]; then
           _candidates+=("$s")
         fi
