@@ -40,7 +40,7 @@
 󰙴  Glittering like Galadriel's phial
   Spewing liquid hot magma
   Abby something...Abby Normal
-  Donning the away team tunic
+  Fiddling with all the settings
 󰵲  Counting commits by starlight
   Configuring SOCKS proxy
   Whistling the X-Files theme
@@ -57,7 +57,7 @@
   Building an igloo on Hoth
   Raising awareness for tech debt
   Reducing, reusing, refactoring
-  Spinning right round baby
+  Spinning right round baby
   Dining at the Restaurant at the End
 󰯙  Linking to the past
   Offering a truce to CI
@@ -110,14 +110,14 @@
 󱔎  Riding the snake
 󰯊  Weaving a tangled web
 󰯉  Invading your filesystem
-  Upvoting hot takes on HN
+  Upvoting hot takes on HackerNews
   Awarding Chewbacca a medal
   Painting the roses red
 󰣈  Careful with that axe, Eugene
 󰻳  We're just two lost souls
-󰥫  Drinking from the Fountain of `sudo`
+󰥫  Drinking from the Fountain of sudo
   Judging the book by its cover
-  Being touched by His Noodly Appendage
+  Touching His Noodly Appendage
 󰣙  So nice they built it twice
 󰙽  Tickling the algorithmic ivories
 󰁥  @here'ing the entire universe
@@ -141,10 +141,10 @@
   Asking not for whom it compiles
 󰔬  I think I can, I think I can
 󰈊  Extracting the hex color
-󱀇  Breaking the piggy bank
+  Breaking the piggy bank
   Coding with a twist of limon
-  Catching rays and raising exceptions
-󰙨  Testing in production, YOLO
+  Catching rays on Risa
+󰙨  Testing in production
   Driving down the fairway
-  Adding to cart, checking out never
+  Adding to cart, never checking out
   Watson, come here, I need you
