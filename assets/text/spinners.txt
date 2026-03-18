@@ -132,7 +132,7 @@
   Painting with all the colors of hex
 󰫂  Playing Ride of the Valkyries
   Floating like a butterfly
-  It's five o'clock somewhere in UTC
+  It's happy hour somewhere in UTC
 󰲴  Controlling descent into madness
 󰸮  Keeping the home fires compiling
   Bouncing signals off Sputnik
@@ -143,7 +143,7 @@
 󰈊  Extracting the hex color
 󱀇  Breaking the piggy bank
   Coding with a twist of limon
-  Catching rays and raising PRs
+  Catching rays and raising exceptions
 󰙨  Testing in production, YOLO
   Driving down the fairway
   Adding to cart, checking out never
