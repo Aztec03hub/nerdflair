@@ -89,7 +89,8 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair uninstall` | Remove nerdflair from settings and clean up data |
 | `/nerdflair info` | Show current settings without changing anything |
 | `/nerdflair chime-events` | Show/toggle which events play chimes |
-| `/nerdflair chime-style [style]` | Set or cycle chime style (random, BalladPiano, ...) |
+| `/nerdflair chime-session [style]` | Set chime style for this session only (plays preview) |
+| `/nerdflair chime-style [style]` | Set or cycle global chime style (random, BalladPiano, ...) |
 | `/nerdflair chime-volume [0-100]` | Set chime volume (0 = muted) |
 | `/nerdflair color-palette [mode]` | Set or cycle palette (vibrant, muted, mono) |
 | `/nerdflair layout [mode]` | Set or cycle layout (full, compact, minimal) |

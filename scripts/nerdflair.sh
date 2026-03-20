@@ -113,6 +113,92 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
+    chime-session)
+      # Set the chime style for the current session only (does not change global setting)
+      # Uses last_session from state to find the active session file
+      _cs_session="$NF_CUR_LAST_SESSION"
+      if [[ -z "$_cs_session" ]]; then
+        printf '%b✗ No active session found%b\n' "$NF_RED" "$NF_RST"
+        exit 1
+      fi
+      _cs_session_file="$NF_SESSION_DIR/${_cs_session}"
+
+      AUDIO_DIR="$(cd "$SCRIPT_DIR/../assets/audio" 2>/dev/null && pwd)" || AUDIO_DIR=""
+      _cs_styles=()
+      if [[ -n "$AUDIO_DIR" && -d "$AUDIO_DIR" ]]; then
+        while IFS= read -r d; do
+          _cs_styles+=("$(basename "$d")")
+        done < <(find "$AUDIO_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
+      fi
+
+      if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+        # Set directly
+        _cs_target="$2"
+        shift 2
+      else
+        # No argument: list available styles with numbers and current marker
+        _cs_current=""
+        if [[ -f "$_cs_session_file" ]]; then
+          _cs_current=$(jq -r '.chime // empty' "$_cs_session_file" 2>/dev/null || true)
+        fi
+        printf '%bSession chime styles:%b\n' "$NF_CYAN" "$NF_RST"
+        for i in "${!_cs_styles[@]}"; do
+          _num=$((i + 1))
+          if [[ "${_cs_styles[$i]}" == "$_cs_current" ]]; then
+            printf '  %b%2d. %s  ◄%b\n' "$NF_GREEN" "$_num" "${_cs_styles[$i]}" "$NF_RST"
+          else
+            printf '  %2d. %s\n' "$_num" "${_cs_styles[$i]}"
+          fi
+        done
+        printf '\n%bSet with: nerdflair chime-session <name|number>%b\n' "$NF_DIM" "$NF_RST"
+        exit 0
+      fi
+
+      # If target is a number, resolve to style name
+      if [[ "$_cs_target" =~ ^[0-9]+$ ]]; then
+        _cs_idx=$((_cs_target - 1))
+        if (( _cs_idx >= 0 && _cs_idx < ${#_cs_styles[@]} )); then
+          _cs_target="${_cs_styles[$_cs_idx]}"
+        else
+          printf '%b✗ Invalid number "%s" (1-%d)%b\n' "$NF_RED" "$_cs_target" "${#_cs_styles[@]}" "$NF_RST"
+          exit 1
+        fi
+      fi
+
+      # Validate style name
+      _cs_matched=""
+      for s in "${_cs_styles[@]}"; do
+        if [[ "${s,,}" == "${_cs_target,,}" ]]; then
+          _cs_matched="$s"
+          break
+        fi
+      done
+      if [[ -z "$_cs_matched" ]]; then
+        printf '%b✗ Unknown chime style "%s"%b\n' "$NF_RED" "$_cs_target" "$NF_RST"
+        printf '  Available: %s\n' "${_cs_styles[*]}"
+        exit 1
+      fi
+
+      # Create session file if it doesn't exist (e.g. session started before plugin was installed)
+      if [[ ! -f "$_cs_session_file" ]]; then
+        mkdir -p "$NF_SESSION_DIR"
+        printf '{"chime":"%s"}\n' "$_cs_matched" > "$_cs_session_file"
+      else
+        # Update session file: overwrite chime, preserve texture
+        _cs_tmp="$_cs_session_file.tmp.$$"
+        jq --arg chime "$_cs_matched" '.chime = $chime' "$_cs_session_file" > "$_cs_tmp" && mv "$_cs_tmp" "$_cs_session_file"
+      fi
+
+      printf '%b✓ Session chime → %s%b (this session only)\n' "$NF_GREEN" "$_cs_matched" "$NF_RST"
+
+      # Play the SessionStart sound for the new style
+      _cs_audio="$AUDIO_DIR/$_cs_matched/$_cs_matched-SessionStart.mp3"
+      if [[ -f "$_cs_audio" ]] && command -v afplay &>/dev/null; then
+        _cs_vol="$NF_CUR_CHIME_VOLUME"
+        nohup afplay --volume "$_cs_vol" "$_cs_audio" &>/dev/null &
+      fi
+      exit 0
+      ;;
     chime-style)
       if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
         set_chime_style="$2"
@@ -306,8 +392,8 @@ while [[ $# -gt 0 ]]; do
       if [[ -z "$next_mode" ]]; then
         if ! echo "$NF_VALID_MODES" | grep -qw "$1"; then
           printf '%b✗ Unknown command "%s"%b\n' "$NF_RED" "$1" "$NF_RST"
-          printf '  Commands: chime-events, chime-style, chime-volume, color-palette,\n'
-          printf '            layout, spinner-verbs, terminal-bell, uninstall, width\n'
+          printf '  Commands: chime-events, chime-session, chime-style, chime-volume,\n'
+          printf '            color-palette, layout, spinner-verbs, terminal-bell, uninstall, width\n'
           exit 1
         fi
         next_mode="$1"

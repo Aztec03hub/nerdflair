@@ -66,22 +66,50 @@ input_tokens=$(echo "$input" | jq -r '.context_window.total_input_tokens // empt
 output_tokens=$(echo "$input" | jq -r '.context_window.total_output_tokens // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 
-# MCP servers — aggregate from global ~/.claude.json and project .mcp.json
+# MCP servers — aggregate from global ~/.claude.json, project-scoped servers
+# in ~/.claude.json, and project/cwd .mcp.json files.
+# Only active (non-disabled, not project-disabled) servers are collected.
 mcp_total=0
 mcp_enabled=0
 mcp_names=()
-for mcp_file in "$HOME/.claude.json" "${project_dir}/.mcp.json" "${cwd}/.mcp.json"; do
+_claude_json="$HOME/.claude.json"
+# Project-level disabled servers (from ~/.claude.json .projects[project_dir].disabledMcpServers)
+_proj_disabled_names=()
+if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
+  while IFS= read -r _dname; do
+    [[ -n "$_dname" ]] && _proj_disabled_names+=("$_dname")
+  done < <(jq -r --arg p "$project_dir" '.projects[$p].disabledMcpServers // [] | .[]' "$_claude_json" 2>/dev/null)
+fi
+_is_proj_disabled() {
+  local _n="$1"
+  for _pd in "${_proj_disabled_names[@]}"; do
+    [[ "$_pd" == "$_n" ]] && return 0
+  done
+  return 1
+}
+for mcp_file in "$_claude_json" "${project_dir}/.mcp.json" "${cwd}/.mcp.json"; do
   if [[ -f "$mcp_file" ]]; then
-    file_total=$(jq -r '.mcpServers // {} | length' "$mcp_file" 2>/dev/null)
-    file_disabled=$(jq -r '[.mcpServers // {} | to_entries[] | select(.value.disabled == true)] | length' "$mcp_file" 2>/dev/null)
-    mcp_total=$(( mcp_total + ${file_total:-0} ))
-    mcp_enabled=$(( mcp_enabled + ${file_total:-0} - ${file_disabled:-0} ))
-    # Collect enabled server names
     while IFS= read -r _name; do
-      [[ -n "$_name" ]] && mcp_names+=("$(_sanitize "$_name")")
-    done < <(jq -r '[.mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[] ' "$mcp_file" 2>/dev/null)
+      if [[ -n "$_name" ]]; then
+        if [[ "$mcp_file" == "$_claude_json" ]] && _is_proj_disabled "$_name"; then
+          continue
+        fi
+        mcp_names+=("$(_sanitize "$_name")")
+        (( mcp_enabled++ ))
+      fi
+    done < <(jq -r '[.mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$mcp_file" 2>/dev/null)
   fi
 done
+# Also read project-scoped MCP servers from ~/.claude.json .projects[project_dir].mcpServers
+if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
+  while IFS= read -r _name; do
+    if [[ -n "$_name" ]]; then
+      mcp_names+=("$(_sanitize "$_name")")
+      (( mcp_enabled++ ))
+    fi
+  done < <(jq -r --arg p "$project_dir" '[.projects[$p].mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$_claude_json" 2>/dev/null)
+fi
+mcp_total=$mcp_enabled
 # Sort names alphabetically (handles names from multiple files)
 IFS=$'\n' mcp_names_sorted=($(printf '%s\n' "${mcp_names[@]}" | sort -f)); unset IFS
 

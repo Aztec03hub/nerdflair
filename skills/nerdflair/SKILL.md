@@ -32,7 +32,8 @@ Current settings:
 
 Commands:
   /nerdflair chime-events       Show/toggle which events play chimes
-  /nerdflair chime-style [style]   Set or cycle chime style (random, BalladPiano, ...)
+  /nerdflair chime-session [style] Set chime for this session only (plays preview)
+  /nerdflair chime-style [style]   Set or cycle global chime style (random, BalladPiano, ...)
   /nerdflair chime-volume [0-100]  Set chime volume (0 = muted)
   /nerdflair color-palette [mode]  Set or cycle palette (vibrant, muted, mono)
   /nerdflair layout [mode]      Set or cycle layout (full, compact, minimal)
@@ -159,6 +160,19 @@ Cycle chime style (random -> BalladPiano -> DelicateBells -> ...):
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-style
 ```
 
+Set chime for this session only (plays SessionStart sound):
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-session Vibraphone
+```
+
+List available session chime styles (no argument):
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-session
+```
+When the user runs `/nerdflair chime-session` with no argument, run the command above to get the numbered list,
+then use AskUserQuestion to let them pick a style (use the numbered style names as options).
+After they choose, run `chime-session <name>` or `chime-session <number>` to apply it.
+
 Set chime volume (0 = muted, 100 = full):
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" chime-volume 50
@@ -215,6 +229,12 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
 - **chime-style**: cycles through audio styles (run `ls "$CLAUDE_PLUGIN_ROOT/assets/audio/"` to discover available styles; "random" is always an option)
   - "random" picks a style per session (locked to session_id, persists across context clears)
   - Each style has per-event sounds (Notification, PermissionRequest, Stop, etc.)
+- **chime-session**: set the chime style for the current session only (does not change global setting)
+  - Overrides the global `chime-style` (or the random pick) for this session
+  - Plays the SessionStart sound immediately so you can hear the style
+  - Resets when the session ends (session file is cleaned up)
+  - No argument: lists available styles numbered (use AskUserQuestion to let user pick)
+  - With argument: set directly by name or number: `chime-session Vibraphone` or `chime-session 19`
 - **chime-events**: user-configurable list of events that play audio chimes (default: Notification, PermissionRequest, SessionEnd, SessionStart, Stop)
   - Available events: Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop, UserPromptSubmit
   - Toggle individual events with `chime-events <EventName>`

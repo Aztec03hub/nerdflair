@@ -133,6 +133,14 @@ if [[ "$_resolved_style" == "random" ]]; then
       _resolved_style="$_prev"
     fi
   fi
+else
+  # Non-random global style: check for per-session override (set by chime-session)
+  if [[ "$EVENT" != "SessionStart" && -n "$_session_file" && -f "$_session_file" ]]; then
+    _prev=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
+    if [[ -n "$_prev" && "$_prev" != "$_resolved_style" ]]; then
+      _resolved_style="$_prev"
+    fi
+  fi
 fi
 
 # On SessionStart, pick a random bar texture
