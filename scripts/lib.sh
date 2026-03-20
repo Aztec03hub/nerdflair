@@ -14,7 +14,7 @@ NF_DEFAULT_COLOR="vibrant"
 NF_DEFAULT_TERMINAL_BELL="on"
 NF_DEFAULT_CHIME_SOUND="Glass"
 NF_DEFAULT_CHIME_STYLE="random"
-NF_DEFAULT_CHIME_EVENTS="Notification,PermissionRequest,SessionEnd,SessionStart,Stop"
+NF_DEFAULT_CHIME_EVENTS="Notification,PermissionRequest,PreCompact,SessionEnd,SessionStart,Stop"
 NF_DEFAULT_CHIME_VOLUME="1"
 
 NF_ALL_CHIME_EVENTS="Notification PermissionRequest PreCompact SessionEnd SessionStart Stop UserPromptSubmit"

@@ -344,6 +344,22 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    install)
+      # Reset all settings to defaults
+      NF_CUR_MODE="$NF_DEFAULT_MODE"
+      NF_CUR_WIDTH="$NF_DEFAULT_WIDTH"
+      NF_CUR_FLAIR="true"
+      NF_CUR_COLOR="$NF_DEFAULT_COLOR"
+      NF_CUR_TERMINAL_BELL="$NF_DEFAULT_TERMINAL_BELL"
+      NF_CUR_CHIME_SOUND="$NF_DEFAULT_CHIME_SOUND"
+      NF_CUR_CHIME_STYLE="$NF_DEFAULT_CHIME_STYLE"
+      NF_CUR_CHIME_EVENTS="$NF_DEFAULT_CHIME_EVENTS"
+      NF_CUR_CHIME_VOLUME="$NF_DEFAULT_CHIME_VOLUME"
+      NF_CUR_LAST_SESSION=""
+      _nf_write_state
+      printf '%b✓ Settings reset to defaults%b\n' "$NF_GREEN" "$NF_RST"
+      exit 0
+      ;;
     uninstall)
       # Remove all nerdflair traces from ~/.claude
       _nerdflair_dir="$HOME/.claude/nerdflair"

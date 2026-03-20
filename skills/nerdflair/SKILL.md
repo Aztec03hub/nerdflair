@@ -97,7 +97,15 @@ Give terminal-specific instructions based on their selection:
 
 After giving instructions, tell the user they can verify with `echo ""` -- if they see a box or question mark instead of an icon, the font isn't active yet.
 
-### Step 2: Configure statusline in settings.json
+### Step 2: Reset settings to defaults
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" install
+```
+
+This resets all nerdflair state (layout, chime events, color palette, etc.) to defaults. Safe to run on first install or reinstall.
+
+### Step 3: Configure statusline in settings.json
 
 Read `~/.claude/settings.json` if it exists. Set the statusLine entry:
 
@@ -114,7 +122,7 @@ Resolve the absolute path: `$CLAUDE_PLUGIN_ROOT/scripts/statusline.sh`
 
 Use Edit to update if settings.json exists, or Write if creating new. Preserve all other existing settings.
 
-### Step 3: Enable spinner verbs
+### Step 4: Enable spinner verbs
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
@@ -122,7 +130,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
 
 This loads the custom thinking/spinner phrases from `assets/text/spinners.txt` into `~/.claude/settings.json`. If existing non-nerdflair spinner verbs are present, they are backed up first. If nerdflair verbs are already installed, they are refreshed in place (no backup needed).
 
-### Step 4: Verify and summarize
+### Step 5: Verify and summarize
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info

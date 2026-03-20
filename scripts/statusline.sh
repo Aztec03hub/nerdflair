@@ -39,20 +39,26 @@ _sanitize() { printf '%s' "$1" | sed 's/\\//g'; }
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 
-# Model: extract friendly name + version from ID
-raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // .model.display_name // empty) else (.model // empty) end')
+# Model: prefer display_name, fall back to parsing model ID
+display_name=$(echo "$input" | jq -r '.model.display_name // empty')
+raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // empty) else (.model // empty) end')
 model=""
-if [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
+if [[ -n "$display_name" ]]; then
+  model=$(_sanitize "$display_name")
+  # Append version from ID if display_name is short (e.g. "Opus" → "Opus 4.6")
+  if [[ "$raw_model" =~ [0-9]+-[0-9]+ ]]; then
+    ver="${BASH_REMATCH[0]}"
+    model+=" ${ver//-/.}"
+  fi
+elif [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
   name="${BASH_REMATCH[1]}"
-  # Capitalize first letter
   model="$(tr '[:lower:]' '[:upper:]' <<< "${name:0:1}")${name:1}"
-  # Extract version like "4-6" → "4.6"
   if [[ "$raw_model" =~ [0-9]+-[0-9]+ ]]; then
     ver="${BASH_REMATCH[0]}"
     model+=" ${ver//-/.}"
   fi
 else
-  model=$(_sanitize "$raw_model")
+  model=$(_sanitize "${display_name:-$raw_model}")
 fi
 
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
