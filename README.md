@@ -109,6 +109,6 @@ Three bash scripts and one JSON state file.
 
 - **Renderer** (`scripts/statusline.sh`) — Claude Code pipes session JSON on every refresh. Reads state, outputs ANSI-colored statusline.
 - **Configurator** (`scripts/nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
-- **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS) based on user-defined config.
+- **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS, Linux) based on user-defined config.
 
 All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style, bar texture) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.

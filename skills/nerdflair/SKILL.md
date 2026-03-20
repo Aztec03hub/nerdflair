@@ -107,7 +107,12 @@ This resets all nerdflair state (layout, chime events, color palette, etc.) to d
 
 ### Step 3: Configure statusline in settings.json
 
-Read `~/.claude/settings.json` if it exists. Set the statusLine entry:
+Read `~/.claude/settings.json` if it exists. Check the current `statusLine` value.
+
+- If `statusLine` is **absent or already points to nerdflair** (command contains `nerdflair`): proceed to set it.
+- If `statusLine` **exists and points to something else**: warn the user that a different statusline is configured and use AskUserQuestion to ask whether to replace it. Show the current command. If they decline, skip this step.
+
+Set the statusLine entry:
 
 ```json
 {

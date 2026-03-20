@@ -250,9 +250,12 @@ if [[ -n "$git_dir" ]]; then
       done < <(git ls-files --others --exclude-standard 2>/dev/null)
     fi
     _gc_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
-    printf '%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" > "$_git_cache_file"
+    # Remote URL for clickable links (convert SSH → HTTPS)
+    _gc_remote=$(git remote get-url origin 2>/dev/null || true)
+    _gc_remote=$(printf '%s' "$_gc_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|^git@\([^:]*\):|https://\1/|' | sed 's|\.git$||')
+    printf '%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" > "$_git_cache_file"
   fi
-  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch < "$_git_cache_file"
+  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote < "$_git_cache_file"
 fi
 
 # ── Uncommitted files segment ────────────────────────────────────
@@ -457,9 +460,9 @@ ctx_label="${used_fmt}/${size_fmt} ${pct}%"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
-  # Strip ANSI escapes, then count characters (wc -m handles multibyte)
+  # Strip ANSI escapes and OSC 8 hyperlinks, then count characters (wc -m handles multibyte)
   local stripped
-  stripped=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*m//g')
+  stripped=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*m//g' | sed $'s/\033\\]8;;[^\a]*\a//g')
   printf '%s' "$stripped" | wc -m | tr -d ' '
 }
 
@@ -625,18 +628,32 @@ if (( model_text_len > model_budget )); then
   fi
 fi
 
+# OSC 8 hyperlink helpers (no-op if no remote URL)
+_osc_link_start=""
+_osc_link_end=""
+_osc_branch_start=""
+_osc_branch_end=""
+if [[ -n "${_gc_remote:-}" ]]; then
+  _osc_link_start=$(printf '\033]8;;%s\a' "$_gc_remote")
+  _osc_link_end=$(printf '\033]8;;\a')
+  if [[ -n "$branch" ]]; then
+    _osc_branch_start=$(printf '\033]8;;%s/tree/%s\a' "$_gc_remote" "$branch")
+    _osc_branch_end=$(printf '\033]8;;\a')
+  fi
+fi
+
 # Assemble folder segment
 if [[ "${_is_home:-0}" == "1" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE} ${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+    folder_segment="${BLUE} ${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
   else
     folder_segment="${BLUE} ${RESET}"
   fi
 elif [[ -n "$folder_name" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE}󰉋 ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
   else
-    folder_segment="${BLUE}󰉋 ${folder_name}${RESET}"
+    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${RESET}"
   fi
 fi
 
@@ -670,6 +687,18 @@ api_fmt=""
 if [[ -n "$total_api_ms" && "$total_api_ms" -gt 999 ]] 2>/dev/null; then
   api_fmt=$(_fmt_duration "$total_api_ms")
   time_segment="${TIME_COLOR}${api_fmt}${RESET}"
+fi
+
+# Token speed (output tokens / API seconds)
+speed_segment=""
+if [[ -n "$output_tokens" && -n "$total_api_ms" ]] && (( output_tokens > 0 && total_api_ms > 0 )); then
+  _tok_per_sec=$(( output_tokens * 1000 / total_api_ms ))
+  if (( _tok_per_sec >= 1000 )); then
+    _speed_fmt="$(( _tok_per_sec / 1000 )).$(( _tok_per_sec % 1000 / 100 ))k"
+  else
+    _speed_fmt="$_tok_per_sec"
+  fi
+  speed_segment="${MAUVE}${_speed_fmt} t/s${RESET}"
 fi
 
 COST_COLOR="${COST_GREEN}"
@@ -722,6 +751,9 @@ if [[ -n "$cost_segment" ]]; then
   if [[ -n "$_chime_segment" ]]; then
     row3_right+="${_chime_segment}${BULLET}"
   fi
+  if [[ -n "$speed_segment" ]]; then
+    row3_right+="${speed_segment}${BULLET}"
+  fi
   if [[ -n "$time_segment" ]]; then
     row3_right+="${time_segment}${BULLET}"
   fi
@@ -764,10 +796,11 @@ fi
 row3_left="\033[0m"
 if [[ -n "$_mcp_to_use" ]]; then
   row3_left+="${_mcp_to_use}"
-elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" ]]; then
-  # No MCP servers — show cost/time/chime on the left instead of right
+elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "$speed_segment" ]]; then
+  # No MCP servers — show cost/time/speed/chime on the left instead of right
   if [[ -n "$cost_segment" ]]; then
     row3_left+="$cost_segment"
+    [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
     [[ -n "$time_segment" ]] && row3_left+="${BULLET}${time_segment}"
   elif [[ -n "$time_segment" ]]; then
     row3_left+="$time_segment"
