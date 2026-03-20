@@ -198,16 +198,16 @@ if [[ "$terminal_bell" == "on" ]] && echo ",$TERMINAL_BELL_EVENTS," | grep -q ",
   fi
 fi
 
-# Play chime — user-configurable events, skip if volume is 0 or afplay unavailable
-if [[ "$_chime_muted" != "1" ]] && command -v afplay &>/dev/null && echo ",$chime_events," | grep -q ",$EVENT,"; then
+# Play chime — user-configurable events, skip if volume is 0 or no audio player
+if [[ "$_chime_muted" != "1" ]] && echo ",$chime_events," | grep -q ",$EVENT,"; then
   _audio_file="$AUDIO_DIR/$_resolved_style/$_resolved_style-$EVENT.mp3"
   if [[ -f "$_audio_file" ]]; then
-    nohup afplay --volume "$chime_volume" "$_audio_file" &>/dev/null &
+    _nf_play_audio "$_audio_file" "$chime_volume"
   else
     # Fallback to macOS system sound
     _sys_sound="/System/Library/Sounds/${chime_sound}.aiff"
     if [[ -f "$_sys_sound" ]]; then
-      nohup afplay --volume "$chime_volume" "$_sys_sound" &>/dev/null &
+      _nf_play_audio "$_sys_sound" "$chime_volume"
     fi
   fi
 fi

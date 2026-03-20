@@ -218,31 +218,52 @@ _fmt_num() {
   printf "%'d" "$1" 2>/dev/null || printf "%d" "$1"
 }
 
+# ── Git cache (3-second TTL) ──────────────────────────────────────
+# Cache git status/diff results to avoid running git on every render.
+_GIT_CACHE_TTL=3
+_git_cache_file=""
+_git_cache_fresh=false
+if [[ -n "$git_dir" ]]; then
+  _git_dir_hash=$(printf '%s' "$git_dir" | cksum | cut -d' ' -f1)
+  _git_cache_file="/tmp/nerdflair-git-${_git_dir_hash}"
+  if [[ -f "$_git_cache_file" ]]; then
+    _cache_age=$(( $(date +%s) - $(stat -f %m "$_git_cache_file" 2>/dev/null || stat -c %Y "$_git_cache_file" 2>/dev/null || echo 0) ))
+    (( _cache_age < _GIT_CACHE_TTL )) && _git_cache_fresh=true
+  fi
+  if [[ "$_git_cache_fresh" == "false" ]]; then
+    cd "$git_dir" 2>/dev/null
+    _gc_dirty=$(git -c core.useBuiltinFSMonitor=false status --porcelain --ignore-submodules=dirty 2>/dev/null | wc -l | tr -d ' ')
+    _gc_added=0
+    _gc_removed=0
+    if (( _gc_dirty > 0 )); then
+      while IFS=$'\t' read -r added removed _; do
+        [[ "$added" == "-" ]] && continue
+        (( _gc_added += added ))
+        (( _gc_removed += removed ))
+      done < <(git diff --numstat HEAD 2>/dev/null || git diff --numstat 2>/dev/null)
+      _ucount=0
+      while IFS= read -r ufile; do
+        (( _ucount++ ))
+        (( _ucount > 100 )) && break
+        ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
+        (( _gc_added += ${ulines:-0} ))
+      done < <(git ls-files --others --exclude-standard 2>/dev/null)
+    fi
+    _gc_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
+    printf '%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" > "$_git_cache_file"
+  fi
+  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch < "$_git_cache_file"
+fi
+
 # ── Uncommitted files segment ────────────────────────────────────
 dirty_segment=""
 if [[ -n "$git_dir" ]]; then
-  cd "$git_dir" 2>/dev/null
-  dirty_count=$(git -c core.useBuiltinFSMonitor=false status --porcelain --ignore-submodules=dirty 2>/dev/null | wc -l | tr -d ' ')
+  dirty_count="${_gc_dirty:-0}"
   if (( dirty_count > 0 )); then
     dirty_icon=$(printf '\xef\x81\x84')  # U+F044 nf-fa-pencil
     dirty_segment="${MUSTARD}${dirty_icon} $(_fmt_num "$dirty_count")${RESET}"
-    # Compute lines added/removed from git diff (staged + unstaged)
-    lines_added=0
-    lines_removed=0
-    while IFS=$'\t' read -r added removed _; do
-      [[ "$added" == "-" ]] && continue  # skip binary files
-      (( lines_added += added ))
-      (( lines_removed += removed ))
-    done < <(git diff --numstat HEAD 2>/dev/null || git diff --numstat 2>/dev/null)
-    # Also count untracked files' lines as added (cap at 100 files to avoid freezing)
-    _ucount=0
-    while IFS= read -r ufile; do
-      (( _ucount++ ))
-      (( _ucount > 100 )) && break
-      ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
-      (( lines_added += ${ulines:-0} ))
-    done < <(git ls-files --others --exclude-standard 2>/dev/null)
-    # Append lines added/removed
+    lines_added="${_gc_added:-0}"
+    lines_removed="${_gc_removed:-0}"
     plus_icon="+"
     minus_icon="-"
     diff_parts=""
@@ -277,12 +298,11 @@ if [[ -n "$_display_dir" ]]; then
   else
     folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
-  # Branch: prefer worktree branch, fall back to git
+  # Branch: prefer worktree branch, then cached git branch
   if [[ -n "$worktree_branch" ]]; then
     branch=$(_sanitize "$worktree_branch")
-  elif [[ -n "$git_dir" ]]; then
-    cd "$git_dir" 2>/dev/null
-    branch=$(_sanitize "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)")
+  elif [[ -n "${_gc_branch:-}" ]]; then
+    branch=$(_sanitize "$_gc_branch")
   fi
 fi
 

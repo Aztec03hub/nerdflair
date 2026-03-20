@@ -193,6 +193,23 @@ _nf_update_field() {
   jq --arg v "$value" ".$field = \$v" "$NF_STATE_FILE" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"
 }
 
+# ── Play audio file (cross-platform) ──────────────────────────────
+# Usage: _nf_play_audio <file> <volume>
+# volume: 0.0–1.0 float (afplay scale)
+# Supports: afplay (macOS), paplay (PulseAudio/PipeWire on Linux)
+_nf_play_audio() {
+  local file="$1" volume="${2:-1}"
+  [[ ! -f "$file" ]] && return 1
+  if command -v afplay &>/dev/null; then
+    nohup afplay --volume "$volume" "$file" &>/dev/null &
+  elif command -v paplay &>/dev/null; then
+    # paplay volume: 0–65536 (65536 = 100%)
+    local _pa_vol
+    _pa_vol=$(awk -v v="$volume" 'BEGIN {printf "%d", v * 65536}')
+    nohup paplay --volume="$_pa_vol" "$file" &>/dev/null &
+  fi
+}
+
 # ── Update chime_recent_styles array ─────────────────────────────
 # Usage: _nf_update_recent_styles <comma_separated_styles>
 _nf_update_recent_styles() {

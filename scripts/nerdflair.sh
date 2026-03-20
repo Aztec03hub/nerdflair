@@ -193,10 +193,7 @@ while [[ $# -gt 0 ]]; do
 
       # Play the SessionStart sound for the new style
       _cs_audio="$AUDIO_DIR/$_cs_matched/$_cs_matched-SessionStart.mp3"
-      if [[ -f "$_cs_audio" ]] && command -v afplay &>/dev/null; then
-        _cs_vol="$NF_CUR_CHIME_VOLUME"
-        nohup afplay --volume "$_cs_vol" "$_cs_audio" &>/dev/null &
-      fi
+      _nf_play_audio "$_cs_audio" "$NF_CUR_CHIME_VOLUME"
       exit 0
       ;;
     chime-style)

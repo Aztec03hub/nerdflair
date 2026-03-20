@@ -41,7 +41,7 @@ Restart Claude Code after install for the changes to take effect.
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
 - **Custom spinner verbs:** 150 themed thinking/working phrases
 - **Terminal bell**: (tab indicator) on Notification, PermissionRequest, and Stop events
-- **Audio chimes (macOS only)**: 20 styles, configurable per-event, adjustable volume
+- **Audio chimes (macOS, Linux)**: 20 styles, configurable per-event, adjustable volume
 - **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
