@@ -39,27 +39,24 @@ _sanitize() { printf '%s' "$1" | sed 's/\\//g'; }
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 
-# Model: prefer display_name, fall back to parsing model ID
-display_name=$(echo "$input" | jq -r '.model.display_name // empty')
-raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // empty) else (.model // empty) end')
+# Model: extract friendly name + version from ID
+raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // .model.display_name // empty) else (.model // empty) end')
 model=""
-if [[ -n "$display_name" ]]; then
-  model=$(_sanitize "$display_name")
-  # Append version from ID if display_name is short (e.g. "Opus" → "Opus 4.6")
-  if [[ "$raw_model" =~ [0-9]+-[0-9]+ ]]; then
-    ver="${BASH_REMATCH[0]}"
-    model+=" ${ver//-/.}"
-  fi
-elif [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
+if [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
   name="${BASH_REMATCH[1]}"
+  # Capitalize first letter
   model="$(tr '[:lower:]' '[:upper:]' <<< "${name:0:1}")${name:1}"
+  # Extract version like "4-6" → "4.6"
   if [[ "$raw_model" =~ [0-9]+-[0-9]+ ]]; then
     ver="${BASH_REMATCH[0]}"
     model+=" ${ver//-/.}"
   fi
 else
-  model=$(_sanitize "${display_name:-$raw_model}")
+  model=$(_sanitize "$raw_model")
 fi
+
+# Worktree info (optional, absent in normal sessions)
+worktree_branch=$(echo "$input" | jq -r '.worktree.branch // empty')
 
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
 total_duration_ms=$(echo "$input" | jq -r '.cost.total_duration_ms // empty')
@@ -136,6 +133,8 @@ ALERT="\033[38;2;220;175;100m"
 RED="\033[38;2;224;108;117m"
 # Progress bar healthy state
 GREEN="\033[38;2;152;195;121m"
+# Agent name
+ORANGE="\033[38;2;235;150;60m"
 # Accent: dirty files
 MUSTARD="\033[38;2;180;155;95m"
 # Time/cost
@@ -159,6 +158,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   CYAN="\033[38;2;180;180;180m"
   MAUVE="\033[38;2;140;140;140m"
   MCP_COLOR="\033[38;2;170;170;170m"
+  ORANGE="\033[38;2;200;200;200m"
   DARK_GREEN="\033[38;2;150;150;150m"
   ALERT="\033[38;2;200;200;200m"
   RED="\033[38;2;210;210;210m"
@@ -176,6 +176,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   CYAN="\033[38;2;130;165;170m"
   MAUVE="\033[38;2;140;135;150m"
   MCP_COLOR="\033[38;2;170;138;142m"
+  ORANGE="\033[38;2;200;160;100m"
   DARK_GREEN="\033[38;2;125;145;115m"
   ALERT="\033[38;2;185;165;125m"
   RED="\033[38;2;185;140;140m"
@@ -276,8 +277,10 @@ if [[ -n "$_display_dir" ]]; then
   else
     folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
-  # Branch: from whichever git repo we detected
-  if [[ -n "$git_dir" ]]; then
+  # Branch: prefer worktree branch, fall back to git
+  if [[ -n "$worktree_branch" ]]; then
+    branch=$(_sanitize "$worktree_branch")
+  elif [[ -n "$git_dir" ]]; then
     cd "$git_dir" 2>/dev/null
     branch=$(_sanitize "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)")
   fi
@@ -475,7 +478,9 @@ if [[ "$_SL_WIDTH" != "auto" && "$_SL_WIDTH" =~ ^[0-9]+$ ]]; then
   (( MAX_BAR < 50 )) && MAX_BAR=50
   (( MAX_BAR > 150 )) && MAX_BAR=150
 else
-  MAX_BAR=80
+  MAX_BAR=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
+  (( MAX_BAR < 50 )) && MAX_BAR=50
+  (( MAX_BAR > 150 )) && MAX_BAR=150
 fi
 ROW_WIDTH=$(( MAX_BAR + 2 ))
 
