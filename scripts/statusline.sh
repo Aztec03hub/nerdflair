@@ -118,8 +118,10 @@ IFS=$'\n' mcp_names_sorted=($(printf '%s\n' "${mcp_names[@]}" | sort -f)); unset
 BLUE="\033[38;2;95;179;255m"
 MAGENTA="\033[38;2;198;120;221m"
 CYAN="\033[38;2;86;182;194m"
-# Muted: secondary info (MCP, mode, timing)
+# Muted: secondary info (mode, timing)
 MAUVE="\033[38;2;145;130;155m"
+# MCP tool list
+MCP_COLOR="\033[38;2;195;130;140m"
 # Accent: money
 DARK_GREEN="\033[38;2;110;155;95m"
 # Alert: warnings (progress bar caution)
@@ -150,6 +152,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   MAGENTA="\033[38;2;170;170;170m"
   CYAN="\033[38;2;180;180;180m"
   MAUVE="\033[38;2;140;140;140m"
+  MCP_COLOR="\033[38;2;170;170;170m"
   DARK_GREEN="\033[38;2;150;150;150m"
   ALERT="\033[38;2;200;200;200m"
   RED="\033[38;2;210;210;210m"
@@ -166,6 +169,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   MAGENTA="\033[38;2;170;145;185m"
   CYAN="\033[38;2;130;165;170m"
   MAUVE="\033[38;2;140;135;150m"
+  MCP_COLOR="\033[38;2;170;138;142m"
   DARK_GREEN="\033[38;2;125;145;115m"
   ALERT="\033[38;2;185;165;125m"
   RED="\033[38;2;185;140;140m"
@@ -309,7 +313,7 @@ mcp_segment=""
 mcp_segment_expanded=""
 if (( mcp_enabled > 0 )); then
   mcp_icon=$(printf '\xef\x90\xa5')  # U+F425 nf-oct-plug
-  mcp_segment="${MAUVE}${mcp_icon} ${mcp_enabled} MCP${RESET}"
+  mcp_segment="${MCP_COLOR}${mcp_icon} ${mcp_enabled} MCP${RESET}"
   # Build expanded form with sorted names: "MCP proxy, slack" (list only, no count)
   # Also build truncated variants: "Slack, Glean, 4 more"
   if (( ${#mcp_names_sorted[@]} > 0 )); then
@@ -318,7 +322,7 @@ if (( mcp_enabled > 0 )); then
       [[ -n "$_mcp_name_list" ]] && _mcp_name_list+=", "
       _mcp_name_list+="$_mn"
     done
-    mcp_segment_expanded="${MAUVE}${mcp_icon} ${_mcp_name_list}${RESET}"
+    mcp_segment_expanded="${MCP_COLOR}${mcp_icon} ${_mcp_name_list}${RESET}"
 
     # Build truncated variants showing first N names + ", X more"
     _mcp_count=${#mcp_names_sorted[@]}
@@ -332,7 +336,7 @@ if (( mcp_enabled > 0 )); then
         done
         _remaining=$(( _mcp_count - _i ))
         _partial+=", ${_remaining} more"
-        mcp_segments_truncated+=("${MAUVE}${mcp_icon} ${_partial}${RESET}")
+        mcp_segments_truncated+=("${MCP_COLOR}${mcp_icon} ${_partial}${RESET}")
       done
     fi
   fi
@@ -452,7 +456,7 @@ _justified_row() {
   local left_len=$(_vis_len "$left_str")
   local right_len=$(_vis_len "$right_str")
   local pad_len=$(( max_w - left_len - right_len ))
-  (( pad_len < 1 )) && pad_len=1
+  (( pad_len < 2 )) && pad_len=2
   local pad=""
   for (( p=0; p<pad_len; p++ )); do pad+=" "; done
   printf '%b%s%b%b' "$left_str" "$pad" "$right_str" "${RESET}"
@@ -706,7 +710,7 @@ if [[ -n "$mcp_segment" ]]; then
   _row3_fits() {
     local _candidate="$1"
     local _clen=$(_vis_len "$_candidate")
-    (( _clen + _row3_right_len + 1 <= ROW_WIDTH ))
+    (( _clen + _row3_right_len + 2 <= ROW_WIDTH ))
   }
 
   if [[ -n "$mcp_segment_expanded" ]]; then
