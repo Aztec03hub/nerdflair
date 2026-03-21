@@ -149,7 +149,7 @@ STATEEOF
   "context_window": {
     "used_percentage": $json_pct,
     "total_input_tokens": $json_tokens,
-    "total_output_tokens": 0,
+    "total_output_tokens": $json_tokens,
     "context_window_size": $CTX_WINDOW_SIZE
   }
 }

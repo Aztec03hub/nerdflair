@@ -381,11 +381,13 @@ ctx_total=200000  # default context window size
 total_used=0
 pct=0
 
-if [[ -n "$used_pct" && -n "$input_tokens" && -n "$ctx_size" ]]; then
-  # We have full context_window data from Claude Code
-  total_used=$((input_tokens + ${output_tokens:-0}))
+if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
+  # used_pct is the authoritative context fill percentage from Claude Code.
+  # Derive total_used from it rather than cumulative token counts, which
+  # measure something different (total tokens across all API calls).
   ctx_total="$ctx_size"
   pct="$used_pct"
+  total_used=$(( ctx_total * pct / 100 ))
 else
   # Fall back: parse last usage entry from transcript JSONL
   transcript=$(echo "$input" | jq -r '.transcript_path // empty')

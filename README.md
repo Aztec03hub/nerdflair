@@ -46,7 +46,7 @@ Restart Claude Code after install for the changes to take effect.
 - Git branch, files edited, and lines added/removed
 - Model name with output style indicator
 - Active MCP servers
-- Session cost and API duration
+- Session cost, API duration, and token throughput
 
 
 ## Prerequisites
