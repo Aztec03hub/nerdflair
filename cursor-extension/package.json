@@ -1,0 +1,53 @@
+{
+  "name": "nerdflair-chimes",
+  "displayName": "NerdFlair Chimes",
+  "description": "Audio chimes for Cursor IDE — random style per session, plays on AI completion via hooks.json",
+  "version": "0.4.0",
+  "publisher": "nerdflair",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "nerdflair-chimes.playStop",
+        "title": "NerdFlair Chimes: Play Stop"
+      },
+      {
+        "command": "nerdflair-chimes.cycleStyle",
+        "title": "NerdFlair Chimes: Cycle Style"
+      },
+      {
+        "command": "nerdflair-chimes.showStyle",
+        "title": "NerdFlair Chimes: Show Current Style"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "nerdflair-chimes.playStop",
+        "key": "ctrl+shift+;",
+        "mac": "cmd+shift+;"
+      }
+    ],
+    "configuration": {
+      "title": "NerdFlair Chimes",
+      "properties": {
+        "nerdflair-chimes.audioDirectory": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the nerdflair `assets/audio` directory. Leave empty to auto-detect from workspace or `~/.claude/plugins/`."
+        },
+        "nerdflair-chimes.volume": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0,
+          "maximum": 1.0,
+          "description": "Playback volume (0 = muted, 1 = full). Applies to both the style preview and hooks.json chimes."
+        }
+      }
+    }
+  }
+}

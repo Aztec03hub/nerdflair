@@ -101,7 +101,70 @@ Use the `/nerdflair` command to configure the statusline:
 </details>
 
 
-## How It Works
+## Cursor / VS Code Extension
+
+A lightweight extension brings NerdFlair's audio chimes to Cursor (or VS Code). It reuses the same 20 chime styles from the Claude Code plugin.
+
+### What's included
+
+- **Random style per session** — one of 20 chime styles is chosen at random each time the editor opens
+- **Audio chimes via [Cursor hooks](https://docs.cursor.com/agent/hooks)** — SessionStart, Stop, and SessionEnd sounds
+- **Status bar** — shows the current style; click to cycle through all 20
+
+### Install
+
+Clone the repo and symlink the extension into your editor's extensions directory:
+
+```bash
+git clone https://github.com/jcraigk/nerdflair.git ~/nerdflair
+
+# Cursor
+ln -s ~/nerdflair/cursor-extension ~/.cursor/extensions/nerdflair-chimes
+
+# VS Code (if using VS Code instead)
+ln -s ~/nerdflair/cursor-extension ~/.vscode/extensions/nerdflair-chimes
+```
+
+Then add the hooks config at `~/.cursor/hooks.json` (adjust the path if you cloned elsewhere):
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash ~/nerdflair/cursor-extension/play-chime.sh SessionStart"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash ~/nerdflair/cursor-extension/play-chime.sh Stop"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "bash ~/nerdflair/cursor-extension/play-chime.sh SessionEnd"
+      }
+    ]
+  }
+}
+```
+
+Restart the editor. You should hear a startup chime and see the style name in the status bar.
+
+### Settings
+
+Search "nerdflair" in Settings to configure:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `nerdflair-chimes.volume` | `1.0` | Playback volume (0–1) |
+| `nerdflair-chimes.audioDirectory` | auto-detect | Override path to `assets/audio` |
+
+> **Note:** The extension requires `jq` and `afplay` (macOS) or `paplay` (Linux) for audio playback.
+
+
+## How It Works (Claude Code)
 
 Three bash scripts and one JSON state file.
 
