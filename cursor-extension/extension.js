@@ -42,6 +42,7 @@ function resolveAudioDir() {
 }
 
 function writeState() {
+  if (!audioDir) return;
   const volume = getConfig().get('volume', 1.0);
   const state = { style: currentStyle, volume, audioDir };
   try {
@@ -67,39 +68,45 @@ function playChime(event) {
   }
 }
 
+function updateStatusBar() {
+  if (!statusBarItem) return;
+  if (audioDir) {
+    statusBarItem.text = `$(unmute) ${currentStyle}`;
+    statusBarItem.tooltip = 'NerdFlair Chimes — click to cycle style';
+  } else {
+    statusBarItem.text = `$(mute) NerdFlair`;
+    statusBarItem.tooltip = 'NerdFlair Chimes — audio directory not configured';
+  }
+}
+
 function cycleStyle() {
+  if (!audioDir) return;
   const idx = STYLES.indexOf(currentStyle);
   currentStyle = STYLES[(idx + 1) % STYLES.length];
   writeState();
-  if (statusBarItem) statusBarItem.text = `$(unmute) ${currentStyle}`;
+  updateStatusBar();
   playChime('SessionStart');
 }
 
 function activate(context) {
-  audioDir = resolveAudioDir();
-  if (!audioDir) {
-    vscode.window.showWarningMessage(
-      'NerdFlair Chimes: audio directory not found. Set nerdflair-chimes.audioDirectory in settings, ' +
-      'or open the nerdflair workspace.'
-    );
-    return;
-  }
-
   currentStyle = STYLES[Math.floor(Math.random() * STYLES.length)];
-  writeState();
+  audioDir = resolveAudioDir();
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
-  statusBarItem.text = `$(unmute) ${currentStyle}`;
-  statusBarItem.tooltip = 'NerdFlair Chimes — click to cycle style';
   statusBarItem.command = 'nerdflair-chimes.cycleStyle';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+
+  if (audioDir) {
+    writeState();
+  }
+  updateStatusBar();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nerdflair-chimes.playStop', () => playChime('Stop')),
     vscode.commands.registerCommand('nerdflair-chimes.cycleStyle', cycleStyle),
     vscode.commands.registerCommand('nerdflair-chimes.showStyle', () => {
-      vscode.window.showInformationMessage(`NerdFlair Chimes: ${currentStyle}`);
+      vscode.window.showInformationMessage(`NerdFlair Chimes: ${audioDir ? currentStyle : 'not configured'}`);
     })
   );
 
@@ -109,6 +116,7 @@ function activate(context) {
         const newAudioDir = resolveAudioDir();
         if (newAudioDir) audioDir = newAudioDir;
         writeState();
+        updateStatusBar();
       }
     })
   );

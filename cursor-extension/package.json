@@ -2,7 +2,7 @@
   "name": "nerdflair-chimes",
   "displayName": "NerdFlair Chimes",
   "description": "Audio chimes for Cursor IDE — random style per session, plays on AI completion via hooks.json",
-  "version": "0.4.0",
+  "version": "0.1.0",
   "publisher": "nerdflair",
   "engines": {
     "vscode": "^1.85.0"
