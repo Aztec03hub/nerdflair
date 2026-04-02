@@ -141,7 +141,7 @@
   Asking not for whom it compiles
 󰔬  I think I can, I think I can
 󰈊  Extracting the hex color
-  Breaking the piggy bank
+󱀇  Breaking the piggy bank
   Coding with a twist of limon
   Catching rays on Risa
 󰙨  Testing in production

@@ -253,9 +253,19 @@ if [[ -n "$git_dir" ]]; then
     # Remote URL for clickable links (convert SSH → HTTPS)
     _gc_remote=$(git remote get-url origin 2>/dev/null || true)
     _gc_remote=$(printf '%s' "$_gc_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|^git@\([^:]*\):|https://\1/|' | sed 's|\.git$||')
-    printf '%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" > "$_git_cache_file"
+    # PR number + URL for the current branch (gh is fast with local cache)
+    _gc_pr_number=""
+    _gc_pr_url=""
+    if command -v gh &>/dev/null; then
+      _pr_json=$(gh pr view --json number,url 2>/dev/null || true)
+      if [[ -n "$_pr_json" ]]; then
+        _gc_pr_number=$(printf '%s' "$_pr_json" | jq -r '.number // empty' 2>/dev/null)
+        _gc_pr_url=$(printf '%s' "$_pr_json" | jq -r '.url // empty' 2>/dev/null)
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_pr_number" "$_gc_pr_url" > "$_git_cache_file"
   fi
-  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote < "$_git_cache_file"
+  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_pr_number _gc_pr_url < "$_git_cache_file"
 fi
 
 # ── Uncommitted files segment ────────────────────────────────────
@@ -307,6 +317,9 @@ if [[ -n "$_display_dir" ]]; then
   elif [[ -n "${_gc_branch:-}" ]]; then
     branch=$(_sanitize "$_gc_branch")
   fi
+  # PR number for the current branch
+  pr_number="${_gc_pr_number:-}"
+  pr_url="${_gc_pr_url:-}"
 fi
 
 # ── Helper: format milliseconds ──────────────────────────────────
@@ -550,7 +563,7 @@ if [[ -n "$output_style" && "$output_style" != "default" ]]; then
   esac
 fi
 
-# Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
+# Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + [bullet(3) if PR] + bullet(3) + model_icon(2)
 # Home icon is just 1 char with no folder name text, so chrome is smaller
 if [[ "${_is_home:-0}" == "1" ]]; then
   chrome=7  # home_icon(2) + bullet(3) + model_icon(2)
@@ -559,17 +572,21 @@ else
   chrome=7  # folder_icon(2) + bullet(3) + model_icon(2)
   [[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
 fi
+[[ -n "${pr_number:-}" ]] && chrome=$(( chrome + 3 ))  # add bullet(3); "PR #NNN" text counted separately
 
 # Available text budget after chrome
 text_budget=$(( left_budget - chrome ))
 (( text_budget < 10 )) && text_budget=10
 
-# Allocate: path/branch get priority, model gets the remainder
+# Allocate: path/branch/PR get priority, model gets the remainder
 style_suffix_len=${#style_suffix}
 model_text_len=$(( ${#model_text} + style_suffix_len ))
 path_len=${#folder_name}
 branch_len=${#branch}
-path_branch_len=$(( path_len + branch_len ))
+pr_text=""
+[[ -n "${pr_number:-}" ]] && pr_text="PR #${pr_number}"
+pr_text_len=${#pr_text}
+path_branch_len=$(( path_len + branch_len + pr_text_len ))
 
 # Model needs at least 10 chars so "icon + name" stays readable (e.g. " Opus 4.6")
 min_model=10
@@ -584,23 +601,26 @@ if (( model_text_len <= model_budget )); then
   pb_budget=$(( text_budget - model_budget ))
 fi
 
-# Truncate path and branch to fit pb_budget
-if (( path_branch_len > pb_budget )); then
+# Truncate path and branch to fit pb_budget (PR text is never truncated)
+# Reserve PR space first; path and branch absorb the squeeze
+_pb_avail=$(( pb_budget - pr_text_len ))
+(( _pb_avail < 0 )) && _pb_avail=0
+if (( (path_len + branch_len) > _pb_avail )); then
   if [[ -n "$branch" ]]; then
     # Split budget 50/50, but if one side fits, give surplus to the other
-    half=$(( pb_budget / 2 ))
+    half=$(( _pb_avail / 2 ))
     if (( path_len <= half )); then
       # Path fits in its half — branch gets the rest
       max_path=$path_len
-      max_branch=$(( pb_budget - max_path ))
+      max_branch=$(( _pb_avail - max_path ))
     elif (( branch_len <= half )); then
       # Branch fits in its half — path gets the rest
       max_branch=$branch_len
-      max_path=$(( pb_budget - max_branch ))
+      max_path=$(( _pb_avail - max_branch ))
     else
       # Both contest — split evenly
       max_path=$half
-      max_branch=$(( pb_budget - max_path ))
+      max_branch=$(( _pb_avail - max_path ))
     fi
     (( max_path < 4 )) && max_path=4
     (( max_branch < 4 )) && max_branch=4
@@ -611,8 +631,8 @@ if (( path_branch_len > pb_budget )); then
       folder_name="${ELLIPSIS}${folder_name:$((${#folder_name} - max_path + 1))}"
     fi
   else
-    if (( path_len > pb_budget )); then
-      folder_name="${ELLIPSIS}${folder_name:$((path_len - pb_budget + 1))}"
+    if (( path_len > _pb_avail )); then
+      folder_name="${ELLIPSIS}${folder_name:$((path_len - _pb_avail + 1))}"
     fi
   fi
 fi
@@ -635,6 +655,8 @@ _osc_link_start=""
 _osc_link_end=""
 _osc_branch_start=""
 _osc_branch_end=""
+_osc_pr_start=""
+_osc_pr_end=""
 if [[ -n "${_gc_remote:-}" ]]; then
   _osc_link_start=$(printf '\033]8;;%s\a' "$_gc_remote")
   _osc_link_end=$(printf '\033]8;;\a')
@@ -643,17 +665,27 @@ if [[ -n "${_gc_remote:-}" ]]; then
     _osc_branch_end=$(printf '\033]8;;\a')
   fi
 fi
+if [[ -n "${pr_url:-}" ]]; then
+  _osc_pr_start=$(printf '\033]8;;%s\a' "$pr_url")
+  _osc_pr_end=$(printf '\033]8;;\a')
+fi
+
+# Build PR sub-segment (appended after branch when present)
+_pr_part=""
+if [[ -n "${pr_text:-}" ]]; then
+  _pr_part="${BULLET}${MAGENTA}${_osc_pr_start}${pr_text}${_osc_pr_end}"
+fi
 
 # Assemble folder segment
 if [[ "${_is_home:-0}" == "1" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE} ${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
+    folder_segment="${BLUE} ${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${_pr_part}${RESET}"
   else
     folder_segment="${BLUE} ${RESET}"
   fi
 elif [[ -n "$folder_name" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
+    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${_pr_part}${RESET}"
   else
     folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${RESET}"
   fi
