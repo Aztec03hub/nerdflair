@@ -123,6 +123,8 @@ MAGENTA="\033[38;2;198;120;221m"
 CYAN="\033[38;2;86;182;194m"
 # Muted: secondary info (mode, timing)
 MAUVE="\033[38;2;145;130;155m"
+# PR number (halfway between MAGENTA and CYAN)
+PR_COLOR="\033[38;2;142;151;208m"
 # MCP tool list
 MCP_COLOR="\033[38;2;195;130;140m"
 # Accent: money
@@ -156,6 +158,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   BLUE="\033[38;2;190;190;190m"
   MAGENTA="\033[38;2;170;170;170m"
   CYAN="\033[38;2;180;180;180m"
+  PR_COLOR="\033[38;2;175;175;175m"
   MAUVE="\033[38;2;140;140;140m"
   MCP_COLOR="\033[38;2;170;170;170m"
   ORANGE="\033[38;2;200;200;200m"
@@ -174,6 +177,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   BLUE="\033[38;2;140;170;210m"
   MAGENTA="\033[38;2;170;145;185m"
   CYAN="\033[38;2;130;165;170m"
+  PR_COLOR="\033[38;2;150;155;178m"
   MAUVE="\033[38;2;140;135;150m"
   MCP_COLOR="\033[38;2;170;138;142m"
   ORANGE="\033[38;2;200;160;100m"
@@ -673,7 +677,7 @@ fi
 # Build PR sub-segment (appended after branch when present)
 _pr_part=""
 if [[ -n "${pr_text:-}" ]]; then
-  _pr_part="${BULLET}${MAGENTA}${_osc_pr_start}${pr_text}${_osc_pr_end}"
+  _pr_part="${BULLET}${PR_COLOR}${_osc_pr_start}${pr_text}${_osc_pr_end}"
 fi
 
 # Assemble folder segment
