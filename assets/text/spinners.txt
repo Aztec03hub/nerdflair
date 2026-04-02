@@ -97,7 +97,7 @@
 󰆘  Accepting all the cookies
 󰛐  Peering into the palantír
   RTFM'ing
-  Phoning localhost
+  Probing dev/null
   Adjusting nerd glasses
   Playing with Prometheus' fire
   Thinking different
@@ -146,5 +146,5 @@
   Catching rays on Risa
 󰙨  Testing in production
   Driving down the fairway
-  Adding to cart, never checking out
-  Watson, come here, I need you
+  Abandoning full Amazon cart 
+  Calling from inside the house
