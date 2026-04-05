@@ -37,7 +37,7 @@ Commands:
   /nerdflair chime-volume [0-100]  Set chime volume (0 = muted)
   /nerdflair color-palette [mode]  Set or cycle palette (vibrant, muted, mono)
   /nerdflair layout [mode]      Set or cycle layout (full, compact, minimal)
-  /nerdflair install             First-time install (font check, settings.json)
+  /nerdflair install             Install or upgrade (font check, settings.json; preserves settings)
   /nerdflair uninstall           Remove nerdflair from settings and clean up data
   /nerdflair spinner-verbs      Show/manage custom spinner verbs
   /nerdflair terminal-bell      Toggle terminal bell on/off (tab indicator)
@@ -97,37 +97,20 @@ Give terminal-specific instructions based on their selection:
 
 After giving instructions, tell the user they can verify with `echo ""` -- if they see a box or question mark instead of an icon, the font isn't active yet.
 
-### Step 2: Reset settings to defaults
+### Step 2: Initialize state and configure statusLine
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" install
 ```
 
-This resets all nerdflair state (layout, chime events, color palette, etc.) to defaults. Safe to run on first install or reinstall.
+This is idempotent: on first install it creates state with defaults; on upgrade it preserves existing settings. It also updates the `statusLine` entry in `~/.claude/settings.json` to use `${CLAUDE_PLUGIN_ROOT}`.
 
-### Step 3: Configure statusline in settings.json
+Before running, check if a **non-nerdflair** statusLine is already configured:
 
-Read `~/.claude/settings.json` if it exists. Check the current `statusLine` value.
-
-- If `statusLine` is **absent or already points to nerdflair** (command contains `nerdflair`): proceed to set it.
+- If `statusLine` is **absent or already points to nerdflair** (command contains `nerdflair`): proceed.
 - If `statusLine` **exists and points to something else**: warn the user that a different statusline is configured and use AskUserQuestion to ask whether to replace it. Show the current command. If they decline, skip this step.
 
-Set the statusLine entry:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "bash /absolute/path/to/scripts/statusline.sh"
-  }
-}
-```
-
-Resolve the absolute path: `$CLAUDE_PLUGIN_ROOT/scripts/statusline.sh`
-
-Use Edit to update if settings.json exists, or Write if creating new. Preserve all other existing settings.
-
-### Step 4: Enable spinner verbs
+### Step 3: Enable spinner verbs
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
@@ -135,7 +118,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" spinner-verbs enable
 
 This loads the custom thinking/spinner phrases from `assets/text/spinners.txt` into `~/.claude/settings.json`. If existing non-nerdflair spinner verbs are present, they are backed up first. If nerdflair verbs are already installed, they are refreshed in place (no backup needed).
 
-### Step 5: Verify and summarize
+### Step 4: Verify and summarize
 
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info

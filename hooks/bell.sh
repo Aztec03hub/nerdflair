@@ -30,6 +30,12 @@ _nf_require_jq
 
 # Read state (populates NF_CUR_* with legacy migration)
 _nf_read_state
+
+# If no state file exists, nerdflair is not installed — exit silently
+if [[ ! -f "$NF_STATE_FILE" ]]; then
+  exit 0
+fi
+
 terminal_bell="$NF_CUR_TERMINAL_BELL"
 chime_sound="$NF_CUR_CHIME_SOUND"
 chime_style="$NF_CUR_CHIME_STYLE"

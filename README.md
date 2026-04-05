@@ -85,7 +85,7 @@ Use the `/nerdflair` command to configure the statusline:
 | Command | Effect |
 |---------|--------|
 | `/nerdflair` | Show current settings and command reference |
-| `/nerdflair install` | First-time install (font check, settings.json config) |
+| `/nerdflair install` | Install or upgrade (font check, settings.json config; preserves existing settings) |
 | `/nerdflair uninstall` | Remove nerdflair from settings and clean up data |
 | `/nerdflair info` | Show current settings without changing anything |
 | `/nerdflair chime-events` | Show/toggle which events play chimes |
@@ -175,3 +175,23 @@ Three bash scripts and one JSON state file.
 - **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS, Linux) based on user-defined config.
 
 All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style, bar texture) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.
+
+
+## Update
+
+```
+/plugin update nerdflair
+/nerdflair install
+```
+
+`/plugin update` pulls the latest version. `/nerdflair install` refreshes the statusline config while preserving your existing settings. Restart Claude Code after updating.
+
+
+## Uninstall
+
+```
+/nerdflair uninstall
+/plugin uninstall nerdflair
+```
+
+`/nerdflair uninstall` removes nerdflair's statusline, spinner verbs, and data from `~/.claude/`. `/plugin uninstall` removes the plugin itself. Restart Claude Code after uninstalling.

@@ -342,19 +342,35 @@ while [[ $# -gt 0 ]]; do
       fi
       ;;
     install)
-      # Reset all settings to defaults
-      NF_CUR_MODE="$NF_DEFAULT_MODE"
-      NF_CUR_WIDTH="$NF_DEFAULT_WIDTH"
-      NF_CUR_FLAIR="true"
-      NF_CUR_COLOR="$NF_DEFAULT_COLOR"
-      NF_CUR_TERMINAL_BELL="$NF_DEFAULT_TERMINAL_BELL"
-      NF_CUR_CHIME_SOUND="$NF_DEFAULT_CHIME_SOUND"
-      NF_CUR_CHIME_STYLE="$NF_DEFAULT_CHIME_STYLE"
-      NF_CUR_CHIME_EVENTS="$NF_DEFAULT_CHIME_EVENTS"
-      NF_CUR_CHIME_VOLUME="$NF_DEFAULT_CHIME_VOLUME"
-      NF_CUR_LAST_SESSION=""
-      _nf_write_state
-      printf '%b✓ Settings reset to defaults%b\n' "$NF_GREEN" "$NF_RST"
+      # Idempotent install: if state.json doesn't exist, create with defaults.
+      # If it already exists (upgrade), preserve existing settings.
+      if [[ ! -f "$NF_STATE_FILE" ]]; then
+        NF_CUR_MODE="$NF_DEFAULT_MODE"
+        NF_CUR_WIDTH="$NF_DEFAULT_WIDTH"
+        NF_CUR_FLAIR="true"
+        NF_CUR_COLOR="$NF_DEFAULT_COLOR"
+        NF_CUR_TERMINAL_BELL="$NF_DEFAULT_TERMINAL_BELL"
+        NF_CUR_CHIME_SOUND="$NF_DEFAULT_CHIME_SOUND"
+        NF_CUR_CHIME_STYLE="$NF_DEFAULT_CHIME_STYLE"
+        NF_CUR_CHIME_EVENTS="$NF_DEFAULT_CHIME_EVENTS"
+        NF_CUR_CHIME_VOLUME="$NF_DEFAULT_CHIME_VOLUME"
+        NF_CUR_LAST_SESSION=""
+        _nf_write_state
+        printf '%b✓ Settings initialized to defaults%b\n' "$NF_GREEN" "$NF_RST"
+      else
+        printf '%b✓ Existing settings preserved%b\n' "$NF_GREEN" "$NF_RST"
+      fi
+
+      # Update statusLine in settings.json using ${CLAUDE_PLUGIN_ROOT} so it
+      # survives plugin upgrades. Resolve the variable for the path to write.
+      _sl_cmd='bash ${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh'
+      if [[ ! -f "$NF_SETTINGS_FILE" ]]; then
+        echo '{}' > "$NF_SETTINGS_FILE"
+      fi
+      _tmp="$NF_SETTINGS_FILE.tmp.$$"
+      jq --arg cmd "$_sl_cmd" '.statusLine = {"type": "command", "command": $cmd}' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+      printf '%b✓ statusLine configured in settings.json%b\n' "$NF_GREEN" "$NF_RST"
+
       exit 0
       ;;
     uninstall)
