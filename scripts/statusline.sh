@@ -1213,15 +1213,15 @@ _render_bar() {
   local _i
   for (( _i=0; _i<17; _i++ )); do _NF_BRAND_COLORS+=("$_NF_BRAND_COLOR"); done
   _logo_icons=(
-    "$(printf '\UE838')" " "
-    "$(printf '\U000F0BF7')" " "
-    "$(printf '\U000F0C1E')" " "
-    "$(printf '\U000F0BF4')" " "
-    "$(printf '\UF335')" " "
-    "$(printf '\U000F0C0C')" " "
-    "$(printf '\U000F0BEB')" " "
-    "$(printf '\U000F0C03')" " "
-    "$(printf '\U000F0C1E')"
+    "$(printf '\xee\xa0\xb8')" " "
+    "$(printf '\xf3\xb0\xaf\xb7')" " "
+    "$(printf '\xf3\xb0\xb0\x9e')" " "
+    "$(printf '\xf3\xb0\xaf\xb4')" " "
+    "$(printf '\xef\x8c\xb5')" " "
+    "$(printf '\xf3\xb0\xb0\x8c')" " "
+    "$(printf '\xf3\xb0\xaf\xab')" " "
+    "$(printf '\xf3\xb0\xb0\x83')" " "
+    "$(printf '\xf3\xb0\xb0\x9e')"
   )
   local _logo_end=0
 
