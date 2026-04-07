@@ -700,7 +700,7 @@ if [[ -n "$output_tokens" && -n "$total_api_ms" ]] && (( output_tokens > 0 && to
   else
     _speed_fmt="$_tok_per_sec"
   fi
-  speed_segment="${MAUVE}${_speed_fmt} t/s${RESET}"
+  speed_segment="${MAUVE}󰓅 ${_speed_fmt}${RESET}"
 fi
 
 COST_COLOR="${COST_GREEN}"
