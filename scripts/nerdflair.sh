@@ -361,9 +361,7 @@ while [[ $# -gt 0 ]]; do
         printf '%b✓ Existing settings preserved%b\n' "$NF_GREEN" "$NF_RST"
       fi
 
-      # Update statusLine in settings.json using ${CLAUDE_PLUGIN_ROOT} so it
-      # survives plugin upgrades. Resolve the variable for the path to write.
-      _sl_cmd='bash ${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh'
+      _sl_cmd="bash ${SCRIPT_DIR}/statusline.sh"
       if [[ ! -f "$NF_SETTINGS_FILE" ]]; then
         echo '{}' > "$NF_SETTINGS_FILE"
       fi
