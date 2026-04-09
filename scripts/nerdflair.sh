@@ -184,7 +184,7 @@ while [[ $# -gt 0 ]]; do
         mkdir -p "$NF_SESSION_DIR"
         printf '{"chime":"%s"}\n' "$_cs_matched" > "$_cs_session_file"
       else
-        # Update session file: overwrite chime, preserve texture
+        # Update session file: overwrite chime
         _cs_tmp="$_cs_session_file.tmp.$$"
         jq --arg chime "$_cs_matched" '.chime = $chime' "$_cs_session_file" > "$_cs_tmp" && mv "$_cs_tmp" "$_cs_session_file"
       fi

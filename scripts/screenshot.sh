@@ -6,7 +6,6 @@
 #   (1) Full layout × 3 color modes (vibrant, muted, mono)
 #   (2) Compact layout (vibrant)
 #   (3) Minimal layout (vibrant)
-#   (4) Context bar gallery: logo bar + one bar per texture
 #
 # Usage:
 #   ./scripts/screenshot.sh              # render to terminal
@@ -28,7 +27,7 @@ OUTPUT_STYLE="explanatory"
 SESSION_ID="screenshot-session-fixed-id-0001"
 COST_USD="12.83"
 API_DURATION_MS="1560000"  # 26 minutes
-CONTEXT_USED_PCT="42"
+CONTEXT_USED_PCT="83"
 INPUT_TOKENS="60000"
 OUTPUT_TOKENS="24000"
 CTX_WINDOW_SIZE="200000"
@@ -89,12 +88,11 @@ MCPEOF
 render_variation() {
   local mode="$1"
   local color="$2"
-  local texture="${3:-wind}"
-  local pct_override="${4:-}"
-  local label="$5"
-  local bar_only="${6:-false}"
-  local cost_override="${7:-}"
-  local duration_override="${8:-}"
+  local pct_override="${3:-}"
+  local label="$4"
+  local bar_only="${5:-false}"
+  local cost_override="${6:-}"
+  local duration_override="${7:-}"
 
   # Section header: centered label (skip for bar_only gallery entries)
   if [[ "$bar_only" != "true" && -n "$label" ]]; then
@@ -117,9 +115,9 @@ render_variation() {
 {"mode": "$mode", "width": "auto", "flair": true, "bell": "both", "bell_sound": "Glass", "context": "full", "color": "$color", "last_tokens": 80000, "last_session": "$SESSION_ID"}
 STATEEOF
 
-  # Write session file as JSON (chime style + bar texture)
+  # Write session file as JSON (chime style)
   mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
-  printf '{"chime":"TestStyle","texture":"%s"}\n' "$texture" > "$FAKE_HOME/.claude/nerdflair/sessions/$SESSION_ID"
+  printf '{"chime":"TestStyle"}\n' > "$FAKE_HOME/.claude/nerdflair/sessions/$SESSION_ID"
 
   # Build JSON payload
   local json_input json_pct json_tokens json_cost json_api_ms
@@ -169,50 +167,17 @@ JSONEOF
   fi
 }
 
-# ── Shared texture for layout variations ─────────────────────────
-SHARED_TEXTURE="ThickDots"
-
 # ── (1) Full layout × 3 color modes ─────────────────────────────
-render_variation "full" "default" "$SHARED_TEXTURE"  "" "Color: vibrant"
+render_variation "full" "default" "" "Color: vibrant"
 
-render_variation "full" "muted"   "$SHARED_TEXTURE"  "" "Color: muted"
+render_variation "full" "muted"   "" "Color: muted"
 
-render_variation "full" "mono"    "$SHARED_TEXTURE"  "" "Color: mono"
+render_variation "full" "mono"    "" "Color: mono"
 
 # ── (2) Compact layout ───────────────────────────────────────────
-render_variation "compact" "default" "$SHARED_TEXTURE" "" "Layout: compact"
+render_variation "compact" "default" "" "Layout: compact"
 
 # ── (3) Minimal layout ──────────────────────────────────────────
-render_variation "minimal" "default" "$SHARED_TEXTURE" "" "Layout: minimal"
-
-# ── (4) Context bar gallery ──────────────────────────────────────
-# Logo bar (0% context) + one bar per texture (11 textures).
-# Percentages are spread across the range to show the color gradient.
-
-# Centered header
-LABEL_COLOR='\033[1;38;2;35;38;42m'
-HEADER_RESET='\033[0m'
-_gallery_label="Context Bar Gallery"
-_cols=$(tput cols 2>/dev/null || echo 80)
-_pad=$(( (_cols - ${#_gallery_label}) / 2 ))
-(( _pad < 0 )) && _pad=0
-_spaces=$(printf '%*s' "$_pad" '')
-printf '\n\n%s%b%s%b' "$_spaces" "$LABEL_COLOR" "$_gallery_label" "$HEADER_RESET"
-
-# Logo bar at 0%
-render_variation "compact" "default" "$SHARED_TEXTURE"  "0"   ""  true  "0.00"  "0"
-
-# One bar per texture, spread across percentages
-render_variation "compact" "default" "Wind"           "8"   ""  true  "0.47"   "120000"
-render_variation "compact" "default" "ThickDots"      "15"  ""  true  "2.18"   "300000"
-render_variation "compact" "default" "SinWave"        "23"  ""  true  "5.93"   "540000"
-render_variation "compact" "default" "SquareWave"     "30"  ""  true  "11.07"  "960000"
-render_variation "compact" "default" "Beads"          "38"  ""  true  "18.42"  "1500000"
-render_variation "compact" "default" "Arrows"         "45"  ""  true  "27.65"  "2100000"
-render_variation "compact" "default" "DotChain"       "53"  ""  true  "43.19"  "3000000"
-render_variation "compact" "default" "Soundwaves"     "60"  ""  true  "61.84"  "4200000"
-render_variation "compact" "default" "Pulse"          "68"  ""  true  "89.37"  "5700000"
-render_variation "compact" "default" "Sparkle"        "75"  ""  true  "112.50" "7800000"
-render_variation "compact" "default" "InfinityLoop"   "83"  ""  true  "147.03" "12600000"
+render_variation "minimal" "default" "" "Layout: minimal"
 
 printf '\n\n'

@@ -598,28 +598,6 @@ EOF
   _teardown
 }
 
-test_bell_writes_texture_on_session_start() {
-  _setup
-  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
-{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
-EOF
-  echo '{"session_id":"texture-test-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
-  local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/texture-test-session"
-  local texture=""
-  if [[ -f "$_session_file" ]]; then
-    texture=$(grep -o '"texture"[[:space:]]*:[[:space:]]*"[^"]*"' "$_session_file" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-  fi
-  # Texture should be a known texture name
-  local _valid_textures="Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop"
-  if [[ -n "$texture" && " $_valid_textures " == *" $texture "* ]]; then
-    (( _pass++ ))
-  else
-    (( _fail++ ))
-    _errors+=("FAIL: texture should be a valid name, got '$texture'")
-  fi
-  _teardown
-}
-
 test_bell_cleans_up_session_file_on_session_end() {
   _setup
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
@@ -642,26 +620,6 @@ EOF
   else
     (( _fail++ ))
     _errors+=("FAIL: session file should be removed after SessionEnd")
-  fi
-  _teardown
-}
-
-test_renderer_reads_texture_from_session_file() {
-  _setup
-  local state='{"mode": "full", "width": "80", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
-  # Write a session file with one texture
-  mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
-  printf '{"chime":"BalladPiano","texture":"Wind"}\n' > "$FAKE_HOME/.claude/nerdflair/sessions/test-session-001"
-  local output1 output2
-  output1=$(_render "$state" "$(_make_input 42 5.00)")
-  # Change the texture — output should differ
-  printf '{"chime":"BalladPiano","texture":"Beads"}\n' > "$FAKE_HOME/.claude/nerdflair/sessions/test-session-001"
-  output2=$(_render "$state" "$(_make_input 42 5.00)")
-  if [[ "$output1" != "$output2" ]]; then
-    (( _pass++ ))
-  else
-    (( _fail++ ))
-    _errors+=("FAIL: different textures should produce different output")
   fi
   _teardown
 }

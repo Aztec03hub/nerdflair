@@ -83,9 +83,9 @@ if [[ "$EVENT" == "PreCompact" ]]; then
   printf '%s' "$(date +%s)" > "$_COMPACT_MARKER"
 fi
 
-# ── Resolve chime style and bar texture (per-session) ──
+# ── Resolve chime style (per-session) ──
 # Each session gets a JSON file: ~/.claude/nerdflair/sessions/<session_id>
-#   {"chime":"StyleName","texture":"wind"}
+#   {"chime":"StyleName"}
 # The global chime_recent_styles list in the shared state file prevents
 # repeats across sessions. The statusline reads the per-session file.
 mkdir -p "$NF_SESSION_DIR"
@@ -149,17 +149,10 @@ else
   fi
 fi
 
-# On SessionStart, pick a random bar texture
-_BAR_TEXTURES=(Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop)
-_resolved_texture=""
-if [[ "$EVENT" == "SessionStart" ]]; then
-  _resolved_texture="${_BAR_TEXTURES[$((RANDOM % ${#_BAR_TEXTURES[@]}))]}"
-fi
-
 # Write session file as JSON
 if [[ -n "$_session_file" ]]; then
   if [[ "$EVENT" == "SessionStart" ]]; then
-    printf '{"chime":"%s","texture":"%s"}\n' "$_resolved_style" "$_resolved_texture" > "$_session_file"
+    printf '{"chime":"%s"}\n' "$_resolved_style" > "$_session_file"
   elif [[ "$_resolved_style" != "random" && ! -f "$_session_file" ]]; then
     printf '{"chime":"%s"}\n' "$_resolved_style" > "$_session_file"
   fi

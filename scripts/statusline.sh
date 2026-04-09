@@ -26,7 +26,7 @@ _SL_TERMINAL_BELL="$NF_CUR_TERMINAL_BELL"
 _SL_CHIME_VOLUME="$NF_CUR_CHIME_VOLUME"
 _SL_CHIME_STYLE="$NF_CUR_CHIME_STYLE"
 _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
-# Per-session data (chime style, bar texture) is stored in ~/.claude/nerdflair/sessions/<session_id>
+# Per-session data (chime style) is stored in ~/.claude/nerdflair/sessions/<session_id>
 # by bell.sh on SessionStart. The statusline reads it from there.
 # ── Sanitize external strings ─────────────────────────────────────
 # Strip backslashes so that printf '%b' cannot expand backslash-escape
@@ -344,7 +344,7 @@ _fmt_duration() {
 mcp_segment=""
 mcp_segment_expanded=""
 if (( mcp_enabled > 0 )); then
-  mcp_icon=$(printf '\xef\x90\xa5')  # U+F425 nf-oct-plug
+  mcp_icon=$(printf '\xef\x87\xa6')  # U+F1E6
   mcp_segment="${MCP_COLOR}${mcp_icon} ${mcp_enabled} MCP${RESET}"
   # Build expanded form with sorted names: "MCP proxy, slack" (list only, no count)
   # Also build truncated variants: "Slack, Glean, 4 more"
@@ -411,19 +411,16 @@ if [[ -z "$total_used" ]] || ! (( total_used > 0 )) 2>/dev/null; then
   pct=0
 fi
 
-# ── Per-session data: chime style + bar texture ────
+# ── Per-session data: chime style ────
 # bell.sh writes ~/.claude/nerdflair/sessions/<session_id> on SessionStart:
-#   {"chime":"StyleName","texture":"wind"}
+#   {"chime":"StyleName"}
 _SESSION_DIR="$NF_SESSION_DIR"
 _session_file=""
-_session_texture=""
 _session_chime=""
 if [[ -n "$session_id" ]]; then
   _session_file="$_SESSION_DIR/${session_id}"
   if [[ -f "$_session_file" ]]; then
-    _session_pair=$(jq -r '[.texture // empty, .chime // empty] | @tsv' "$_session_file" 2>/dev/null || true)
-    _session_texture="${_session_pair%%	*}"
-    _session_chime="${_session_pair#*	}"
+    _session_chime=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
   fi
 fi
 
@@ -462,9 +459,9 @@ ctx_label="${used_fmt}/${size_fmt} ${pct}%"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
-  # Strip ANSI escapes and OSC 8 hyperlinks, then count characters (wc -m handles multibyte)
+  # Strip ANSI escapes, then count characters (wc -m handles multibyte)
   local stripped
-  stripped=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*m//g' | sed $'s/\033\\]8;;[^\a]*\a//g')
+  stripped=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*m//g')
   printf '%s' "$stripped" | wc -m | tr -d ' '
 }
 
@@ -630,32 +627,20 @@ if (( model_text_len > model_budget )); then
   fi
 fi
 
-# OSC 8 hyperlink helpers (no-op if no remote URL)
-_osc_link_start=""
-_osc_link_end=""
-_osc_branch_start=""
-_osc_branch_end=""
-if [[ -n "${_gc_remote:-}" ]]; then
-  _osc_link_start=$(printf '\033]8;;%s\a' "$_gc_remote")
-  _osc_link_end=$(printf '\033]8;;\a')
-  if [[ -n "$branch" ]]; then
-    _osc_branch_start=$(printf '\033]8;;%s/tree/%s\a' "$_gc_remote" "$branch")
-    _osc_branch_end=$(printf '\033]8;;\a')
-  fi
-fi
+
 
 # Assemble folder segment
 if [[ "${_is_home:-0}" == "1" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE} ${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
+    folder_segment="${BLUE} ${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
   else
     folder_segment="${BLUE} ${RESET}"
   fi
 elif [[ -n "$folder_name" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${BULLET}${MAGENTA}${_osc_branch_start}󰘬 ${branch}${_osc_branch_end}${RESET}"
+    folder_segment="${BLUE}󰉋 ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
   else
-    folder_segment="${BLUE}${_osc_link_start}󰉋 ${folder_name}${_osc_link_end}${RESET}"
+    folder_segment="${BLUE}󰉋 ${folder_name}${RESET}"
   fi
 fi
 
@@ -1057,69 +1042,6 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
   _justified_row "$ROW_WIDTH" "$row1_left" "\033[0m"
 fi
 
-# ── Bar texture: resolved per-session by bell.sh ─────────────────
-
-# ── _select_texture_icons: resolve fill icons for a texture name ──
-# Sets _fill_icon_a, _fill_icon_b, _fill_cycle in the caller's scope.
-_select_texture_icons() {
-  local _texture="$1"
-  _fill_cycle=2
-  case "$_texture" in
-    Wind)
-      _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16
-      _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
-      ;;
-    ThickDots)
-      _fill_icon_a=$(printf '\xc2\xb7')      # U+00B7 middle dot (bullet)
-      _fill_icon_b=$(printf '\xef\x91\x84')  # U+F444
-      ;;
-    SinWave)
-      _fill_icon_a=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
-      _fill_icon_b=$(printf '\xf3\xb1\x91\xb9')  # U+F1479
-      ;;
-    SquareWave)
-      _fill_icon_a=$(printf '\xee\xbe\x9d')  # U+EF9D
-      _fill_icon_b=$(printf '\xee\xbe\x9d')  # U+EF9D
-      ;;
-    Beads)
-      _fill_icon_a=$(printf '\xef\x85\xb2')  # U+F172
-      _fill_icon_b=$(printf '\xef\x92\x8b')  # U+F48B
-      ;;
-    Arrows)
-      _fill_icon_a=$(printf '\xef\x91\x8a')  # U+F44A (small arrow)
-      _fill_icon_b=$(printf '\xee\xad\xb0')  # U+EB70
-      ;;
-    Sparkle)
-      _fill_icon_a=$(printf '\xf3\xb1\x8d\xbf')  # U+F137F
-      _fill_icon_b=$(printf '\xc2\xb7')            # U+00B7 middle dot (bullet)
-      ;;
-    DotChain)
-      _fill_icon_a=$(printf '\xef\x85\x81')  # U+F141 ellipsis (nf-fa-ellipsis_h)
-      _fill_icon_b=$(printf '\xef\x85\x81')  # U+F141 ellipsis (repeated)
-      ;;
-    Donuts)
-      _fill_icon_a=$(printf '\xee\x89\xb3')  # U+E273
-      _fill_icon_b=$(printf '\xc2\xb7')      # U+00B7 middle dot (bullet)
-      ;;
-    Soundwaves)
-      _fill_icon_a=$(printf '\xf3\xb1\x91\xbd')  # U+F147D
-      _fill_icon_b=$(printf '\xf3\xb1\x91\xbd')  # U+F147D (repeated)
-      ;;
-    Pulse)
-      _fill_icon_a=$(printf '\xee\x88\xb4')  # U+E234
-      _fill_icon_b=$(printf '\xee\x88\xb4')  # U+E234 (repeated)
-      ;;
-    InfinityLoop)
-      _fill_icon_a=$(printf '\xef\x93\xa6')  # U+F4E6
-      _fill_icon_b=$(printf '\xc2\xb7')    # U+00B7 middle dot (bullet)
-      ;;
-    *)
-      _fill_icon_a=$(printf '\xee\xbc\x96')  # U+EF16 (fallback to Wind)
-      _fill_icon_b=$(printf '\xee\x8d\x8b')  # U+E34B
-      ;;
-  esac
-}
-
 # ── _compute_gradient_cache: pre-compute per-cell ANSI colors ────
 # Populates _cell_bg_cache, _cell_fg_cache, _cell_text_cache, _cell_wind_cache
 # in the caller's scope. Interpolates RGB between GRAD_* control points.
@@ -1192,8 +1114,7 @@ _compute_logo_gradient() {
 }
 
 # ── _render_bar: render a progress bar given pct and label ──────
-# Usage: _render_bar <pct> <label> [suffix_colored] [texture] [compact_mark_pct] [right_label]
-# Textures: "wind" (default), or named texture from BAR_TEXTURES
+# Usage: _render_bar <pct> <label> [suffix_colored] [compact_mark_pct] [right_label]
 # compact_mark_pct: if set (0–100), draws a vertical divider at that % and
 #   darkens the empty region beyond it.
 # right_label: if set, displayed right-aligned in the empty area with 2-char padding.
@@ -1201,9 +1122,8 @@ _render_bar() {
   local _pct=$1
   local _label="$2"
   local _suffix="${3:-}"
-  local _texture="${4:-wind}"
-  local _compact_mark_pct="${5:-}"
-  local _right_label="${6:-}"
+  local _compact_mark_pct="${4:-}"
+  local _right_label="${5:-}"
 
   # NerdFlair logo: shown right-aligned in empty area of bar
   local _logo_icons=()
@@ -1300,10 +1220,6 @@ _render_bar() {
     (( _rlabel_start < 0 )) && _rlabel_start=0
     _rlabel_end=$(( _rlabel_start + _rlabel_len ))
   fi
-
-  # Select texture icons
-  local _fill_icon_a _fill_icon_b _fill_icon_c _fill_cycle
-  _select_texture_icons "$_texture"
 
   # Pre-compute per-cell gradient colors
   local _cell_bg_cache=() _cell_text_cache=() _cell_wind_cache=() _cell_fg_cache=()
@@ -1428,19 +1344,7 @@ _render_bar() {
       _bar+="${_cur_empty_bg}${_cur_light_fg}${_rch}"
     else
       if (( _body_i < _filled )); then
-        # Guard: use middle dot adjacent to label for textures with wide glyphs
-        if [[ "$_texture" == "Sparkle" || "$_texture" == "ThickDots" || "$_texture" == "InfinityLoop" ]] && (( _label_start >= 0 && ( _vis == _label_start - 1 || _vis == _label_end ) )); then
-          _bar+="${_cell_bg}${_cell_wind}·"
-        else
-          local _ci_mod=$(( _body_i % _fill_cycle ))
-          if (( _ci_mod == 0 )); then
-            _bar+="${_cell_bg}${_cell_wind}${_fill_icon_a}"
-          elif (( _ci_mod == 1 )); then
-            _bar+="${_cell_bg}${_cell_wind}${_fill_icon_b}"
-          else
-            _bar+="${_cell_bg}${_cell_wind}${_fill_icon_c}"
-          fi
-        fi
+        _bar+="${_cell_bg} "
       else
         if (( ${#_logo_icons[@]} > 0 && _vis >= _logo_start && _vis < _logo_end )); then
           local _li=$(( _vis - _logo_start ))
@@ -1464,9 +1368,6 @@ _render_bar() {
     "${RESET}"
 }
 
-# Select texture per session (resolved by bell.sh, fallback to Wind)
-BAR_TEXTURES=(Wind ThickDots SinWave SquareWave Beads Arrows DotChain Soundwaves Pulse Sparkle InfinityLoop)
-BAR_TEXTURE="${_session_texture:-Wind}"
 
 _bar_label="$ctx_label"
 
@@ -1510,7 +1411,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
     fi
     _bar_right_label="$_try"
   fi
-  _render_bar "$pct" "$_bar_label" "" "$BAR_TEXTURE" "$_compact_mark" "$_bar_right_label"
+  _render_bar "$pct" "$_bar_label" "" "$_compact_mark" "$_bar_right_label"
 fi
 
 # Row 3: mcp | time + cost (full mode only)

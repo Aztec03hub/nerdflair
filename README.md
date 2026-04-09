@@ -37,7 +37,7 @@ Restart Claude Code after install for the changes to take effect.
 ## Features
 
 - **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row)
-- **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker and randomizable icon and texture decorations (flair)
+- **Context bar:** color shifts from green to red as context fills, with a compaction threshold marker
 - **3 color palettes**: vibrant (full color), muted (desaturated), mono (grayscale)
 - **Custom spinner verbs:** 150 themed thinking/working phrases
 - **Terminal bell**: (tab indicator) on Notification, PermissionRequest, and Stop events
@@ -51,7 +51,7 @@ Restart Claude Code after install for the changes to take effect.
 
 ## Prerequisites
 
-**A Nerd Font is required.** The statusline uses [Nerd Font](https://www.nerdfonts.com/) glyphs for icons, Powerline caps, and context bar textures. Without one installed, characters render as boxes.
+**A Nerd Font is required.** The statusline uses [Nerd Font](https://www.nerdfonts.com/) glyphs for icons and Powerline caps. Without one installed, characters render as boxes.
 
 Install via Homebrew or download from [nerdfonts.com](https://www.nerdfonts.com/):
 
@@ -174,7 +174,7 @@ Three bash scripts and one JSON state file.
 - **Configurator** (`scripts/nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
 - **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS, Linux) based on user-defined config.
 
-All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style, bar texture) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.
+All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.
 
 
 ## Update
