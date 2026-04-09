@@ -1,6 +1,6 @@
   Chugging an estus flask
   Dropping logic bombs
-󰴈  Cross-pollinating timelines
+󰴈  Cross-pollinating codebases
   Hatching a xenomorph
   This is fine dot jpeg
   Torquing the differential
@@ -12,7 +12,7 @@
   Spinning the pale blue dot
   To be or not to segfault
 󰚩  Bending like Bender
-󰌪  Turning over a new malloc
+󰌪  Turning over new leaf nodes
   Riding on the storm
   Pumping up the health bar
 󰩃  Chasing the tail recursion
@@ -27,20 +27,20 @@
 󰇏  Critting on a d6
   Falling on Newton's head
 󰭹  Engaging in witty banter
-  Acquiring double cherry power-up
+  Acquiring cherry power-up
   Fueling the all-nighter
   Thinking four moves ahead
   Wishing on a GitHub star
   Intensifying fidget spinning
-󰇥  Rubber ducky debugging
+󰇥  Asking a rubber ducky
 󰼙  Rubbing Aladdin's lamp
   Tingling the spider sense
-  Engaging infinite improbability drive
+  Engaging  improbability drive
   Torching the banana stand
 󰙴  Glittering like Galadriel's phial
   Spewing liquid hot magma
   Procuring Abby Normal's brain
-  Fiddling with the controls
+  Ruining the live mix
 󰵲  Counting commits by starlight
   Rerouting auxiliary power
   Whistling the X-Files theme
@@ -49,7 +49,7 @@
   Capturing the blue flag
   Cutting the red wire
   Hailing a robotaxi
-󰷚  Playing Minesweeper on Windows 3.1
+󰷚  Minesweeping on Windows 3.1
   Robbing the bit bank
   Granting eternal uptime
   Bullseyeing womp rats
