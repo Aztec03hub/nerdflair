@@ -85,7 +85,7 @@
   Fighting killer tomatoes
 󰆤  Fragging from across the map
 󱡝  Mutating ninja turtles
-󰗑  Weighing all the options
+󰗑  Weighing all options
 󰊘  Gassing up the DeLorean
   Penning an immortal treatise
   Regifting legacy code
@@ -94,19 +94,19 @@
 󰧱  Tip-toeing through the tulips
   Mixing a pan-galactic gargle blaster
 󱁇  Seeding the random generator
-󰆘  Accepting all the cookies
+󰆘  Accepting all cookies
 󰛐  Peering into the palantír
   RTFM'ing
   Probing dev/null
   Adjusting nerd glasses
-  Playing with Prometheus' fire
+  Playing with fire
   Thinking different
   Socketing into the materia slot
 󰉁  Harnessing 1.21 gigawatts
-󰘳  Copy-pasting from Stack Overflow
+󰘳  Pasting from Stack Overflow
 󰝨  Getting up and atom
 󰭎  Spying on neighboring repos
-󰄀  Snapping bussin selfies
+󰄀  Snapping fire selfies
 󱔎  Riding the snake
 󰯊  Weaving a tangled web
 󰯉  Invading your filesystem
@@ -114,25 +114,25 @@
   Awarding Chewbacca a medal
   Painting the roses red
 󰣈  Careful with that axe, Eugene
-󰻳  We're just two lost souls
+󰻳  Swimming in a fishbowl
 󰥫  Drinking from the Fountain of sudo
   Judging the book by its cover
   Touching His Noodly Appendage
 󰣙  So nice they built it twice
-󰙽  Tickling the algorithmic ivories
+󰙽  Tickling the ivories
 󰁥  @here'ing the entire universe
   Consulting the Keymaster
   Approaching Kardashev Type II
   Kissing frogs, expecting princes
-  Feeling like when a dove cries
+  Crying like a dove
   Leaving the back door open
   Yer a wizard, Harry
-  Gorging on forbidden donut
-  Unlocking tier 5 achievements
-  Painting with all the colors of hex
-󰫂  Playing Ride of the Valkyries
+  Eating forbidden donut
+  Unlocking achievements
+  Tasting the rainbow
+󰫂  Blasting Ride of the Valkyries
   Floating like a butterfly
-  It's happy hour somewhere in UTC
+  Drinking to code health
 󰲴  Controlling descent into madness
 󰸮  Keeping the home fires compiling
   Bouncing signals off Sputnik
@@ -146,5 +146,5 @@
   Catching rays on Risa
 󰙨  Testing in production
   Driving down the fairway
-  Abandoning full Amazon cart 
+  Abandoning full Amazon cart
   Calling from inside the house
