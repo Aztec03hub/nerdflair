@@ -85,7 +85,7 @@ if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
 fi
 _is_proj_disabled() {
   local _n="$1"
-  for _pd in "${_proj_disabled_names[@]}"; do
+  for _pd in ${_proj_disabled_names[@]+"${_proj_disabled_names[@]}"}; do
     [[ "$_pd" == "$_n" ]] && return 0
   done
   return 1
@@ -787,10 +787,11 @@ elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "
   # No MCP servers — show cost/time/speed/chime on the left instead of right
   if [[ -n "$cost_segment" ]]; then
     row3_left+="$cost_segment"
-    [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
     [[ -n "$time_segment" ]] && row3_left+="${BULLET}${time_segment}"
+    [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
   elif [[ -n "$time_segment" ]]; then
     row3_left+="$time_segment"
+    [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
   fi
   [[ -n "$_chime_segment" ]] && { [[ "$row3_left" != "\033[0m" ]] && row3_left+="${BULLET}"; row3_left+="$_chime_segment"; }
   # Clear right side to avoid duplication
@@ -839,19 +840,6 @@ TIER_FG=(
   "\033[38;2;148;125;60m"
   "\033[38;2;170;130;62m"
 )
-# Label + lead icon: dark enough to read on both bar fill and minimal pill
-TIER_TEXT=(
-  "\033[38;2;72;78;74m"     # 0–10   lighter text for dark bg
-  "\033[38;2;74;82;74m"     # 11–20
-  "\033[38;2;40;52;38m"     # 21–30
-  "\033[38;2;38;55;35m"     # 31–40
-  "\033[38;2;40;60;33m"     # 41–50
-  "\033[38;2;48;66;31m"     # 51–60
-  "\033[38;2;60;68;30m"     # 61–70
-  "\033[38;2;76;74;34m"     # 71–80
-  "\033[38;2;92;80;36m"     # 81–90
-  "\033[38;2;102;78;36m"    # 91–100
-)
 # Wind icons: darker than fill BG (~30-40 units)
 TIER_WIND=(
   "\033[38;2;27;35;30m"     # 0–10
@@ -868,6 +856,7 @@ TIER_WIND=(
 EMPTY_BG="\033[48;2;35;38;45m"
 EMPTY_FG="\033[38;2;35;38;45m"
 LIGHT_FG="\033[38;2;85;90;100m"    # dim text on empty bg
+LABEL_COVERED_FG="\033[38;2;18;20;25m"  # near-black label text on filled bar
 
 # ── Color mode overrides for progress bar gradient ───────────────
 if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
@@ -896,18 +885,6 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
     "\033[38;2;170;170;170m"
     "\033[38;2;190;190;190m"
   )
-  TIER_TEXT=(
-    "\033[38;2;110;110;110m"
-    "\033[38;2;118;118;118m"
-    "\033[38;2;126;126;126m"
-    "\033[38;2;134;134;134m"
-    "\033[38;2;65;65;65m"
-    "\033[38;2;72;72;72m"
-    "\033[38;2;80;80;80m"
-    "\033[38;2;88;88;88m"
-    "\033[38;2;100;100;100m"
-    "\033[38;2;110;110;110m"
-  )
   TIER_WIND=(
     "\033[38;2;28;28;28m"
     "\033[38;2;35;35;35m"
@@ -923,6 +900,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   EMPTY_BG="\033[48;2;38;38;38m"
   EMPTY_FG="\033[38;2;38;38;38m"
   LIGHT_FG="\033[38;2;90;90;90m"
+  LABEL_COVERED_FG="\033[38;2;22;22;22m"
 elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   # Muted gradient: same green → yellow → orange hues, reduced saturation (~40%)
   TIER_BG=(
@@ -949,18 +927,6 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
     "\033[38;2;158;132;70m"
     "\033[38;2;178;132;68m"
   )
-  TIER_TEXT=(
-    "\033[38;2;40;55;38m"
-    "\033[38;2;42;58;40m"
-    "\033[38;2;44;60;41m"
-    "\033[38;2;47;62;40m"
-    "\033[38;2;50;64;39m"
-    "\033[38;2;54;66;37m"
-    "\033[38;2;68;70;36m"
-    "\033[38;2;88;82;38m"
-    "\033[38;2;108;90;42m"
-    "\033[38;2;115;88;42m"
-  )
   TIER_WIND=(
     "\033[38;2;33;47;31m"
     "\033[38;2;35;49;33m"
@@ -976,6 +942,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   EMPTY_BG="\033[48;2;38;40;45m"
   EMPTY_FG="\033[38;2;38;40;45m"
   LIGHT_FG="\033[38;2;88;92;102m"
+  LABEL_COVERED_FG="\033[38;2;20;24;20m"
 fi
 
 # ── Smooth gradient control points per color mode ────────────────
@@ -984,9 +951,6 @@ fi
 GRAD_BG_R=(48 50 55 65  88  115 140 160 180 200)
 GRAD_BG_G=(62 74 88 105 112 116 122 125 120 55)
 GRAD_BG_B=(48 48 50 52  54  55  58  60  58  50)
-GRAD_TX_R=(72 74 40 40 52  65  80  94  104 118)
-GRAD_TX_G=(78 82 52 58 65  70  76  78  74  38)
-GRAD_TX_B=(74 74 38 33 30  30  33  35  34  30)
 GRAD_WN_R=(27 29 32 38 50  66  86  109 131 153)
 GRAD_WN_G=(35 43 52 63 71  78  84  91  93  66)
 GRAD_WN_B=(30 30 31 31 30  29  28  30  30  27)
@@ -996,9 +960,6 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   GRAD_BG_R=(45 55 65 76 88  100 115 132 155 185)
   GRAD_BG_G=(45 55 65 76 88  100 115 132 155 185)
   GRAD_BG_B=(45 55 65 76 88  100 115 132 155 185)
-  GRAD_TX_R=(85 90 95 105 50  55  62  72  90  110)
-  GRAD_TX_G=(85 90 95 105 50  55  62  72  90  110)
-  GRAD_TX_B=(85 90 95 105 50  55  62  72  90  110)
   GRAD_WN_R=(28 35 44 54 66  78  92  107 126 146)
   GRAD_WN_G=(28 35 44 54 66  78  92  107 126 146)
   GRAD_WN_B=(28 35 44 54 66  78  92  107 126 146)
@@ -1007,9 +968,6 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   GRAD_BG_R=(48 52 55 62 76  92  110 132 150 168)
   GRAD_BG_G=(52 58 65 74 86  96  104 108 104 68)
   GRAD_BG_B=(50 52 54 56 58  58  60  62  60  56)
-  GRAD_TX_R=(74 76 44 45 54  66  78  90  100 110)
-  GRAD_TX_G=(78 80 54 58 64  68  72  74  70  46)
-  GRAD_TX_B=(74 74 42 38 34  34  36  38  37  34)
   GRAD_WN_R=(33 35 37 40 44  48  62  92  120 140)
   GRAD_WN_G=(47 49 52 54 57  60  66  83  93  93)
   GRAD_WN_B=(31 33 34 32 31  30  28  32  34  32)
@@ -1043,12 +1001,11 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
 fi
 
 # ── _compute_gradient_cache: pre-compute per-cell ANSI colors ────
-# Populates _cell_bg_cache, _cell_fg_cache, _cell_text_cache, _cell_wind_cache
-# in the caller's scope. Interpolates RGB between GRAD_* control points.
+# Populates _cell_bg_cache, _cell_fg_cache, _cell_wind_cache in the
+# caller's scope. Interpolates RGB between GRAD_* control points.
 _compute_gradient_cache() {
   local _filled=$1 _body_area=$2 _compact_mark_pct="$3"
   _cell_bg_cache=()
-  _cell_text_cache=()
   _cell_wind_cache=()
   _cell_fg_cache=()
   for (( _ci=0; _ci<_filled; _ci++ )); do
@@ -1068,10 +1025,6 @@ _compute_gradient_cache() {
     local _b=$(( GRAD_BG_B[_lo] + (GRAD_BG_B[_hi] - GRAD_BG_B[_lo]) * _frac / 100 ))
     _cell_bg_cache[$_ci]="\033[48;2;${_r};${_g};${_b}m"
     _cell_fg_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
-    _r=$(( GRAD_TX_R[_lo] + (GRAD_TX_R[_hi] - GRAD_TX_R[_lo]) * _frac / 100 ))
-    _g=$(( GRAD_TX_G[_lo] + (GRAD_TX_G[_hi] - GRAD_TX_G[_lo]) * _frac / 100 ))
-    _b=$(( GRAD_TX_B[_lo] + (GRAD_TX_B[_hi] - GRAD_TX_B[_lo]) * _frac / 100 ))
-    _cell_text_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
     _r=$(( GRAD_WN_R[_lo] + (GRAD_WN_R[_hi] - GRAD_WN_R[_lo]) * _frac / 100 ))
     _g=$(( GRAD_WN_G[_lo] + (GRAD_WN_G[_hi] - GRAD_WN_G[_lo]) * _frac / 100 ))
     _b=$(( GRAD_WN_B[_lo] + (GRAD_WN_B[_hi] - GRAD_WN_B[_lo]) * _frac / 100 ))
@@ -1156,7 +1109,6 @@ _render_bar() {
   (( _top_tier_idx < 0 )) && _top_tier_idx=0
   local _FILL_BG="${TIER_BG[$_top_tier_idx]}"
   local _FILL_FG="${TIER_FG[$_top_tier_idx]}"
-  local _FILL_TEXT="${TIER_TEXT[$_top_tier_idx]}"
   local _WIND_FG="${TIER_WIND[$_top_tier_idx]}"
 
   # Bar area: fixed width, clamped to MAX_BAR
@@ -1222,7 +1174,7 @@ _render_bar() {
   fi
 
   # Pre-compute per-cell gradient colors
-  local _cell_bg_cache=() _cell_text_cache=() _cell_wind_cache=() _cell_fg_cache=()
+  local _cell_bg_cache=() _cell_wind_cache=() _cell_fg_cache=()
   _compute_gradient_cache "$_filled" "$_body_area" "$_compact_mark_pct"
 
   # Outer cap colors — left cap uses first filled cell, right cap uses last
@@ -1320,12 +1272,10 @@ _render_bar() {
     # Per-cell smooth gradient colors from pre-computed cache
     local _cell_bg="$_FILL_BG"
     local _cell_fg="$_FILL_FG"
-    local _cell_text="$_FILL_TEXT"
     local _cell_wind="$_WIND_FG"
     if (( _body_i < _filled )); then
       _cell_bg="${_cell_bg_cache[$_body_i]}"
       _cell_fg="${_cell_fg_cache[$_body_i]}"
-      _cell_text="${_cell_text_cache[$_body_i]}"
       _cell_wind="${_cell_wind_cache[$_body_i]}"
     fi
 
@@ -1333,7 +1283,7 @@ _render_bar() {
       local _ci=$(( _vis - _label_start ))
       local _ch="${_label_padded:$_ci:1}"
       if (( _body_i < _filled )); then
-        _bar+="${_cell_bg}${_cell_text}${_ch}"
+        _bar+="${_cell_bg}${LABEL_COVERED_FG}${_ch}"
       else
         _bar+="${_cur_empty_bg}${_cur_light_fg}${_ch}"
       fi

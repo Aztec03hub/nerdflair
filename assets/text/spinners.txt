@@ -67,7 +67,7 @@
 󰼁  Drifting through the data stream
 󰈷  Scanning for replicants
 ⏻  Power cycling the simulation
-󰐃  Connecting red strings on the wall
+󰐃  Connecting red strings
   One scoop, no dependencies
   Buzzing the tower, Maverick
   Promising cake after testing
