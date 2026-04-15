@@ -342,8 +342,7 @@ while [[ $# -gt 0 ]]; do
       fi
       ;;
     install)
-      # Idempotent install: if state.json doesn't exist, create with defaults.
-      # If it already exists (upgrade), preserve existing settings.
+      # Idempotent install / upgrade: preserve user settings, refresh plugin state.
       if [[ ! -f "$NF_STATE_FILE" ]]; then
         NF_CUR_MODE="$NF_DEFAULT_MODE"
         NF_CUR_WIDTH="$NF_DEFAULT_WIDTH"
@@ -358,9 +357,12 @@ while [[ $# -gt 0 ]]; do
         _nf_write_state
         printf '%b✓ Settings initialized to defaults%b\n' "$NF_GREEN" "$NF_RST"
       else
+        # Re-write state to apply migrations and clean up legacy fields
+        _nf_write_state
         printf '%b✓ Existing settings preserved%b\n' "$NF_GREEN" "$NF_RST"
       fi
 
+      # Configure statusLine
       _sl_cmd="bash ${SCRIPT_DIR}/statusline.sh"
       if [[ ! -f "$NF_SETTINGS_FILE" ]]; then
         echo '{}' > "$NF_SETTINGS_FILE"
@@ -368,6 +370,21 @@ while [[ $# -gt 0 ]]; do
       _tmp="$NF_SETTINGS_FILE.tmp.$$"
       jq --arg cmd "$_sl_cmd" '.statusLine = {"type": "command", "command": $cmd}' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
       printf '%b✓ statusLine configured in settings.json%b\n' "$NF_GREEN" "$NF_RST"
+
+      # Refresh spinnerVerbs if nerdflair spinners were previously enabled
+      if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
+        _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Chugging an estus flask"))) | length > 0' "$NF_SETTINGS_FILE")
+        if [[ "$_is_nerdflair" == "true" ]]; then
+          _verbs_file="$(cd "$SCRIPT_DIR/../assets/text" 2>/dev/null && pwd)/spinners.txt"
+          if [[ -f "$_verbs_file" ]]; then
+            _verbs_json=$(jq -R -s '[split("\n")[] | select(length > 0)]' < "$_verbs_file")
+            _count=$(echo "$_verbs_json" | jq 'length')
+            _tmp="$NF_SETTINGS_FILE.tmp.$$"
+            jq --argjson verbs "$_verbs_json" '.spinnerVerbs = {"mode": "replace", "verbs": $verbs}' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
+            printf '%b✓ Spinner verbs refreshed%b (%s verbs)\n' "$NF_GREEN" "$NF_RST" "$_count"
+          fi
+        fi
+      fi
 
       exit 0
       ;;

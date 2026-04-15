@@ -38,6 +38,8 @@ _sanitize() { printf '%s' "$1" | sed 's/\\//g'; }
 # ── Extract fields from Claude Code JSON ──────────────────────────
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
+# Resolve symlinks so the path matches the key stored in ~/.claude.json
+[[ -n "$project_dir" && -d "$project_dir" ]] && project_dir=$(cd "$project_dir" && pwd -P)
 
 # Model: extract friendly name + version from ID
 raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // .model.display_name // empty) else (.model // empty) end')
@@ -106,7 +108,7 @@ done
 # Also read project-scoped MCP servers from ~/.claude.json .projects[project_dir].mcpServers
 if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
   while IFS= read -r _name; do
-    if [[ -n "$_name" ]]; then
+    if [[ -n "$_name" ]] && ! _is_proj_disabled "$_name"; then
       mcp_names+=("$(_sanitize "$_name")")
       (( mcp_enabled++ ))
     fi
