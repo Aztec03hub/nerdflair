@@ -64,6 +64,12 @@ cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
 total_duration_ms=$(echo "$input" | jq -r '.cost.total_duration_ms // empty')
 total_api_ms=$(echo "$input" | jq -r '.cost.total_api_duration_ms // empty')
 output_style=$(echo "$input" | jq -r '.output_style.name // empty')
+# Reasoning effort level (low/medium/high/xhigh/max). Absent when the model
+# does not support the effort parameter; ultracode reports as "xhigh".
+effort_level=$(echo "$input" | jq -r '.effort.level // empty')
+# Extended thinking toggle and fast mode — session state indicators.
+thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
+fast_mode=$(echo "$input" | jq -r '.fast_mode // empty')
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 # Context window
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
@@ -549,6 +555,34 @@ if [[ -n "$output_style" && "$output_style" != "default" ]]; then
   esac
 fi
 
+# ── Model-state suffixes: effort, thinking, fast mode ─────────────
+# Each suffix exists in two forms: a plain-text form (measured for width
+# budgeting and dropped when the model segment is truncated) and a colored
+# form (used only at final assembly). Drop priority when space is tight:
+# effort first, then thinking/fast glyphs, finally the style icon — mirroring
+# the existing "drop suffix before truncating the name" behavior.
+effort_suffix=""          # plain text, e.g. " xhigh"
+effort_suffix_colored=""
+if [[ -n "$effort_level" ]]; then
+  effort_suffix=" ${effort_level}"
+  effort_suffix_colored=" ${CYAN}${effort_level}${RESET}"
+fi
+
+# Thinking + fast mode glyphs (single nerd-font icons, plain length 2 each
+# because of the leading space).
+state_suffix=""           # plain text holding thinking/fast glyphs
+state_suffix_colored=""
+if [[ "$thinking_enabled" == "true" ]]; then
+  _think_icon=$(printf '\xf3\xb1\x95\x84')  # U+F1544 nf-md-head_cog (thinking)
+  state_suffix+=" ${_think_icon}"
+  state_suffix_colored+=" ${MAGENTA}${_think_icon}${RESET}"
+fi
+if [[ "$fast_mode" == "true" ]]; then
+  _fast_icon=$(printf '\xef\x83\xa7')       # U+F0E7 nf-fa-bolt (fast)
+  state_suffix+=" ${_fast_icon}"
+  state_suffix_colored+=" ${ALERT}${_fast_icon}${RESET}"
+fi
+
 # Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
 # Home icon is just 1 char with no folder name text, so chrome is smaller
 if [[ "${_is_home:-0}" == "1" ]]; then
@@ -565,7 +599,9 @@ text_budget=$(( left_budget - chrome ))
 
 # Allocate: path/branch get priority, model gets the remainder
 style_suffix_len=${#style_suffix}
-model_text_len=$(( ${#model_text} + style_suffix_len ))
+effort_suffix_len=${#effort_suffix}
+state_suffix_len=${#state_suffix}
+model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len ))
 path_len=${#folder_name}
 branch_len=${#branch}
 path_branch_len=$(( path_len + branch_len ))
@@ -616,14 +652,29 @@ if (( path_branch_len > pb_budget )); then
   fi
 fi
 
-# Truncate model text if needed (drop style/suffix first, then truncate name)
+# Truncate model text if needed. Drop suffixes in priority order before
+# truncating the name: effort label, then thinking/fast glyphs, then the
+# style icon. Re-check the budget after each drop so we keep what fits.
 if (( model_text_len > model_budget )); then
-  # Step 1: drop the style suffix
-  model_text="$model"
-  style_suffix=""
-  style_suffix_len=0
-  model_text_len=${#model_text}
-  # Step 2: truncate model name if still too long
+  # Step 1: drop the effort label
+  effort_suffix=""
+  effort_suffix_colored=""
+  effort_suffix_len=0
+  model_text_len=$(( ${#model_text} + style_suffix_len + state_suffix_len ))
+  # Step 2: drop thinking/fast glyphs
+  if (( model_text_len > model_budget )); then
+    state_suffix=""
+    state_suffix_colored=""
+    state_suffix_len=0
+    model_text_len=$(( ${#model_text} + style_suffix_len ))
+  fi
+  # Step 3: drop the style icon
+  if (( model_text_len > model_budget )); then
+    style_suffix=""
+    style_suffix_len=0
+    model_text_len=${#model_text}
+  fi
+  # Step 4: truncate model name if still too long
   if (( model_text_len > model_budget )); then
     model_text="${model_text:0:$((model_budget - 1))}${ELLIPSIS}"
   fi
@@ -646,10 +697,11 @@ elif [[ -n "$folder_name" ]]; then
   fi
 fi
 
-# Assemble model segment
+# Assemble model segment: icon + name + effort + thinking/fast + style icon.
+# Suffixes use their colored forms; the plain forms above were only for width.
 model_segment=""
 if [[ -n "$model_text" ]]; then
-  model_segment="${CYAN}${model_icon} ${model_text}${style_suffix}${RESET}"
+  model_segment="${CYAN}${model_icon} ${model_text}${RESET}${effort_suffix_colored}${state_suffix_colored}${CYAN}${style_suffix}${RESET}"
 fi
 
 # Build row 1 left
