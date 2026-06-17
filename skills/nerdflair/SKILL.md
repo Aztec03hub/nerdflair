@@ -48,6 +48,30 @@ Stop after displaying the help. Do NOT prompt the user or use AskUserQuestion â€
 
 ## Install
 
+### Step 0: Check jq
+
+`jq` is **required** -- the statusline and configurator parse JSON with it, and the install script exits immediately if it's missing.
+
+```bash
+command -v jq >/dev/null 2>&1 && echo "jq found" || echo "jq MISSING"
+```
+
+**If found:** Continue to Step 1.
+
+**If missing:** Use AskUserQuestion with header "jq":
+
+**Question:** "nerdflair requires jq to run. How would you like to install it?"
+
+**Options:**
+1. **Homebrew (recommended)** - "Install jq via brew (macOS)"
+2. **apt** - "Install jq via apt (Debian/Ubuntu)"
+3. **Skip for now** - "I'll install jq later (the statusline won't run without it)"
+
+Handle each response:
+- **Homebrew:** Run `brew install jq`, then continue to Step 1.
+- **apt:** Run `sudo apt install jq`, then continue to Step 1.
+- **Skip for now:** Warn that the statusline will not render until jq is installed, then stop (do not run the install script -- it will fail).
+
 ### Step 1: Check Nerd Font
 
 A Nerd Font is **required** -- the progress bar, icons, and Powerline caps all use Nerd Font glyphs. Without one, the statusline renders as broken boxes.

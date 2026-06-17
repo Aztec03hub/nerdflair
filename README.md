@@ -44,12 +44,20 @@ Restart Claude Code after install for the changes to take effect.
 - **Audio chimes (macOS, Linux)**: 20 styles, configurable per-event, adjustable volume
 - **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
 - Git branch, files edited, and lines added/removed
-- Model name with output style indicator
+- Model name with indicators for output style, reasoning effort, extended thinking, and fast mode
 - Active MCP servers
 - Session cost, API duration, and token throughput
+- Chime style label (shown for the random style before any cost is incurred)
 
 
 ## Prerequisites
+
+**`jq` is required.** The statusline parses Claude Code's session JSON with [jq](https://jqlang.github.io/jq/); without it the statusline exits and renders nothing.
+
+```bash
+brew install jq        # macOS
+sudo apt install jq    # Debian/Ubuntu
+```
 
 **A Nerd Font is required.** The statusline uses [Nerd Font](https://www.nerdfonts.com/) glyphs for icons and Powerline caps. Without one installed, characters render as boxes.
 

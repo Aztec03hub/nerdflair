@@ -30,7 +30,9 @@ NF_RST='\033[0m'
 # ── jq check ─────────────────────────────────────────────────────
 _nf_require_jq() {
   if ! command -v jq &>/dev/null; then
-    printf '%b✗ jq not found — install with: brew install jq%b\n' "$NF_RED" "$NF_RST" >&2
+    printf '%b✗ jq not found — nerdflair requires jq.%b\n' "$NF_RED" "$NF_RST" >&2
+    printf '  Install with: %bbrew install jq%b (macOS) or %bsudo apt install jq%b (Debian/Ubuntu)\n' \
+      "$NF_CYAN" "$NF_RST" "$NF_CYAN" "$NF_RST" >&2
     exit 1
   fi
 }
