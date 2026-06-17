@@ -67,7 +67,7 @@ output_style=$(echo "$input" | jq -r '.output_style.name // empty')
 # Reasoning effort level (low/medium/high/xhigh/max). Absent when the model
 # does not support the effort parameter; ultracode reports as "xhigh".
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
-# Extended thinking toggle and fast mode — session state indicators.
+# Extended thinking toggle and fast mode. Session state indicators.
 thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
 fast_mode=$(echo "$input" | jq -r '.fast_mode // empty')
 session_id=$(echo "$input" | jq -r '.session_id // empty')
@@ -129,6 +129,8 @@ IFS=$'\n' mcp_names_sorted=($(printf '%s\n' "${mcp_names[@]}" | sort -f)); unset
 BLUE="\033[38;2;95;179;255m"
 MAGENTA="\033[38;2;198;120;221m"
 CYAN="\033[38;2;86;182;194m"
+# Model-state suffixes (effort, thinking, style, fast)
+STATE_COLOR="\033[38;2;72;200;170m"
 # Muted: secondary info (mode, timing)
 MAUVE="\033[38;2;145;130;155m"
 # MCP tool list
@@ -164,6 +166,7 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   BLUE="\033[38;2;190;190;190m"
   MAGENTA="\033[38;2;170;170;170m"
   CYAN="\033[38;2;180;180;180m"
+  STATE_COLOR="\033[38;2;150;150;150m"
   MAUVE="\033[38;2;140;140;140m"
   MCP_COLOR="\033[38;2;170;170;170m"
   ORANGE="\033[38;2;200;200;200m"
@@ -182,6 +185,7 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   BLUE="\033[38;2;140;170;210m"
   MAGENTA="\033[38;2;170;145;185m"
   CYAN="\033[38;2;130;165;170m"
+  STATE_COLOR="\033[38;2;95;175;150m"
   MAUVE="\033[38;2;140;135;150m"
   MCP_COLOR="\033[38;2;170;138;142m"
   ORANGE="\033[38;2;200;160;100m"
@@ -199,6 +203,9 @@ fi
 
 SEP="  "
 BULLET="${DIM} · ${RESET}"
+# Separator before the state-suffix run. No trailing space. The first
+# suffix supplies it, so it reads like BULLET but spans 2 columns.
+OPT_BULLET="${DIM} ·${RESET}"
 
 # ── Detect effective git repo (current dir or one level deep) ────
 git_dir=""
@@ -549,9 +556,9 @@ style_suffix=""  # icon suffix appended after model_text in the segment
 if [[ -n "$output_style" && "$output_style" != "default" ]]; then
   _style_lower="$(tr '[:upper:]' '[:lower:]' <<< "${output_style:0:1}")"
   case "$_style_lower" in
-    e) style_suffix=" $(printf '\xf3\xb0\xac\x8c')" ;;  # U+F0B0C for Explanatory
-    l) style_suffix=" $(printf '\xf3\xb0\xac\x93')" ;;  # U+F0B13 for Learning
-    p) style_suffix=" $(printf '\xf3\xb0\xac\x97')" ;;  # U+F0B17 for Proactive
+    e) style_suffix=" $(printf '\xef\x81\x9a')" ;;  # U+F05A for Explanatory
+    l) style_suffix=" $(printf '\xef\x81\x99')" ;;  # U+F059 for Learning
+    p) style_suffix=" $(printf '\xf3\xb0\xb7\xb8')" ;;  # U+F0DF8 for Proactive
     *) style_suffix=" $(tr '[:lower:]' '[:upper:]' <<< "$_style_lower")" ;;
   esac
 fi
@@ -567,7 +574,7 @@ effort_suffix=""          # plain text, e.g. " xhigh"
 effort_suffix_colored=""
 if [[ -n "$effort_level" ]]; then
   effort_suffix=" ${effort_level}"
-  effort_suffix_colored=" ${CYAN}${effort_level}${RESET}"
+  effort_suffix_colored=" ${STATE_COLOR}${effort_level}${RESET}"
 fi
 
 # Thinking glyph (single nerd-font icon, plain length 2 because of the
@@ -577,16 +584,16 @@ state_suffix_colored=""
 if [[ "$thinking_enabled" == "true" ]]; then
   _think_icon=$(printf '\xf3\xb0\xa0\xa0')  # U+F0820 (thinking)
   state_suffix+=" ${_think_icon}"
-  state_suffix_colored+=" ${CYAN}${_think_icon}${RESET}"
+  state_suffix_colored+=" ${STATE_COLOR}${_think_icon}${RESET}"
 fi
 # Fast mode glyph — rendered last (after the style icon) so it always sits
 # at the very end of the model segment. Plain length 2 with leading space.
 fast_suffix=""
 fast_suffix_colored=""
 if [[ "$fast_mode" == "true" ]]; then
-  _fast_icon=$(printf '\xf3\xb0\x91\xae')   # U+F046E nf-md-rocket_launch (fast)
+  _fast_icon=$(printf '\xf3\xb1\xa0\x87')   # U+F1807 (fast)
   fast_suffix=" ${_fast_icon}"
-  fast_suffix_colored=" ${CYAN}${_fast_icon}${RESET}"
+  fast_suffix_colored=" ${STATE_COLOR}${_fast_icon}${RESET}"
 fi
 
 # Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
@@ -608,7 +615,13 @@ style_suffix_len=${#style_suffix}
 effort_suffix_len=${#effort_suffix}
 state_suffix_len=${#state_suffix}
 fast_suffix_len=${#fast_suffix}
-model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len + fast_suffix_len ))
+# OPT_BULLET sits between the name and the suffix run, costing 2 columns,
+# but only when at least one suffix is present. Recomputed by the drop
+# logic below so the budget stays honest as suffixes fall away.
+_opt_bullet_width() {
+  (( style_suffix_len + effort_suffix_len + state_suffix_len + fast_suffix_len > 0 )) && echo 2 || echo 0
+}
+model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len + fast_suffix_len + $(_opt_bullet_width) ))
 path_len=${#folder_name}
 branch_len=${#branch}
 path_branch_len=$(( path_len + branch_len ))
@@ -667,7 +680,7 @@ if (( model_text_len > model_budget )); then
   effort_suffix=""
   effort_suffix_colored=""
   effort_suffix_len=0
-  model_text_len=$(( ${#model_text} + style_suffix_len + state_suffix_len + fast_suffix_len ))
+  model_text_len=$(( ${#model_text} + style_suffix_len + state_suffix_len + fast_suffix_len + $(_opt_bullet_width) ))
   # Step 2: drop thinking + fast glyphs
   if (( model_text_len > model_budget )); then
     state_suffix=""
@@ -676,7 +689,7 @@ if (( model_text_len > model_budget )); then
     fast_suffix=""
     fast_suffix_colored=""
     fast_suffix_len=0
-    model_text_len=$(( ${#model_text} + style_suffix_len ))
+    model_text_len=$(( ${#model_text} + style_suffix_len + $(_opt_bullet_width) ))
   fi
   # Step 3: drop the style icon
   if (( model_text_len > model_budget )); then
@@ -707,12 +720,14 @@ elif [[ -n "$folder_name" ]]; then
   fi
 fi
 
-# Assemble model segment: icon + name + effort + thinking + style icon + fast.
+# Assemble model segment: icon + name + bullet + effort + thinking + style icon + fast.
 # Fast mode is rendered last so it always trails the segment. Suffixes use
 # their colored forms; the plain forms above were only for width.
 model_segment=""
 if [[ -n "$model_text" ]]; then
-  model_segment="${CYAN}${model_icon} ${model_text}${RESET}${effort_suffix_colored}${state_suffix_colored}${CYAN}${style_suffix}${RESET}${fast_suffix_colored}"
+  model_segment="${CYAN}${model_icon} ${model_text}${RESET}"
+  [[ -n "$effort_suffix$state_suffix$style_suffix$fast_suffix" ]] && model_segment+="${OPT_BULLET}"
+  model_segment+="${effort_suffix_colored}${state_suffix_colored}${STATE_COLOR}${style_suffix}${RESET}${fast_suffix_colored}"
 fi
 
 # Build row 1 left

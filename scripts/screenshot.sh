@@ -7,8 +7,9 @@
 #   (2) Compact layout (vibrant)
 #   (3) Minimal layout (vibrant)
 #
-# The model segment includes the xhigh effort label and the thinking
-# glyph so the gallery exercises those model-state suffixes.
+# The model segment includes the xhigh effort label, the thinking glyph,
+# the explanatory style icon, and the fast-mode glyph so the gallery
+# exercises all of the model-state suffixes.
 #
 # Usage:
 #   ./scripts/screenshot.sh              # render to terminal
@@ -144,6 +145,7 @@ STATEEOF
   "thinking": {
     "enabled": true
   },
+  "fast_mode": true,
   "cost": {
     "total_cost_usd": $json_cost,
     "total_duration_ms": $json_api_ms,
