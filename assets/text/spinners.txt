@@ -15,7 +15,7 @@
 󰌪  Turning over new leaf nodes
   Riding on the storm
   Pumping up the health bar
-󰩃  Chasing the tail recursion
+󰩃  Chasing tail recursions
 󰞇  There can be only one
 󰮭  Eating a suspicious mushroom
 󰊠  Ghosting through the firewall
@@ -77,7 +77,7 @@
   Roasting a fresh batch
   Putting the pieces together
 󰚀  Achieving cosmic equilibrium
-󰮯  Chasing ghosts in the machine
+󰮯  Nom nom nom
 󰆋  Not all who wander are lost
 󱃅  Crop circling the server farm
 󰖷  Righty tighty, lefty loosey
@@ -114,7 +114,7 @@
   Awarding Chewbacca a medal
   Painting the roses red
 󰣈  Careful with that axe, Eugene
-󰻳  Swimming in a fishbowl
+󰻳  Just keep swimming
 󰥫  Drinking from the Fountain of sudo
   Judging the book by its cover
   Touching His Noodly Appendage
@@ -123,7 +123,7 @@
 󰁥  @here'ing the entire universe
   Consulting the Keymaster
   Approaching Kardashev Type II
-  Kissing frogs, expecting princes
+  Licking toads
   Crying like a dove
   Leaving the back door open
   Yer a wizard, Harry
@@ -137,7 +137,7 @@
 󰸮  Keeping the home fires compiling
   Bouncing signals off Sputnik
 󰺵  Up up down down left right
-󰠆  Being like Mike
+󰠆  Dunking from the free-throw line
   Asking not for whom it compiles
 󰔬  I think I can, I think I can
 󰈊  Extracting the hex color
