@@ -7,6 +7,9 @@
 #   (2) Compact layout (vibrant)
 #   (3) Minimal layout (vibrant)
 #
+# The model segment includes the xhigh effort label and the thinking
+# glyph so the gallery exercises those model-state suffixes.
+#
 # Usage:
 #   ./scripts/screenshot.sh              # render to terminal
 #   ./scripts/screenshot.sh > out.txt    # capture with ANSI codes
@@ -22,7 +25,7 @@ RENDERER="$SCRIPT_DIR/statusline.sh"
 # ── Configurable dummy values ────────────────────────────────────
 FOLDER="todos-app"
 BRANCH="feature/reminders"
-MODEL_ID="us.anthropic.claude-opus-4-6-v1"
+MODEL_ID="us.anthropic.claude-opus-4-8-v1"
 OUTPUT_STYLE="explanatory"
 SESSION_ID="screenshot-session-fixed-id-0001"
 COST_USD="12.83"
@@ -134,6 +137,12 @@ STATEEOF
   },
   "model": {
     "id": "$MODEL_ID"
+  },
+  "effort": {
+    "level": "xhigh"
+  },
+  "thinking": {
+    "enabled": true
   },
   "cost": {
     "total_cost_usd": $json_cost,

@@ -551,14 +551,16 @@ if [[ -n "$output_style" && "$output_style" != "default" ]]; then
   case "$_style_lower" in
     e) style_suffix=" $(printf '\xf3\xb0\xac\x8c')" ;;  # U+F0B0C for Explanatory
     l) style_suffix=" $(printf '\xf3\xb0\xac\x93')" ;;  # U+F0B13 for Learning
+    p) style_suffix=" $(printf '\xf3\xb0\xac\x97')" ;;  # U+F0B17 for Proactive
     *) style_suffix=" $(tr '[:lower:]' '[:upper:]' <<< "$_style_lower")" ;;
   esac
 fi
 
-# ── Model-state suffixes: effort, thinking, fast mode ─────────────
+# ── Model-state suffixes: effort, thinking, style, fast mode ──────
 # Each suffix exists in two forms: a plain-text form (measured for width
 # budgeting and dropped when the model segment is truncated) and a colored
-# form (used only at final assembly). Drop priority when space is tight:
+# form (used only at final assembly). Display order is effort, thinking,
+# style icon, then fast mode last. Drop priority when space is tight:
 # effort first, then thinking/fast glyphs, finally the style icon — mirroring
 # the existing "drop suffix before truncating the name" behavior.
 effort_suffix=""          # plain text, e.g. " xhigh"
@@ -568,19 +570,23 @@ if [[ -n "$effort_level" ]]; then
   effort_suffix_colored=" ${CYAN}${effort_level}${RESET}"
 fi
 
-# Thinking + fast mode glyphs (single nerd-font icons, plain length 2 each
-# because of the leading space).
-state_suffix=""           # plain text holding thinking/fast glyphs
+# Thinking glyph (single nerd-font icon, plain length 2 because of the
+# leading space).
+state_suffix=""           # plain text holding the thinking glyph
 state_suffix_colored=""
 if [[ "$thinking_enabled" == "true" ]]; then
-  _think_icon=$(printf '\xf3\xb1\x95\x84')  # U+F1544 nf-md-head_cog (thinking)
+  _think_icon=$(printf '\xf3\xb0\xa0\xa0')  # U+F0820 (thinking)
   state_suffix+=" ${_think_icon}"
-  state_suffix_colored+=" ${MAGENTA}${_think_icon}${RESET}"
+  state_suffix_colored+=" ${CYAN}${_think_icon}${RESET}"
 fi
+# Fast mode glyph — rendered last (after the style icon) so it always sits
+# at the very end of the model segment. Plain length 2 with leading space.
+fast_suffix=""
+fast_suffix_colored=""
 if [[ "$fast_mode" == "true" ]]; then
-  _fast_icon=$(printf '\xef\x83\xa7')       # U+F0E7 nf-fa-bolt (fast)
-  state_suffix+=" ${_fast_icon}"
-  state_suffix_colored+=" ${ALERT}${_fast_icon}${RESET}"
+  _fast_icon=$(printf '\xf3\xb0\x91\xae')   # U+F046E nf-md-rocket_launch (fast)
+  fast_suffix=" ${_fast_icon}"
+  fast_suffix_colored=" ${CYAN}${_fast_icon}${RESET}"
 fi
 
 # Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
@@ -601,7 +607,8 @@ text_budget=$(( left_budget - chrome ))
 style_suffix_len=${#style_suffix}
 effort_suffix_len=${#effort_suffix}
 state_suffix_len=${#state_suffix}
-model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len ))
+fast_suffix_len=${#fast_suffix}
+model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len + fast_suffix_len ))
 path_len=${#folder_name}
 branch_len=${#branch}
 path_branch_len=$(( path_len + branch_len ))
@@ -660,12 +667,15 @@ if (( model_text_len > model_budget )); then
   effort_suffix=""
   effort_suffix_colored=""
   effort_suffix_len=0
-  model_text_len=$(( ${#model_text} + style_suffix_len + state_suffix_len ))
-  # Step 2: drop thinking/fast glyphs
+  model_text_len=$(( ${#model_text} + style_suffix_len + state_suffix_len + fast_suffix_len ))
+  # Step 2: drop thinking + fast glyphs
   if (( model_text_len > model_budget )); then
     state_suffix=""
     state_suffix_colored=""
     state_suffix_len=0
+    fast_suffix=""
+    fast_suffix_colored=""
+    fast_suffix_len=0
     model_text_len=$(( ${#model_text} + style_suffix_len ))
   fi
   # Step 3: drop the style icon
@@ -697,11 +707,12 @@ elif [[ -n "$folder_name" ]]; then
   fi
 fi
 
-# Assemble model segment: icon + name + effort + thinking/fast + style icon.
-# Suffixes use their colored forms; the plain forms above were only for width.
+# Assemble model segment: icon + name + effort + thinking + style icon + fast.
+# Fast mode is rendered last so it always trails the segment. Suffixes use
+# their colored forms; the plain forms above were only for width.
 model_segment=""
 if [[ -n "$model_text" ]]; then
-  model_segment="${CYAN}${model_icon} ${model_text}${RESET}${effort_suffix_colored}${state_suffix_colored}${CYAN}${style_suffix}${RESET}"
+  model_segment="${CYAN}${model_icon} ${model_text}${RESET}${effort_suffix_colored}${state_suffix_colored}${CYAN}${style_suffix}${RESET}${fast_suffix_colored}"
 fi
 
 # Build row 1 left
