@@ -265,12 +265,17 @@ if [[ -n "$git_dir" ]]; then
       done < <(git ls-files --others --exclude-standard 2>/dev/null)
     fi
     _gc_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
+    # In a linked worktree --git-dir and --git-common-dir differ; in the main checkout they match.
+    _gc_worktree=0
+    if [[ "$(git rev-parse --git-common-dir 2>/dev/null)" != "$(git rev-parse --git-dir 2>/dev/null)" ]]; then
+      _gc_worktree=1
+    fi
     # Remote URL for clickable links (convert SSH → HTTPS)
     _gc_remote=$(git remote get-url origin 2>/dev/null || true)
     _gc_remote=$(printf '%s' "$_gc_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|^git@\([^:]*\):|https://\1/|' | sed 's|\.git$||')
-    printf '%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" > "$_git_cache_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" > "$_git_cache_file"
   fi
-  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote < "$_git_cache_file"
+  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree < "$_git_cache_file"
 fi
 
 # ── Uncommitted files segment ────────────────────────────────────
@@ -322,6 +327,12 @@ if [[ -n "$_display_dir" ]]; then
   elif [[ -n "${_gc_branch:-}" ]]; then
     branch=$(_sanitize "$_gc_branch")
   fi
+fi
+
+# Worktree indicator lives on the folder segment, where the worktree's directory name shows.
+folder_icon=$'\xef\x86\xbb'  # U+F1BB nf-fa-tree (worktree)
+if [[ "${_gc_worktree:-0}" != "1" && -z "$worktree_branch" ]]; then
+  folder_icon=$'\xf3\xb0\x89\x8b'  # U+F024B nf-md-folder (normal)
 fi
 
 # ── Helper: format milliseconds ──────────────────────────────────
@@ -714,9 +725,9 @@ if [[ "${_is_home:-0}" == "1" ]]; then
   fi
 elif [[ -n "$folder_name" ]]; then
   if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE}󰉋 ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+    folder_segment="${BLUE}${folder_icon} ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
   else
-    folder_segment="${BLUE}󰉋 ${folder_name}${RESET}"
+    folder_segment="${BLUE}${folder_icon} ${folder_name}${RESET}"
   fi
 fi
 
