@@ -115,7 +115,7 @@
   Painting the roses red
 󰣈  Careful with that axe, Eugene
 󰻳  Just keep swimming
-󰥫  Drinking from the Fountain of sudo
+󰥫  Drinking from the fountain of sudo
   Judging the book by its cover
   Touching His Noodly Appendage
 󰣙  So nice they built it twice
@@ -123,14 +123,14 @@
 󰁥  @here'ing the entire universe
   Consulting the Keymaster
   Approaching Kardashev Type II
-  Licking toads
+  Licking a toad
   Crying like a dove
   Leaving the back door open
   Yer a wizard, Harry
   Eating forbidden donut
   Unlocking achievements
   Tasting the rainbow
-󰫂  Blasting Ride of the Valkyries
+󰫂  Blasting "Ride of the Valkyries"
   Floating like a butterfly
   Drinking to code health
 󰲴  Controlling descent into madness
@@ -146,5 +146,5 @@
   Catching rays on Risa
 󰙨  Testing in production
   Driving down the fairway
-  Abandoning full Amazon cart
+  Abandoning full cart
   Calling from inside the house

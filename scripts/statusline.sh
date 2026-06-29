@@ -208,14 +208,18 @@ BULLET="${DIM} · ${RESET}"
 OPT_BULLET="${DIM} ·${RESET}"
 
 # ── Detect effective git repo (current dir or one level deep) ────
+# Sets one of: git_dir (cwd is a repo, or wraps exactly one), or
+# _multi_git_subs (cwd wraps 2+ repos → multi-branch summary). When git_dir is
+# adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
 git_dir=""
+_multi_git_subs=()
+_adopted_repo_name=""
 if [[ -n "$cwd" ]]; then
   cd "$cwd" 2>/dev/null
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git_dir="$cwd"
   else
-    # Look one level deep for a git repo (wrapper folder pattern)
-    # Only adopt it if there's exactly ONE git subfolder
+    # Look one level deep for git repos (wrapper folder pattern).
     git_subs=()
     for sub in "$cwd"/*/; do
       if [[ -d "$sub/.git" ]]; then
@@ -224,6 +228,9 @@ if [[ -n "$cwd" ]]; then
     done
     if (( ${#git_subs[@]} == 1 )); then
       git_dir="${git_subs[0]}"
+      _adopted_repo_name=$(basename "$git_dir")
+    elif (( ${#git_subs[@]} > 1 )); then
+      _multi_git_subs=("${git_subs[@]}")
     fi
   fi
 fi
@@ -303,8 +310,169 @@ if [[ -n "$git_dir" ]]; then
   fi
 fi
 
+# ── Multi-repo branch summary (wrapper folder with 2+ git subfolders) ──
+# Repos NOT on main/master show as "folder:branch" (joined) when they fit, else
+# collapse to "N branches" (off-default count). When all are on main/master,
+# show "N repos" (total count). Cached for the git TTL, keyed on cwd.
+_multi_branch_list=""
+_multi_off_count=0
+_multi_total_count=0
+if (( ${#_multi_git_subs[@]} > 0 )); then
+  _multi_total_count=${#_multi_git_subs[@]}
+  _multi_cache_fresh=false
+  _cwd_hash=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
+  _multi_cache_file="/tmp/nerdflair-multibranch-${_cwd_hash}"
+  if [[ -f "$_multi_cache_file" ]]; then
+    _mcache_age=$(( $(date +%s) - $(stat -f %m "$_multi_cache_file" 2>/dev/null || stat -c %Y "$_multi_cache_file" 2>/dev/null || echo 0) ))
+    (( _mcache_age < _GIT_CACHE_TTL )) && _multi_cache_fresh=true
+  fi
+  if [[ "$_multi_cache_fresh" == "false" ]]; then
+    _mb_list=""
+    _mb_off=0
+    for _sub in "${_multi_git_subs[@]}"; do
+      _sub_branch=$(git -C "$_sub" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$_sub" rev-parse --short HEAD 2>/dev/null)
+      [[ -z "$_sub_branch" ]] && continue
+      if [[ "$_sub_branch" == "main" || "$_sub_branch" == "master" ]]; then
+        continue
+      fi
+      (( _mb_off++ ))
+      [[ -n "$_mb_list" ]] && _mb_list+=", "
+      _mb_list+="$(basename "$_sub"):${_sub_branch}"
+    done
+    # Cache: off-count on line 1, joined list on line 2 (list may be empty).
+    printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file"
+  fi
+  IFS= read -r _multi_off_count < "$_multi_cache_file"
+  _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file")
+  _multi_off_count=${_multi_off_count:-0}
+  _multi_branch_list=$(_sanitize "$_multi_branch_list")
+fi
+
 ELLIPSIS=$(printf '\xef\x85\x81')  # U+F141
 MIN_BRANCH=10
+
+# Min visible chars each side (repo, branch) of a multi-repo entry keeps when
+# truncated, before the colon and ELLIPSIS.
+_MULTI_SIDE_MIN=5
+
+# Separator between entries. Rendered inside the magenta branch run, so it reads
+# as a purple bullet. The cached list uses ", " internally; this is applied only
+# when joining for display. _MULTI_SEP_W is its visible width.
+_MULTI_SEP=" · "
+_MULTI_SEP_W=3
+
+# ── Render one "repo:branch" entry to a target visible width ────────
+# Truncates repo and/or branch independently (start kept, ELLIPSIS appended),
+# each floored at _MULTI_SIDE_MIN, colon always kept. Whichever side fits whole
+# yields its surplus to the other; otherwise the budget (minus colon) splits
+# evenly. Names are ASCII and ELLIPSIS is one column, so char count == width.
+_render_multi_entry() {
+  local _e="$1" _width=$2
+  local _repo="${_e%%:*}" _br="${_e#*:}"
+  local _rlen=${#_repo} _blen=${#_br}
+  (( ${#_e} <= _width )) && { printf '%s' "$_e"; return; }
+
+  local _avail=$(( _width - 1 ))  # minus colon
+  (( _avail < 2 )) && _avail=2
+  local _half=$(( _avail / 2 ))
+  local _max_repo _max_br
+  if (( _rlen <= _half )); then
+    _max_repo=$_rlen
+    _max_br=$(( _avail - _max_repo ))
+  elif (( _blen <= _avail - _half )); then
+    _max_br=$_blen
+    _max_repo=$(( _avail - _max_br ))
+  else
+    _max_repo=$_half
+    _max_br=$(( _avail - _max_repo ))
+  fi
+  (( _max_repo < _MULTI_SIDE_MIN )) && _max_repo=$_MULTI_SIDE_MIN
+  (( _max_br < _MULTI_SIDE_MIN )) && _max_br=$_MULTI_SIDE_MIN
+
+  local _repo_out="$_repo" _br_out="$_br"
+  (( _rlen > _max_repo )) && _repo_out="${_repo:0:$((_max_repo - 1))}${ELLIPSIS}"
+  (( _blen > _max_br )) && _br_out="${_br:0:$((_max_br - 1))}${ELLIPSIS}"
+  printf '%s:%s' "$_repo_out" "$_br_out"
+}
+
+# ── Fit the multi-repo branch list into a target visible width ──────
+# Returns the entries joined with _MULTI_SEP, or "" if they can't fit (caller
+# collapses to "N branches"). When the full list overflows, width is shared
+# round-robin: trim one char at a time from the longest entry, so long entries
+# shrink together rather than one staying full while another is clipped. Each
+# entry truncates via _render_multi_entry.
+_fit_multi_branches() {
+  local _target=$1
+
+  local _entries=() _rest="$_multi_branch_list"
+  while [[ "$_rest" == *", "* ]]; do
+    _entries+=("${_rest%%, *}")
+    _rest="${_rest#*, }"
+  done
+  _entries+=("$_rest")
+  local _n=${#_entries[@]}
+  local _sep_cost=$(( (_n - 1) * _MULTI_SEP_W ))
+  local _content_budget=$(( _target - _sep_cost ))
+
+  # Fast path: full list fits as-is.
+  local _full_content=0 _i
+  for (( _i=0; _i<_n; _i++ )); do (( _full_content += ${#_entries[$_i]} )); done
+  if (( _full_content <= _content_budget )); then
+    local _out=""
+    for (( _i=0; _i<_n; _i++ )); do
+      [[ -n "$_out" ]] && _out+="$_MULTI_SEP"
+      _out+="${_entries[$_i]}"
+    done
+    printf '%s' "$_out"
+    return
+  fi
+
+  # Per-entry floor (smallest render width) and starting allowance (full length).
+  # A side over _MULTI_SIDE_MIN floors at that many chars + 1 ELLIPSIS; plus the
+  # colon. The floor never exceeds the entry's own length.
+  local _floor=() _alloc=() _i
+  for (( _i=0; _i<_n; _i++ )); do
+    local _e="${_entries[$_i]}"
+    local _elen=${#_e}
+    local _rp="${_e%%:*}" _bp="${_e#*:}"
+    local _rmin=${#_rp} _bmin=${#_bp}
+    (( _rmin > _MULTI_SIDE_MIN )) && _rmin=$(( _MULTI_SIDE_MIN + 1 ))
+    (( _bmin > _MULTI_SIDE_MIN )) && _bmin=$(( _MULTI_SIDE_MIN + 1 ))
+    local _f=$(( _rmin + 1 + _bmin ))
+    (( _f > _elen )) && _f=$_elen
+    _floor[$_i]=$_f
+    _alloc[$_i]=$_elen
+  done
+
+  # If even all entries at their floor don't fit, collapse to a count.
+  local _floor_sum=0
+  for (( _i=0; _i<_n; _i++ )); do (( _floor_sum += _floor[_i] )); done
+  (( _floor_sum > _content_budget )) && { printf ''; return; }
+
+  # Trim the longest above-floor entry one char at a time until within budget.
+  # Ties break to the earliest index, keeping output stable across renders.
+  local _total=0
+  for (( _i=0; _i<_n; _i++ )); do (( _total += _alloc[_i] )); done
+  while (( _total > _content_budget )); do
+    local _longest=-1 _longest_len=-1
+    for (( _i=0; _i<_n; _i++ )); do
+      if (( _alloc[_i] > _floor[_i] && _alloc[_i] > _longest_len )); then
+        _longest_len=${_alloc[$_i]}
+        _longest=$_i
+      fi
+    done
+    (( _longest < 0 )) && break
+    (( _alloc[_longest]-- ))
+    (( _total-- ))
+  done
+
+  local _out=""
+  for (( _i=0; _i<_n; _i++ )); do
+    [[ -n "$_out" ]] && _out+="$_MULTI_SEP"
+    _out+="$(_render_multi_entry "${_entries[$_i]}" "${_alloc[$_i]}")"
+  done
+  printf '%s' "$_out"
+}
 
 # ── Folder + branch segment ──────────────────────────────────────
 # Folder always reflects cwd; branch comes from git_dir (which may differ).
@@ -321,11 +489,26 @@ if [[ -n "$_display_dir" ]]; then
   else
     folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
-  # Branch: prefer worktree branch, then cached git branch
+  # Branch: prefer worktree, then cached git branch, then multi-repo summary.
+  # _branch_is_multi flags the joined-list case for truncation/collapse below.
+  _branch_is_multi=0
   if [[ -n "$worktree_branch" ]]; then
     branch=$(_sanitize "$worktree_branch")
   elif [[ -n "${_gc_branch:-}" ]]; then
     branch=$(_sanitize "$_gc_branch")
+    # Adopted subfolder off main/master: prefix "repo:" to match the multi format.
+    if [[ -n "$_adopted_repo_name" && "$_gc_branch" != "main" && "$_gc_branch" != "master" ]]; then
+      branch="$(_sanitize "$_adopted_repo_name"):${branch}"
+    fi
+  elif (( _multi_total_count > 0 )); then
+    if (( _multi_off_count > 0 )); then
+      # Apply the display separator now so width budgeting matches the final
+      # render; _fit_multi_branches resolves the real fit once width is known.
+      branch="${_multi_branch_list//, /$_MULTI_SEP}"
+      _branch_is_multi=1
+    else
+      branch="${_multi_total_count} repos"
+    fi
   fi
 fi
 
@@ -634,7 +817,9 @@ _opt_bullet_width() {
 }
 model_text_len=$(( ${#model_text} + style_suffix_len + effort_suffix_len + state_suffix_len + fast_suffix_len + $(_opt_bullet_width) ))
 path_len=${#folder_name}
-branch_len=${#branch}
+# Visible width, not byte count: bullet/ELLIPSIS glyphs are multibyte but one
+# column, so ${#branch} would overcount and distort the budget.
+branch_len=$(_vis_len "$branch")
 path_branch_len=$(( path_len + branch_len ))
 
 # Model needs at least 10 chars so "icon + name" stays readable (e.g. " Opus 4.6")
@@ -648,6 +833,31 @@ pb_budget=$(( text_budget - model_budget ))
 if (( model_text_len <= model_budget )); then
   model_budget=$model_text_len
   pb_budget=$(( text_budget - model_budget ))
+fi
+
+# Multi-repo list overflow: fit it (folder keeps full length, list gets the
+# rest minus min_model), or collapse to "N branches". Recompute budget terms
+# afterward since the model may reclaim freed space.
+if (( _branch_is_multi == 1 )) && (( path_len + branch_len > pb_budget )); then
+  _branch_target=$(( text_budget - path_len - min_model ))
+  _multi_min=$(( _MULTI_SIDE_MIN + 1 + _MULTI_SIDE_MIN ))  # one minimal entry
+  (( _branch_target < _multi_min )) && _branch_target=$_multi_min
+  _fitted=$(_fit_multi_branches "$_branch_target")
+  if [[ -n "$_fitted" ]]; then
+    branch="$_fitted"
+  else
+    branch="${_multi_off_count} branches"
+  fi
+  _branch_is_multi=0
+  branch_len=$(_vis_len "$branch")
+  path_branch_len=$(( path_len + branch_len ))
+  model_budget=$(( text_budget - path_branch_len ))
+  (( model_budget < min_model )) && model_budget=$min_model
+  pb_budget=$(( text_budget - model_budget ))
+  if (( model_text_len <= model_budget )); then
+    model_budget=$model_text_len
+    pb_budget=$(( text_budget - model_budget ))
+  fi
 fi
 
 # Truncate path and branch to fit pb_budget
@@ -671,7 +881,8 @@ if (( path_branch_len > pb_budget )); then
     (( max_path < 4 )) && max_path=4
     (( max_branch < 4 )) && max_branch=4
     if (( branch_len > max_branch )); then
-      branch="${ELLIPSIS}${branch:$((branch_len - max_branch + 1))}"
+      # Keep the start of the branch name, ellipsis at the end.
+      branch="${branch:0:$((max_branch - 1))}${ELLIPSIS}"
     fi
     if (( ${#folder_name} > max_path )); then
       folder_name="${ELLIPSIS}${folder_name:$((${#folder_name} - max_path + 1))}"
