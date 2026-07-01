@@ -348,8 +348,12 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
   _multi_branch_list=$(_sanitize "$_multi_branch_list")
 fi
 
-ELLIPSIS=$(printf '\xef\x85\x81')  # U+F141
+ELLIPSIS=$(printf '\xe2\x80\xa6')  # U+2026 horizontal ellipsis (matches spinner verb)
 MIN_BRANCH=10
+# Floor a single-repo branch truncates to when we shrink it to make room for
+# the effort label. Above this the branch yields width to keep effort visible;
+# at or below it, effort drops instead of crushing the branch further.
+MIN_BRANCH_FIT=15
 
 # Min visible chars each side (repo, branch) of a multi-repo entry keeps when
 # truncated, before the colon and ELLIPSIS.
@@ -824,8 +828,23 @@ path_branch_len=$(( path_len + branch_len ))
 
 # Model needs at least 10 chars so "icon + name" stays readable (e.g. " Opus 4.6")
 min_model=10
+# Reserve room for the effort label when a long single-repo branch can absorb
+# the cost. The branch yields down to MIN_BRANCH_FIT to keep effort visible;
+# only if it's already at/below that floor does effort drop (via the priority
+# logic below). Multi-repo lists have their own fitting path and are excluded.
+effort_floor=$min_model
+if [[ -n "$branch" ]] && (( _branch_is_multi == 0 )) && (( effort_suffix_len > 0 )); then
+  # Cost of showing effort: the label plus the OPT_BULLET separator (2 cols).
+  _effort_cost=$(( effort_suffix_len + 2 ))
+  # Slack the branch can give up before hitting its floor.
+  _branch_slack=$(( branch_len - MIN_BRANCH_FIT ))
+  (( _branch_slack < 0 )) && _branch_slack=0
+  if (( _branch_slack >= _effort_cost )); then
+    effort_floor=$(( min_model + _effort_cost ))
+  fi
+fi
 model_budget=$(( text_budget - path_branch_len ))
-(( model_budget < min_model )) && model_budget=$min_model
+(( model_budget < effort_floor )) && model_budget=$effort_floor
 
 # Path+branch budget is what remains after model
 pb_budget=$(( text_budget - model_budget ))
@@ -836,11 +855,22 @@ if (( model_text_len <= model_budget )); then
 fi
 
 # Multi-repo list overflow: fit it (folder keeps full length, list gets the
-# rest minus min_model), or collapse to "N branches". Recompute budget terms
-# afterward since the model may reclaim freed space.
+# rest minus the model floor), or collapse to "N branches". Recompute budget
+# terms afterward since the model may reclaim freed space.
 if (( _branch_is_multi == 1 )) && (( path_len + branch_len > pb_budget )); then
-  _branch_target=$(( text_budget - path_len - min_model ))
   _multi_min=$(( _MULTI_SIDE_MIN + 1 + _MULTI_SIDE_MIN ))  # one minimal entry
+  # Prefer reserving room for the effort label: shrink the list further to keep
+  # effort visible, but only if it still fits after giving up that width. If the
+  # reserved target would force a collapse to "N branches", fall back to the
+  # plain min_model target so we keep the list rather than the effort label.
+  _model_reserve=$min_model
+  if (( effort_suffix_len > 0 )); then
+    _reserve_with_effort=$(( min_model + effort_suffix_len + 2 ))  # + OPT_BULLET
+    _target_effort=$(( text_budget - path_len - _reserve_with_effort ))
+    (( _target_effort < _multi_min )) && _target_effort=$_multi_min
+    [[ -n "$(_fit_multi_branches "$_target_effort")" ]] && _model_reserve=$_reserve_with_effort
+  fi
+  _branch_target=$(( text_budget - path_len - _model_reserve ))
   (( _branch_target < _multi_min )) && _branch_target=$_multi_min
   _fitted=$(_fit_multi_branches "$_branch_target")
   if [[ -n "$_fitted" ]]; then
