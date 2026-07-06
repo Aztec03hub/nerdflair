@@ -41,8 +41,8 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
 [[ -n "$project_dir" && -d "$project_dir" ]] && project_dir=$(cd "$project_dir" && pwd -P)
 
-# Model: extract friendly name + version from ID
-raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.id // .model.display_name // empty) else (.model // empty) end')
+# Model: prefer the display_name Claude Code provides; fall back to parsing the ID
+raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.display_name // .model.id // empty) else (.model // empty) end')
 model=""
 if [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
   name="${BASH_REMATCH[1]}"

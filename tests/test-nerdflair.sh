@@ -93,12 +93,14 @@ _strip_ansi() {
 
 # Build a JSON payload for the renderer
 _make_input() {
-  local pct="${1:-42}" cost="${2:-5.00}" model="${3:-us.anthropic.claude-opus-4-6-v1}"
+  local pct="${1:-42}" cost="${2:-5.00}" model="${3:-us.anthropic.claude-opus-4-6-v1}" display="${4:-}"
   local tokens=$(( 200000 * pct / 100 ))
+  local model_json="{\"id\": \"$model\"}"
+  [[ -n "$display" ]] && model_json="{\"id\": \"$model\", \"display_name\": \"$display\"}"
   cat <<EOF
 {
   "workspace": {"current_dir": "$FAKE_CWD", "project_dir": "$FAKE_CWD"},
-  "model": {"id": "$model"},
+  "model": $model_json,
   "cost": {"total_cost_usd": $cost, "total_duration_ms": 120000, "total_api_duration_ms": 120000},
   "output_style": {"name": "default"},
   "session_id": "test-session-001",
@@ -221,6 +223,24 @@ test_renderer_shows_sonnet_model() {
   local output
   output=$(_render "$state" "$(_make_input 42 5.00 us.anthropic.claude-sonnet-4-6-v1)" | _strip_ansi)
   assert_contains "model name sonnet" "$output" "Sonnet 4.6"
+  _teardown
+}
+
+test_renderer_prefers_display_name() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00 claude-fable-5 "Fable 5")" | _strip_ansi)
+  assert_contains "model display_name fable" "$output" "Fable 5"
+  _teardown
+}
+
+test_renderer_falls_back_to_id_parsing() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00 us.anthropic.claude-haiku-4-5-v1)" | _strip_ansi)
+  assert_contains "model id fallback haiku" "$output" "Haiku 4.5"
   _teardown
 }
 
