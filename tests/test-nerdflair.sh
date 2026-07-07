@@ -208,6 +208,29 @@ test_renderer_shows_branch() {
   _teardown
 }
 
+# Regression: with neither workspace.project_dir nor workspace.current_dir set,
+# the folder/branch block is skipped, so anything it initializes must still have
+# a default. _branch_is_multi used to be set only inside that block, so under
+# `set -u` the later multi-repo truncation check aborted the whole render.
+test_renderer_no_workspace_dir_does_not_crash() {
+  _setup
+  local state='{"mode": "full", "width": "94", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local input='{"model": {"display_name": "Opus 4.8"}, "context_window": {"used_percentage": 50, "total_input_tokens": 500000, "context_window_size": 1000000}}'
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local err_file="$FAKE_HOME/.claude/nerdflair/render.err"
+  local output
+  output=$(printf '%s' "$input" | HOME="$FAKE_HOME" bash "$RENDERER" 2>"$err_file")
+  local status=$?
+  assert_exit_code "render without workspace dir exits 0" "0" "$status"
+  # No unbound-variable (or any) diagnostics should reach stderr.
+  local err
+  err=$(cat "$err_file")
+  assert_equals "render without workspace dir has empty stderr" "" "$err"
+  # Still renders the model + context label.
+  assert_contains "renders model without workspace dir" "$(printf '%s' "$output" | _strip_ansi)" "Opus 4.8"
+  _teardown
+}
+
 test_renderer_shows_model_name() {
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
@@ -235,6 +258,16 @@ test_renderer_prefers_display_name() {
   _teardown
 }
 
+test_renderer_strips_context_suffix_from_display_name() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00 claude-opus-4-8 "Opus 4.8 (1M context)")" | _strip_ansi)
+  assert_contains "model display_name opus" "$output" "Opus 4.8"
+  assert_not_contains "context window size hidden" "$output" "1M context"
+  _teardown
+}
+
 test_renderer_falls_back_to_id_parsing() {
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
@@ -259,6 +292,62 @@ test_renderer_shows_cost() {
   local output
   output=$(_render "$state" "$(_make_input 42 12.50)" | _strip_ansi)
   assert_contains "cost in output" "$output" "12.50"
+  _teardown
+}
+
+# Regression for the "500 shows light on green" report. A label glyph landing on
+# the fill→empty transition-cap cell must render as part of the fill (covered
+# near-black text on the fill background), not with the light empty-area text on
+# the dark empty background. The cap cell is the visual cell right after the
+# last filled body cell; the fill normally draws a rounded glyph there, so a
+# light digit in that cell reads as "light where the fill still is".
+#
+# Reproduces the exact screenshot geometry: width 94, a 1M context window at
+# 50%, giving the label "500k/1M 50%". The boundary falls on the "1", so the
+# covered (near-black on fill) run must be "500k/1" = 6 glyphs. Before the fix
+# the cap "1" was light-on-empty and only "500k/" = 5 glyphs were covered.
+test_renderer_label_covers_transition_cap() {
+  _setup
+  local state='{"mode": "full", "width": "94", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local input
+  input=$(cat <<EOF
+{
+  "workspace": {"current_dir": "$FAKE_CWD", "project_dir": "$FAKE_CWD"},
+  "model": {"display_name": "Opus 4.8"},
+  "session_id": "test-session-cap",
+  "context_window": {
+    "used_percentage": 50,
+    "total_input_tokens": 500000,
+    "total_output_tokens": 0,
+    "context_window_size": 1000000
+  }
+}
+EOF
+)
+  local covered
+  covered=$(_render "$state" "$input" | python3 -c '
+import re, sys
+COVERED = "18;20;25"                 # near-black FG on filled bar
+EMPTY_BGS = {"35;38;45", "18;20;25"} # empty bg, compact-dark bg
+for line in sys.stdin.read().split("\n"):
+    if "%" not in line or "/" not in line:
+        continue
+    fg = bg = ""; n = 0
+    for part in re.split(r"(\x1b\[[0-9;]*m)", line):
+        m = re.match(r"\x1b\[([0-9;]*)m", part)
+        if m:
+            c = m.group(1)
+            if c.startswith("38;2;"): fg = c[5:]
+            elif c.startswith("48;2;"): bg = c[5:]
+            elif c == "0": fg = bg = ""
+            continue
+        for ch in part:
+            if ch in "0123456789kM%/" and fg == COVERED and bg not in EMPTY_BGS and bg != "":
+                n += 1
+    print(n); break
+')
+  # "500k/1" = 6 covered glyphs on the fill (was 5 before the cap fix).
+  assert_equals "label covers transition cap (covered glyph count)" "$covered" "6"
   _teardown
 }
 

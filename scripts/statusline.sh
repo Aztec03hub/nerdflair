@@ -41,21 +41,28 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
 [[ -n "$project_dir" && -d "$project_dir" ]] && project_dir=$(cd "$project_dir" && pwd -P)
 
-# Model: prefer the display_name Claude Code provides; fall back to parsing the ID
+# Model: prefer the display_name Claude Code provides; fall back to parsing the ID.
+# Parse out just the family + version so suffixes like "(1M context)" or a date
+# stamp are never shown. Matching is case-insensitive because display_name is
+# title-cased ("Opus 4.8 (1M context)") while IDs are lowercase ("claude-opus-4-8").
 raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.display_name // .model.id // empty) else (.model // empty) end')
 model=""
-if [[ "$raw_model" =~ (opus|sonnet|haiku) ]]; then
+shopt -s nocasematch
+if [[ "$raw_model" =~ (opus|sonnet|haiku|fable) ]]; then
   name="${BASH_REMATCH[1]}"
   # Capitalize first letter
   model="$(tr '[:lower:]' '[:upper:]' <<< "${name:0:1}")${name:1}"
-  # Extract version like "4-6" → "4.6"
-  if [[ "$raw_model" =~ [0-9]+-[0-9]+ ]]; then
-    ver="${BASH_REMATCH[0]}"
-    model+=" ${ver//-/.}"
+  # Version: "4.8" or "4-8" → "4.8"; else a bare major like "5". A dotted/dashed
+  # pair is matched first so a date stamp (e.g. "-20251001") is not picked up.
+  if [[ "$raw_model" =~ [0-9]+[.-][0-9]+ ]]; then
+    model+=" ${BASH_REMATCH[0]//-/.}"
+  elif [[ "$raw_model" =~ [0-9]+ ]]; then
+    model+=" ${BASH_REMATCH[0]}"
   fi
 else
   model=$(_sanitize "$raw_model")
 fi
+shopt -u nocasematch
 
 # Worktree info (optional, absent in normal sessions)
 worktree_branch=$(echo "$input" | jq -r '.worktree.branch // empty')
@@ -483,6 +490,10 @@ _fit_multi_branches() {
 folder_name=""
 branch=""
 folder_segment=""
+# _branch_is_multi flags the joined multi-repo list case for the truncation and
+# collapse logic below. Default it here (not only inside the guard block) so it
+# is always defined when referenced later, even when there is no display dir.
+_branch_is_multi=0
 _display_dir="${project_dir:-$cwd}"
 if [[ -n "$_display_dir" ]]; then
   # Folder name: based on project_dir (launch directory) so it stays stable
@@ -494,8 +505,6 @@ if [[ -n "$_display_dir" ]]; then
     folder_name=$(_sanitize "$(basename "$_display_dir")")
   fi
   # Branch: prefer worktree, then cached git branch, then multi-repo summary.
-  # _branch_is_multi flags the joined-list case for truncation/collapse below.
-  _branch_is_multi=0
   if [[ -n "$worktree_branch" ]]; then
     branch=$(_sanitize "$worktree_branch")
   elif [[ -n "${_gc_branch:-}" ]]; then
@@ -1557,15 +1566,21 @@ _render_bar() {
       elif (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
         _cap_empty_bg="$_COMPACT_EMPTY_BG"
       fi
-      # Use the last filled cell's FG for the transition cap
+      # Use the last filled cell's FG/BG for the transition cap
       local _last_fill_fg="$_FILL_FG"
+      local _last_fill_bg="$_FILL_BG"
       if (( _filled > 0 )); then
         _last_fill_fg="${_cell_fg_cache[$((_filled - 1))]}"
+        _last_fill_bg="${_cell_bg_cache[$((_filled - 1))]}"
       fi
       if (( _vis >= _label_start && _vis < _label_end )); then
+        # A label character sits on the cap cell. The cap normally renders a
+        # filled (green) rounded glyph, so treat this cell as part of the fill:
+        # keep the covered-label styling (fill BG + near-black FG) so the digit
+        # matches the covered digits before it instead of flipping to light text.
         local _ci=$(( _vis - _label_start ))
         local _ch="${_label_padded:$_ci:1}"
-        _bar+="${_cap_empty_bg}${LIGHT_FG}${_ch}"
+        _bar+="${_last_fill_bg}${LABEL_COVERED_FG}${_ch}"
       else
         _bar+="${_cap_empty_bg}${_last_fill_fg}${PL_RIGHT}"
       fi
