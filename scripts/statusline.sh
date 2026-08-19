@@ -1093,6 +1093,75 @@ if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
   fi
 fi
 
+# ── Cost per repo across sessions ────────────────────────────────
+# The one thing ccusage genuinely cannot answer: "what has THIS repo cost me,
+# across every session I have ever run in it". Deliberately a TSV, not SQLite:
+# 19 concurrent claude processes against one SQLite file measured a worst case
+# of 850ms, against a render budget of ~50ms. An append is atomic under
+# O_APPEND for writes below PIPE_BUF, needs no locking, and degrades to nothing
+# if the file is missing or corrupt.
+#
+# Rows are (epoch, session_id, repo, cost). cost is CUMULATIVE per session, so
+# the reader takes the max per session_id and sums those -- appending repeatedly
+# for the same session must not double-count.
+#
+# Opt out with NERDFLAIR_REPO_COST=0.
+_REPO_COST_FILE="${NERDFLAIR_REPO_COST_FILE:-$HOME/.claude/nerdflair-usage.tsv}"
+_REPO_COST_TTL=${NERDFLAIR_REPO_COST_TTL:-60}
+_REPO_COST_DAYS=${NERDFLAIR_REPO_COST_DAYS:-30}
+repocost_segment=""
+if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
+  # Identify the repo by its git root basename, falling back to the project dir.
+  _rc_slug=""
+  if [[ -n "${git_dir:-}" ]]; then
+    _rc_top="${git_dir%/.git}"; _rc_top="${_rc_top%/.git/*}"
+    _rc_slug="${_rc_top##*/}"
+  fi
+  [[ -z "$_rc_slug" && -n "$project_dir" ]] && _rc_slug="${project_dir##*/}"
+  if [[ -n "$_rc_slug" ]]; then
+    _rc_stamp="/tmp/nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}"
+    _rc_due=true
+    if [[ -f "$_rc_stamp" ]]; then
+      _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_stamp" 2>/dev/null || stat -f %m "$_rc_stamp" 2>/dev/null || echo 0) ))
+      (( _rc_age < _REPO_COST_TTL )) && _rc_due=false
+    fi
+    # Append at most once per TTL per session, not once per render.
+    if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null \
+        && : > "$_rc_stamp" 2>/dev/null
+      # Compact when the log gets big. Runs at most once per TTL per session,
+      # and writes via a temp file so a concurrent reader never sees a partial.
+      _rc_bytes=$(stat -c %s "$_REPO_COST_FILE" 2>/dev/null || echo 0)
+      if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )); then
+        if mkdir "${_REPO_COST_FILE}.lock" 2>/dev/null; then
+          awk -F'\t' -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
+            'NF>=4 && $1+0 >= cutoff' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
+            && mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
+          rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
+        fi
+      fi
+    fi
+    # One awk pass over the log costs ~7ms, which is 14% of the render budget --
+    # far too much for a number that moves once a minute. Recompute only on the
+    # same cadence as the append, and read the memoised value otherwise.
+    _rc_memo="/tmp/nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}"
+    _rc_total=""
+    if [[ "$_rc_due" == "false" && -r "$_rc_memo" ]]; then
+      _rc_total=$(<"$_rc_memo")
+    elif [[ -r "$_REPO_COST_FILE" ]]; then
+      _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) '
+        NF>=4 && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
+        END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
+      ' "$_REPO_COST_FILE" 2>/dev/null || true)
+      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || true
+    fi
+    if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
+        printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
+      repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
+    fi
+  fi
+fi
+
 # ── MCP health (stale-while-revalidate) ──────────────────────────
 # `claude mcp list` actually probes every server, measured at ~1937 ms here, so
 # it can never be synchronous. Same contract as the ccusage bridge: render the
@@ -1376,6 +1445,9 @@ if [[ -n "$cost_segment" ]]; then
   if [[ -n "$block_segment" ]]; then
     row3_right+="${block_segment}${BULLET}"
   fi
+  if [[ -n "$repocost_segment" ]]; then
+    row3_right+="${repocost_segment}${BULLET}"
+  fi
   row3_right+="$cost_segment"
 else
   # No cost yet (fresh session): still surface limits, which matter most early.
@@ -1425,7 +1497,7 @@ if [[ -n "$_mcp_to_use" ]]; then
   row3_left+="${_mcp_to_use}"
 elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "$speed_segment" \
      || -n "$burn_segment" || -n "$block_segment" || -n "$limits_segment" \
-     || -n "$mcphealth_segment" || -n "$compact_segment" ]]; then
+     || -n "$mcphealth_segment" || -n "$compact_segment" || -n "$repocost_segment" ]]; then
   # No MCP servers — show cost/time/speed/chime on the left instead of right
   if [[ -n "$cost_segment" ]]; then
     row3_left+="$cost_segment"
@@ -1435,7 +1507,7 @@ elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "
     row3_left+="$time_segment"
     [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
   fi
-  for _extra in "$tmux_segment" "$burn_segment" "$block_segment" "$limits_segment" "$mcphealth_segment" "$compact_segment"; do
+  for _extra in "$tmux_segment" "$burn_segment" "$block_segment" "$repocost_segment" "$limits_segment" "$mcphealth_segment" "$compact_segment"; do
     [[ -z "$_extra" ]] && continue
     [[ "$row3_left" != "\033[0m" ]] && row3_left+="${BULLET}"
     row3_left+="$_extra"
