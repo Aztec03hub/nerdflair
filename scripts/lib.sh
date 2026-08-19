@@ -202,6 +202,26 @@ _nf_update_field() {
 _nf_play_audio() {
   local file="$1" volume="${2:-1}"
   [[ ! -f "$file" ]] && return 1
+  # Drop the chime if one is already sounding. Every Agent-tool subagent is its
+  # own Claude Code session, so a machine running several at once fires several
+  # chimes within milliseconds -- and simultaneous playback SUMS, which lands as
+  # a sudden jump in loudness rather than as distinct sounds. One chime means
+  # "something finished"; N chimes at once carry no extra information and are
+  # just louder. Skip rather than queue, so the alert stays timely.
+  # Opt out with NERDFLAIR_ALLOW_OVERLAP=1.
+  if [[ "${NERDFLAIR_ALLOW_OVERLAP:-0}" != "1" ]]; then
+    local _snd_lock="/tmp/nerdflair-chime-${UID:-$(id -u)}.lock"
+    # Stale lock (player killed, machine slept): clear anything older than 30s,
+    # comfortably longer than the 4.6s of the longest clip.
+    if [[ -d "$_snd_lock" ]]; then
+      local _sl_age=$(( ${EPOCHSECONDS:-$(date +%s)} - $(stat -c %Y "$_snd_lock" 2>/dev/null || stat -f %m "$_snd_lock" 2>/dev/null || echo 0) ))
+      (( _sl_age > 30 )) && rmdir "$_snd_lock" 2>/dev/null
+    fi
+    # mkdir is atomic; pgrep was check-then-act and lost the race.
+    mkdir "$_snd_lock" 2>/dev/null || return 0
+    ( sleep 6; rmdir "$_snd_lock" 2>/dev/null ) &>/dev/null &
+    disown 2>/dev/null || true
+  fi
   if command -v afplay &>/dev/null; then
     nohup afplay --volume "$volume" "$file" &>/dev/null &
   elif command -v paplay &>/dev/null; then
