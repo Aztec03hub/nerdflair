@@ -1,0 +1,1 @@
+COLUMNS=40 (below the 50 floor)

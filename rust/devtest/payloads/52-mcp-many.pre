@@ -1,0 +1,6 @@
+python3 - "$FIX" <<'EOP'
+import json,sys
+fix=sys.argv[1]
+names=["alpha-search","Beta_Docs","context7-docs","delta-metrics","epsilon-runner","figma-bridge","gamma-store","hotel-mcp"]
+json.dump({"mcpServers":{n:{"command":"x"} for n in names}}, open(f"{fix}/home/.claude.json","w"), indent=2)
+EOP

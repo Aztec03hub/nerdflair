@@ -1,0 +1,1 @@
+cost.total_cost_usd=0 (0.004 rounds to 0.00 and hides the segment)

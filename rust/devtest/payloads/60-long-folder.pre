@@ -1,0 +1,5 @@
+mkdir -p "$FIX/work/a-really-very-extremely-long-project-folder-name-here"
+( cd "$FIX/work/a-really-very-extremely-long-project-folder-name-here"
+  git init -q -b main; git config user.email t@t; git config user.name t
+  echo x > f; git add -A; git commit -qm i
+  git checkout -q -b a/very/long/branch/name/that/keeps/going ) >/dev/null 2>&1

@@ -1,0 +1,1 @@
+git: wrapper with 3 off-main repos at COLUMNS=60 (multi list collapses to N branches)

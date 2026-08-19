@@ -1,0 +1,10 @@
+rm -rf "$FIX/work/upstream-repo" "$FIX/work/upstream-origin"
+git init -q --bare "$FIX/work/upstream-origin" 2>/dev/null
+git clone -q "$FIX/work/upstream-origin" "$FIX/work/upstream-repo" 2>/dev/null
+( cd "$FIX/work/upstream-repo"
+  git config user.email t@t; git config user.name t
+  echo a > a; git add -A; git commit -qm one
+  git push -q -u origin HEAD:main 2>/dev/null
+  git checkout -q -b main 2>/dev/null || true
+  echo b > b; git add -A; git commit -qm two
+  echo c > c; git add -A; git commit -qm three ) >/dev/null 2>&1

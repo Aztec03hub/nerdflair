@@ -1,0 +1,1 @@
+model as a bare string, not an object

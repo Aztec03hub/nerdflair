@@ -1,0 +1,22 @@
+{
+  "workspace": {
+    "current_dir": "@FIX@/work/my-project",
+    "project_dir": "@FIX@/work/my-project"
+  },
+  "model": {
+    "display_name": "Opus 4.8 (1M context)",
+    "id": "claude-opus-4-8"
+  },
+  "cost": {
+    "total_cost_usd": "2.50",
+    "total_duration_ms": "600000",
+    "total_api_duration_ms": "120000"
+  },
+  "session_id": "sess-fixed-0001",
+  "context_window": {
+    "used_percentage": "55",
+    "total_input_tokens": "1",
+    "total_output_tokens": "1000",
+    "context_window_size": "200000"
+  }
+}

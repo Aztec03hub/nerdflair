@@ -1,0 +1,1 @@
+chime: style=random, cost 0.00, volume 0.4 (percentage shown)

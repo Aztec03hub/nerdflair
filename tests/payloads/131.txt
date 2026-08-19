@@ -1,0 +1,1 @@
+MCP: six servers at COLUMNS=60 (falls back to N MCP count)

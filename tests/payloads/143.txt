@@ -1,0 +1,1 @@
+tmux: TMUX_PANE unset (segment absent)

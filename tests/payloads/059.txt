@@ -1,0 +1,1 @@
+rate-limit resets_at null (percentage shown, no countdown)

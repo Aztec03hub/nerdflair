@@ -1,0 +1,1 @@
+layout=minimal palette=muted, standard populated payload

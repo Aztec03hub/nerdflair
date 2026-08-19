@@ -1,0 +1,1 @@
+state file is malformed JSON (jq fails, defaults apply)

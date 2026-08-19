@@ -1,0 +1,1 @@
+model unknown string (falls through to _sanitize)

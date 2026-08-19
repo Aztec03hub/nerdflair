@@ -1,0 +1,1 @@
+stress: minimal mode, mono, 100% context, dirty repo, COLUMNS=60

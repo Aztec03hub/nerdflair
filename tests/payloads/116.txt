@@ -1,0 +1,1 @@
+COLUMNS=120 (width clamps to [50,150])

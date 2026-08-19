@@ -1,0 +1,1 @@
+printf 'not json at all' > "$FIX/home/.claude/nerdflair/state.json"

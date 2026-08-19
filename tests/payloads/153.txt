@@ -1,0 +1,1 @@
+state: unknown mode string (falls through as non-minimal, non-compact)

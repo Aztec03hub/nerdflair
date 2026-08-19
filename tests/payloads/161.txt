@@ -1,0 +1,1 @@
+stress: compact mode, muted, 0% context, long branch, COLUMNS=150

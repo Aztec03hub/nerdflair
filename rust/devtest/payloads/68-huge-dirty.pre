@@ -1,0 +1,2 @@
+( cd "$FIX/work/my-project"
+  for i in $(seq 1 40); do printf 'l1\nl2\nl3\n' > "gen$i.txt"; done ) >/dev/null 2>&1

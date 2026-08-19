@@ -1,0 +1,23 @@
+[package]
+name = "nerdflair"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the nerdflair bash statusline renderer"
+license = "MIT"
+
+[[bin]]
+name = "nerdflair-statusline"
+path = "src/main.rs"
+
+[dependencies]
+# Only dependency. `preserve_order` is required: state.json is rewritten in
+# place and must keep jq's key ordering so the bash and Rust renderers can
+# coexist against the same file.
+serde_json = { version = "1", features = ["preserve_order", "raw_value", "arbitrary_precision"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

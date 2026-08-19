@@ -1,0 +1,1 @@
+MCP: project-scoped servers under .projects[dir]

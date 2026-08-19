@@ -1,0 +1,1 @@
+git: unicode + spaces in directory and branch names

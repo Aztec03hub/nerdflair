@@ -1,0 +1,1 @@
+layout=full palette=vibrant, standard populated payload

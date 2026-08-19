@@ -1,0 +1,1 @@
+git: no origin remote AND dirty — shift case with fields after remote

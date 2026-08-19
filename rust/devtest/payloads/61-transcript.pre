@@ -1,0 +1,4 @@
+cat > "$FIX/transcript.jsonl" <<'EOP'
+{"message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":3,"output_tokens":2}}}
+{"message":{"usage":{"input_tokens":25000,"cache_creation_input_tokens":3000,"cache_read_input_tokens":40000,"output_tokens":900}}}
+EOP

@@ -1,0 +1,1 @@
+git: very long branch name that must truncate

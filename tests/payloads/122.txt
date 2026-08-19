@@ -1,0 +1,1 @@
+state width=200 pinned (clamps to 150)

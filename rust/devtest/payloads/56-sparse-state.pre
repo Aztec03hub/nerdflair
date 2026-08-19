@@ -1,0 +1,7 @@
+cat > "$FIX/home/.claude/nerdflair/state.json" <<'EOP'
+{
+  "color": "muted",
+  "chime_volume": "1",
+  "last_session": "sess-fixed-0001"
+}
+EOP

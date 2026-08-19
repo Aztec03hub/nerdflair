@@ -1,0 +1,1 @@
+total_duration_ms=7200000 (burn-rate gate at 120000; hours formatting above 60m)

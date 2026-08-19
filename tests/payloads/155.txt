@@ -1,0 +1,1 @@
+compaction ETA visible (5% <= used < 80%, >2min elapsed)

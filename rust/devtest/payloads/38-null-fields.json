@@ -1,0 +1,14 @@
+{
+  "workspace": {
+    "current_dir": "@FIX@/work/my-project",
+    "project_dir": null
+  },
+  "model": {
+    "display_name": null,
+    "id": "claude-haiku-4-5"
+  },
+  "cost": {
+    "total_cost_usd": null
+  },
+  "session_id": "sess-fixed-0001"
+}

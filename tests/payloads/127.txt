@@ -1,0 +1,1 @@
+compact mode at COLUMNS=60 (in-bar right label drops time then cost)

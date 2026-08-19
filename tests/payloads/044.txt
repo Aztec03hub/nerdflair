@@ -1,0 +1,1 @@
+total_api_duration_ms=1000 (time segment appears; token-speed divisor)

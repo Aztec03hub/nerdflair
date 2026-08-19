@@ -1,0 +1,1 @@
+current_dir is HOME itself (home-icon branch, no folder name)

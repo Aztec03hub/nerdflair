@@ -1,0 +1,1 @@
+chime: volume 0 (bell-off icon in compact bar, no chime segment)

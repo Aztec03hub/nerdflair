@@ -1,0 +1,13 @@
+cat > "$FIX/home/.claude/nerdflair/state.json" <<'EOP'
+{
+  "mode": "full",
+  "width": "auto",
+  "flair": true,
+  "bell": "visual",
+  "audio_style": "Marimba",
+  "audio_events": "Stop",
+  "bell_volume": "0.4",
+  "color": "default",
+  "last_session": "sess-fixed-0001"
+}
+EOP

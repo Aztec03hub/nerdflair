@@ -1,0 +1,1 @@
+worktree.branch present (tree icon, branch overrides git)

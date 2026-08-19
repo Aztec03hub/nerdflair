@@ -1,0 +1,1 @@
+minimal mode at COLUMNS=60 with dirty repo (pill + dirty reserve)

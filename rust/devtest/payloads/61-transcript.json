@@ -1,0 +1,16 @@
+{
+  "workspace": {
+    "current_dir": "@FIX@/work/my-project",
+    "project_dir": "@FIX@/work/my-project"
+  },
+  "model": {
+    "display_name": "Sonnet 4.5"
+  },
+  "session_id": "sess-fixed-0001",
+  "transcript_path": "@FIX@/transcript.jsonl",
+  "cost": {
+    "total_cost_usd": 1.25,
+    "total_duration_ms": 600000,
+    "total_api_duration_ms": 30000
+  }
+}

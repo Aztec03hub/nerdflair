@@ -1,0 +1,1 @@
+printf '{"mcpServers":{"local-one":{"command":"x"},"local-two":{"command":"x"}}}' > "$FIX/work/my-project/.mcp.json"

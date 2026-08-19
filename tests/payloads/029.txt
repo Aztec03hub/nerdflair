@@ -1,0 +1,1 @@
+used_percentage as a float 37.6

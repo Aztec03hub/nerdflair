@@ -1,0 +1,1 @@
+state width=10 pinned (clamps to 50)
