@@ -33,11 +33,12 @@ _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 # sequences (e.g. \033, \e, \x1b) into terminal control characters.
 # Applied to user-controlled values: branch names, directory names, MCP
 # server names, and model IDs.
-_sanitize() { printf '%s' "$1" | sed 's/\\//g'; }
+_sanitize() { printf '%s' "${1//\\/}"; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // empty')
-project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
+IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // empty) else (.model // empty) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")')
+
+
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
 [[ -n "$project_dir" && -d "$project_dir" ]] && project_dir=$(cd "$project_dir" && pwd -P)
 
@@ -45,13 +46,13 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 # Parse out just the family + version so suffixes like "(1M context)" or a date
 # stamp are never shown. Matching is case-insensitive because display_name is
 # title-cased ("Opus 4.8 (1M context)") while IDs are lowercase ("claude-opus-4-8").
-raw_model=$(echo "$input" | jq -r 'if .model | type == "object" then (.model.display_name // .model.id // empty) else (.model // empty) end')
+
 model=""
 shopt -s nocasematch
 if [[ "$raw_model" =~ (opus|sonnet|haiku|fable) ]]; then
   name="${BASH_REMATCH[1]}"
   # Capitalize first letter
-  model="$(tr '[:lower:]' '[:upper:]' <<< "${name:0:1}")${name:1}"
+  model="${name:0:1}"; model="${model^^}${name:1}"
   # Version: "4.8" or "4-8" → "4.8"; else a bare major like "5". A dotted/dashed
   # pair is matched first so a date stamp (e.g. "-20251001") is not picked up.
   if [[ "$raw_model" =~ [0-9]+[.-][0-9]+ ]]; then
@@ -65,31 +66,31 @@ fi
 shopt -u nocasematch
 
 # Worktree info (optional, absent in normal sessions)
-worktree_branch=$(echo "$input" | jq -r '.worktree.branch // empty')
 
-cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
-total_duration_ms=$(echo "$input" | jq -r '.cost.total_duration_ms // empty')
-total_api_ms=$(echo "$input" | jq -r '.cost.total_api_duration_ms // empty')
-output_style=$(echo "$input" | jq -r '.output_style.name // empty')
+
+
+
+
+
 # Reasoning effort level (low/medium/high/xhigh/max). Absent when the model
 # does not support the effort parameter; ultracode reports as "xhigh".
-effort_level=$(echo "$input" | jq -r '.effort.level // empty')
+
 # Extended thinking toggle and fast mode. Session state indicators.
-thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
-fast_mode=$(echo "$input" | jq -r '.fast_mode // empty')
-session_id=$(echo "$input" | jq -r '.session_id // empty')
+
+
+
 # Context window
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-input_tokens=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
-output_tokens=$(echo "$input" | jq -r '.context_window.total_output_tokens // empty')
-ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
+
+
+
+
 
 # Rate limits (Pro/Max plans only; absent until the first API response of a
 # session). used_percentage is 0-100, resets_at is Unix epoch SECONDS.
-rl_5h_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-rl_5h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-rl_7d_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-rl_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+
+
+
+
 
 # MCP servers — aggregate from global ~/.claude.json, project-scoped servers
 # in ~/.claude.json, and project/cwd .mcp.json files.
@@ -263,7 +264,7 @@ if [[ -n "$git_dir" ]]; then
   _git_dir_hash=$(printf '%s' "$git_dir" | cksum | cut -d' ' -f1)
   _git_cache_file="/tmp/nerdflair-git-${_git_dir_hash}"
   if [[ -f "$_git_cache_file" ]]; then
-    _cache_age=$(( $(date +%s) - $(stat -c %Y "$_git_cache_file" 2>/dev/null || stat -f %m "$_git_cache_file" 2>/dev/null || echo 0) ))
+    _cache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_git_cache_file" 2>/dev/null || stat -f %m "$_git_cache_file" 2>/dev/null || echo 0) ))
     (( _cache_age < _GIT_CACHE_TTL )) && _git_cache_fresh=true
   fi
   if [[ "$_git_cache_fresh" == "false" ]]; then
@@ -304,7 +305,7 @@ dirty_segment=""
 if [[ -n "$git_dir" ]]; then
   dirty_count="${_gc_dirty:-0}"
   if (( dirty_count > 0 )); then
-    dirty_icon=$(printf '\xef\x81\x84')  # U+F044 nf-fa-pencil
+    printf -v dirty_icon '\xef\x81\x84'  # U+F044 nf-fa-pencil
     dirty_segment="${MUSTARD}${dirty_icon} $(_fmt_num "$dirty_count")${RESET}"
     lines_added="${_gc_added:-0}"
     lines_removed="${_gc_removed:-0}"
@@ -337,7 +338,7 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
   _cwd_hash=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
   _multi_cache_file="/tmp/nerdflair-multibranch-${_cwd_hash}"
   if [[ -f "$_multi_cache_file" ]]; then
-    _mcache_age=$(( $(date +%s) - $(stat -c %Y "$_multi_cache_file" 2>/dev/null || stat -f %m "$_multi_cache_file" 2>/dev/null || echo 0) ))
+    _mcache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_multi_cache_file" 2>/dev/null || stat -f %m "$_multi_cache_file" 2>/dev/null || echo 0) ))
     (( _mcache_age < _GIT_CACHE_TTL )) && _multi_cache_fresh=true
   fi
   if [[ "$_multi_cache_fresh" == "false" ]]; then
@@ -362,7 +363,7 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
   _multi_branch_list=$(_sanitize "$_multi_branch_list")
 fi
 
-ELLIPSIS=$(printf '\xe2\x80\xa6')  # U+2026 horizontal ellipsis (matches spinner verb)
+printf -v ELLIPSIS '\xe2\x80\xa6'  # U+2026 horizontal ellipsis (matches spinner verb)
 MIN_BRANCH=10
 # Floor a single-repo branch truncates to when we shrink it to make room for
 # the effort label. Above this the branch yields width to keep effort visible;
@@ -573,7 +574,7 @@ _fmt_duration() {
 mcp_segment=""
 mcp_segment_expanded=""
 if (( mcp_enabled > 0 )); then
-  mcp_icon=$(printf '\xef\x87\xa6')  # U+F1E6
+  printf -v mcp_icon '\xef\x87\xa6'  # U+F1E6
   mcp_segment="${MCP_COLOR}${mcp_icon} ${mcp_enabled} MCP${RESET}"
   # Build expanded form with sorted names: "MCP proxy, slack" (list only, no count)
   # Also build truncated variants: "Slack, Glean, 4 more"
@@ -656,7 +657,7 @@ fi
 # Persist last_session to shared state file (used by bell.sh to suppress
 # duplicate SessionStart on compaction). Uses _nf_update_field for atomic
 # jq-based update, avoiding the fragile sed-chain approach.
-if [[ -n "$session_id" ]]; then
+if [[ -n "$session_id" && "$session_id" != "$_SL_LAST_SESSION" ]]; then
   _nf_update_field "last_session" "$session_id"
 fi
 
@@ -688,10 +689,12 @@ ctx_label="${used_fmt}/${size_fmt} ${pct}%"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
-  # Strip ANSI escapes, then count characters (wc -m handles multibyte)
-  local stripped
-  stripped=$(printf '%b' "$1" | sed $'s/\033\\[[0-9;]*m//g')
-  printf '%s' "$stripped" | wc -m | tr -d ' '
+  local s out=""
+  printf -v s '%b' "$1"
+  while [[ "$s" == *$'\033['* ]]; do
+    out+="${s%%$'\033['*}"; s="${s#*$'\033['}"; s="${s#*m}"
+  done
+  out+="$s"; printf '%s' "${#out}"
 }
 
 # ── Helper: join parts with separator ────────────────────────────
@@ -762,18 +765,18 @@ left_budget=$(( ROW_WIDTH - right_width - 3 - _extra_reserve ))
 #   folder: "󰉋 " (2)  branch: " 󰘬 " (3)  bullet: " · " (3)  model: "icon " (2)
 # With branch:  2 + folder_name + 3 + branch + 3 + 2 + model_text = 10 + text
 # Without branch: 2 + folder_name + 3 + 2 + model_text = 7 + text
-model_icon=$(printf '\xef\x94\x9b')  # U+F51B
+printf -v model_icon '\xef\x94\x9b'  # U+F51B
 
 # Build model text (may include style icon)
 model_text="$model"
 style_suffix=""  # icon suffix appended after model_text in the segment
 if [[ -n "$output_style" && "$output_style" != "default" ]]; then
-  _style_lower="$(tr '[:upper:]' '[:lower:]' <<< "${output_style:0:1}")"
+  _style_lower="${output_style:0:1}"; _style_lower="${_style_lower,,}"
   case "$_style_lower" in
     e) style_suffix=" $(printf '\xef\x81\x9a')" ;;  # U+F05A for Explanatory
     l) style_suffix=" $(printf '\xef\x81\x99')" ;;  # U+F059 for Learning
     p) style_suffix=" $(printf '\xf3\xb0\xb7\xb8')" ;;  # U+F0DF8 for Proactive
-    *) style_suffix=" $(tr '[:lower:]' '[:upper:]' <<< "$_style_lower")" ;;
+    *) style_suffix=" ${_style_lower^^}" ;;
   esac
 fi
 
@@ -796,7 +799,7 @@ fi
 state_suffix=""           # plain text holding the thinking glyph
 state_suffix_colored=""
 if [[ "$thinking_enabled" == "true" ]]; then
-  _think_icon=$(printf '\xf3\xb0\xa0\xa0')  # U+F0820 (thinking)
+  printf -v _think_icon '\xf3\xb0\xa0\xa0'  # U+F0820 (thinking)
   state_suffix+=" ${_think_icon}"
   state_suffix_colored+=" ${STATE_COLOR}${_think_icon}${RESET}"
 fi
@@ -805,7 +808,7 @@ fi
 fast_suffix=""
 fast_suffix_colored=""
 if [[ "$fast_mode" == "true" ]]; then
-  _fast_icon=$(printf '\xf3\xb1\xa0\x87')   # U+F1807 (fast)
+  printf -v _fast_icon '\xf3\xb1\xa0\x87'   # U+F1807 (fast)
   fast_suffix=" ${_fast_icon}"
   fast_suffix_colored=" ${STATE_COLOR}${_fast_icon}${RESET}"
 fi
@@ -1046,13 +1049,13 @@ if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
   _cu_lock="${_cu_cache}.lock"
   _cu_fresh=false
   if [[ -f "$_cu_cache" ]]; then
-    _cu_age=$(( $(date +%s) - $(stat -c %Y "$_cu_cache" 2>/dev/null || stat -f %m "$_cu_cache" 2>/dev/null || echo 0) ))
+    _cu_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_cu_cache" 2>/dev/null || stat -f %m "$_cu_cache" 2>/dev/null || echo 0) ))
     (( _cu_age < _CCUSAGE_TTL )) && _cu_fresh=true
     _ccusage_line=$(cat "$_cu_cache" 2>/dev/null || true)
   fi
   # A stale lock means a refresh died; clear it before deciding to spawn.
   if [[ -d "$_cu_lock" ]]; then
-    _lk_age=$(( $(date +%s) - $(stat -c %Y "$_cu_lock" 2>/dev/null || stat -f %m "$_cu_lock" 2>/dev/null || echo 0) ))
+    _lk_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_cu_lock" 2>/dev/null || stat -f %m "$_cu_lock" 2>/dev/null || echo 0) ))
     (( _lk_age > 120 )) && rmdir "$_cu_lock" 2>/dev/null || true
   fi
   # mkdir is atomic, so it IS the lock. Without it, many parallel Claude Code
@@ -1071,7 +1074,7 @@ fi
 _fmt_countdown() {
   local _target="$1" _now _delta
   [[ -z "$_target" ]] && return 0
-  _now=$(date +%s)
+  _now=${EPOCHSECONDS}
   _delta=$(( _target - _now ))
   (( _delta <= 0 )) && return 0
   if (( _delta >= 172800 )); then
@@ -1085,8 +1088,8 @@ _fmt_countdown() {
 
 # ── Build time + cost segments for row 3 ─────────────────────────
 time_segment=""
-cost_icon=$(printf '\xef\x85\x95')       # U+F155 dollar
-time_icon=$(printf '\xef\x80\x97')       # U+F017 clock
+printf -v cost_icon '\xef\x85\x95'       # U+F155 dollar
+printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 
 TIME_COLOR="$MAUVE"
 api_fmt=""
@@ -1120,30 +1123,33 @@ fi
 # back to this session's own average (cost / wall-clock) when ccusage is absent.
 # Suppressed under 2 minutes of wall clock -- a 10-second session divides into
 # an absurd hourly rate and the number is noise, not signal.
-burn_icon=$(printf '\xf3\xb1\x97\xb6')   # U+F15F6 chart-line-variant
+printf -v burn_icon '\xf3\xb1\x97\xb6'   # U+F15F6 chart-line-variant
 burn_segment=""
 _burn_val=""
 if [[ -n "$_ccusage_line" ]]; then
-  _burn_val=$(printf '%s' "$_ccusage_line" | grep -oE '\$[0-9]+\.[0-9]+/hr' | head -1 | tr -d '$' | sed 's|/hr||')
+  [[ "$_ccusage_line" =~ \$([0-9]+\.[0-9]+)/hr ]] && _burn_val="${BASH_REMATCH[1]}"
 fi
 if [[ -z "$_burn_val" && -n "$cost" && -n "$total_duration_ms" ]] \
    && (( total_duration_ms > 120000 )) 2>/dev/null; then
   _burn_val=$(awk "BEGIN {printf \"%.2f\", ${cost:-0} / (${total_duration_ms} / 3600000)}" 2>/dev/null)
 fi
-if [[ -n "$_burn_val" ]] && awk "BEGIN {exit (${_burn_val} > 0) ? 0 : 1}" 2>/dev/null; then
+if [[ -n "$_burn_val" && "$_burn_val" != 0 && "$_burn_val" != 0.00 ]]; then
   # Threshold colours: green under $20/hr, mustard to $50, alert above.
   _burn_color="$COST_GREEN"
-  awk "BEGIN {exit (${_burn_val} >= 20) ? 0 : 1}" 2>/dev/null && _burn_color="$MUSTARD"
-  awk "BEGIN {exit (${_burn_val} >= 50) ? 0 : 1}" 2>/dev/null && _burn_color="$ALERT"
+  (( ${_burn_val%%.*} >= 20 )) 2>/dev/null && _burn_color="$MUSTARD"
+  (( ${_burn_val%%.*} >= 50 )) 2>/dev/null && _burn_color="$ALERT"
   burn_segment="${_burn_color}${burn_icon} \$${_burn_val}/h${RESET}"
 fi
 
 # ── ccusage billing block: cost + time left in the 5-hour window ─
-block_icon=$(printf '\xef\x82\x94')       # U+F094 moon-o / block marker
+printf -v block_icon '\xef\x82\x94'       # U+F094 moon-o / block marker
 block_segment=""
 if [[ -n "$_ccusage_line" ]]; then
-  _blk_cost=$(printf '%s' "$_ccusage_line" | grep -oE '\$[0-9]+\.[0-9]+ block' | head -1 | awk '{print $1}')
-  _blk_left=$(printf '%s' "$_ccusage_line" | grep -oE '\(([0-9]+h )?[0-9]+m left\)' | head -1 | tr -d '()' | sed 's| left||; s| ||g')
+  _blk_cost=""; _blk_left=""
+  [[ "$_ccusage_line" =~ (\$[0-9]+\.[0-9]+)\ block ]] && _blk_cost="${BASH_REMATCH[1]}"
+  if [[ "$_ccusage_line" =~ \(([0-9]+h\ )?([0-9]+m)\ left\) ]]; then
+    _blk_left="${BASH_REMATCH[1]// /}${BASH_REMATCH[2]}"
+  fi
   if [[ -n "$_blk_cost" ]]; then
     block_segment="${MAUVE}${block_icon} ${_blk_cost}${RESET}"
     [[ -n "$_blk_left" ]] && block_segment+="${DIM} ${_blk_left}${RESET}"
@@ -1180,7 +1186,7 @@ row3_right="\033[0m"
 
 # Always resolve chime style label for display
 _chime_label=""
-if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} > 0) ? 0 : 1}"; then
+if [[ -n "${_SL_CHIME_VOLUME:-1}" && "${_SL_CHIME_VOLUME:-1}" != 0 && "${_SL_CHIME_VOLUME:-1}" != 0.0 ]]; then
   # Use cached chime value from session JSON (read earlier)
   _session_resolved="$_session_chime"
   if [[ -n "$_session_resolved" && "$_session_resolved" != "random" ]]; then
@@ -1202,7 +1208,7 @@ if [[ -n "$_chime_label" ]]; then
   if [[ "$_SL_CHIME_STYLE" == "random" && "$formatted_cost" == "0.00" ]]; then
     _show_label=true
   fi
-  _vol_icon=$(printf '\xef\x80\xa8')  # U+F028  volume icon
+  printf -v _vol_icon '\xef\x80\xa8'  # U+F028  volume icon
   _vol_pct=$(awk "BEGIN {printf \"%g\", ${_SL_CHIME_VOLUME:-1} * 100}")
   if [[ "$_show_label" == "true" ]]; then
     if [[ "$_vol_pct" != "100" ]]; then
@@ -1475,8 +1481,8 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
 fi
 
 # Powerline semicircle glyphs
-PL_RIGHT=$(printf '\xee\x82\xb4')  # U+E0B4 right semicircle (closing cap)
-PL_LEFT=$(printf '\xee\x82\xb6')   # U+E0B6 left semicircle (opening cap)
+printf -v PL_RIGHT '\xee\x82\xb4'  # U+E0B4 right semicircle (closing cap)
+printf -v PL_LEFT '\xee\x82\xb6'   # U+E0B6 left semicircle (opening cap)
 
 # ── Mini context pill for minimal mode ─────────────────────────────
 # A compact Powerline-capped badge showing just the percentage, colored
@@ -1834,7 +1840,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
   # In compact mode, show cost right-aligned inside the bar's empty area
   _bell_icon=""
   if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} <= 0) ? 0 : 1}"; then
-    _bell_icon=$(printf '\xf3\xb0\xe5\xa9')  # U+F0969 speaker-off
+    printf -v _bell_icon '\xf3\xb0\xe5\xa9'  # U+F0969 speaker-off
   fi
 
   _bar_right_label=""
