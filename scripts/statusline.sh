@@ -295,9 +295,20 @@ if [[ -n "$git_dir" ]]; then
     # Remote URL for clickable links (convert SSH → HTTPS)
     _gc_remote=$(git remote get-url origin 2>/dev/null || true)
     _gc_remote=$(printf '%s' "$_gc_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|^git@\([^:]*\):|https://\1/|' | sed 's|\.git$||')
-    printf '%s\t%s\t%s\t%s\t%s\t%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" > "$_git_cache_file"
+    # Divergence from upstream. One rev-list, only on a cache miss. Empty when
+    # there is no upstream configured, which is the common case for a fresh branch.
+    _gc_ahead=0; _gc_behind=0
+    if _gc_ud=$(git rev-list --count --left-right '@{upstream}...HEAD' 2>/dev/null); then
+      _gc_behind="${_gc_ud%%[!0-9]*}"
+      _gc_ahead="${_gc_ud##*[!0-9]}"
+      : "${_gc_behind:=0}" "${_gc_ahead:=0}"
+    fi
+    # \x1f, not \t: tab is IFS-whitespace, so `IFS=$'\t' read` collapses runs of
+    # separators and empty fields vanish -- a repo with no `origin` would shift
+    # every field after _gc_remote by one. \x1f is not IFS-whitespace.
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file"
   fi
-  IFS=$'\t' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree < "$_git_cache_file"
+  IFS=$'\x1f' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree _gc_ahead _gc_behind < "$_git_cache_file"
 fi
 
 # ── Uncommitted files segment ────────────────────────────────────
@@ -741,9 +752,21 @@ ROW_WIDTH=$(( MAX_BAR + 2 ))
 # ── Row 1: proactive budget-based truncation ──────────────────────
 # Right side (dirty segment) is never truncated — measure it first.
 # In minimal mode everything goes on the left, so right side is empty.
+# ── Git divergence from upstream (↑ahead ↓behind) ────────────────
+ahead_segment=""
+if [[ -n "${_gc_ahead:-}" || -n "${_gc_behind:-}" ]] && (( ${_gc_ahead:-0} + ${_gc_behind:-0} > 0 )); then
+  ahead_segment=""
+  (( ${_gc_ahead:-0}  > 0 )) && ahead_segment+="${DARK_GREEN}\u2191${_gc_ahead}${RESET}"
+  (( ${_gc_behind:-0} > 0 )) && { [[ -n "$ahead_segment" ]] && ahead_segment+=" "; ahead_segment+="${ALERT}\u2193${_gc_behind}${RESET}"; }
+fi
+
 row1_right="\033[0m"
 if [[ "$_SL_MODE" != "minimal" ]]; then
   [[ -n "$dirty_segment" ]] && row1_right+="$dirty_segment"
+  if [[ -n "$ahead_segment" ]]; then
+    [[ "$row1_right" != "\033[0m" ]] && row1_right+=" "
+    row1_right+="$ahead_segment"
+  fi
 fi
 right_width=$(_vis_len "$row1_right")
 
@@ -1045,7 +1068,7 @@ elif command -v ccusage &>/dev/null; then
 fi
 
 if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
-  _cu_cache="/tmp/nerdflair-ccusage-$(id -u)"
+  _cu_cache="/tmp/nerdflair-ccusage-${UID}"
   _cu_lock="${_cu_cache}.lock"
   _cu_fresh=false
   if [[ -f "$_cu_cache" ]]; then
@@ -1065,6 +1088,47 @@ if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
       trap 'rmdir "$_cu_lock" 2>/dev/null' EXIT
       printf '%s' "$input" | "$_CCUSAGE_BIN" statusline --refresh-interval "$_CCUSAGE_TTL" \
         > "${_cu_cache}.tmp" 2>/dev/null && mv -f "${_cu_cache}.tmp" "$_cu_cache"
+    ) &>/dev/null &
+    disown 2>/dev/null || true
+  fi
+fi
+
+# ── MCP health (stale-while-revalidate) ──────────────────────────
+# `claude mcp list` actually probes every server, measured at ~1937 ms here, so
+# it can never be synchronous. Same contract as the ccusage bridge: render the
+# cached verdict, fork a detached refresh when stale. TTL is long because MCP
+# connectivity changes on the timescale of an auth expiring, not a render.
+#
+# Opt out with NERDFLAIR_MCP_HEALTH=0.
+_MCP_HEALTH_TTL=${NERDFLAIR_MCP_HEALTH_TTL:-300}
+_mcp_ok=""; _mcp_bad=""; _mcp_warn=""
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; then
+  _mh_cache="/tmp/nerdflair-mcphealth-${UID}"
+  _mh_lock="${_mh_cache}.lock"
+  _mh_fresh=false
+  if [[ -f "$_mh_cache" ]]; then
+    _mh_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_cache" 2>/dev/null || stat -f %m "$_mh_cache" 2>/dev/null || echo 0) ))
+    (( _mh_age < _MCP_HEALTH_TTL )) && _mh_fresh=true
+    IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn < "$_mh_cache" 2>/dev/null || true
+  fi
+  if [[ -d "$_mh_lock" ]]; then
+    _mhl_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_lock" 2>/dev/null || stat -f %m "$_mh_lock" 2>/dev/null || echo 0) ))
+    (( _mhl_age > 300 )) && rmdir "$_mh_lock" 2>/dev/null || true
+  fi
+  if [[ "$_mh_fresh" == "false" ]] && mkdir "$_mh_lock" 2>/dev/null; then
+    (
+      trap 'rmdir "$_mh_lock" 2>/dev/null' EXIT
+      _out=$(timeout 30 claude mcp list 2>/dev/null || true)
+      _o=0; _b=0; _w=0
+      while IFS= read -r _ln; do
+        case "$_ln" in
+          *"Connected"*)            (( _o++ )) ;;
+          *"Failed to connect"*)    (( _b++ )) ;;
+          *"Needs authentication"*) (( _w++ )) ;;
+        esac
+      done <<< "$_out"
+      (( _o + _b + _w > 0 )) && printf '%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" > "${_mh_cache}.tmp" \
+        && mv -f "${_mh_cache}.tmp" "$_mh_cache"
     ) &>/dev/null &
     disown 2>/dev/null || true
   fi
@@ -1156,6 +1220,71 @@ if [[ -n "$_ccusage_line" ]]; then
   fi
 fi
 
+# ── MCP health ───────────────────────────────────────────────────
+# Distinct from the existing MCP segment, which counts what is CONFIGURED.
+# This one reports what actually connected. Hidden until the async probe lands.
+mcphealth_segment=""
+if [[ -n "$_mcp_ok" ]]; then
+  _mh_tot=$(( ${_mcp_ok:-0} + ${_mcp_bad:-0} + ${_mcp_warn:-0} ))
+  if (( _mh_tot > 0 )); then
+    _mh_color="$DARK_GREEN"
+    (( ${_mcp_warn:-0} > 0 )) && _mh_color="$MUSTARD"
+    (( ${_mcp_bad:-0}  > 0 )) && _mh_color="$ALERT"
+    mcphealth_segment="${_mh_color}${mcp_icon:-}${_mcp_ok}/${_mh_tot}${RESET}"
+    (( ${_mcp_bad:-0}  > 0 )) && mcphealth_segment+="${ALERT}\u2717${_mcp_bad}${RESET}"
+    (( ${_mcp_warn:-0} > 0 )) && mcphealth_segment+="${MUSTARD}!${_mcp_warn}${RESET}"
+  fi
+fi
+
+# ── Time to auto-compaction ──────────────────────────────────────
+# Pure arithmetic on values already in hand: how fast the window is filling,
+# extrapolated to the 80% divider the bar already draws. Only shown once there
+# is enough signal to mean anything (>2 min elapsed, >5% used, below the line).
+compact_segment=""
+if [[ -n "$used_pct" && -n "$total_duration_ms" ]] \
+   && (( total_duration_ms > 120000 )) 2>/dev/null; then
+  _cp_used=${used_pct%%.*}; : "${_cp_used:=0}"
+  if (( _cp_used >= 5 && _cp_used < 80 )); then
+    # elapsed_s = duration_ms/1000; rate = used/elapsed_s;
+    # remaining_s = (80 - used) / rate  ->  (80 - used) * duration_ms / (used * 1000)
+    if (( _cp_used > 0 )); then
+      _cp_secs=$(( (80 - _cp_used) * total_duration_ms / (_cp_used * 1000) ))
+      if (( _cp_secs > 0 && _cp_secs < 86400 )); then
+        _cp_color="$DIM"
+        (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
+        (( _cp_secs < 300 )) && _cp_color="$ALERT"
+        if (( _cp_secs >= 3600 )); then
+          printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
+        else
+          printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
+        fi
+        compact_segment="${_cp_color}\u21e3${_cp_fmt}${RESET}"
+      fi
+    fi
+  fi
+fi
+
+# ── tmux session name ────────────────────────────────────────────
+# 1ms measured, and only when actually inside tmux. Many parallel sessions
+# across panes make "which one am I looking at" a real question.
+tmux_segment=""
+if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
+  # `tmux display-message` is only ~1ms standalone but ~3.3ms inside the render
+  # path. The session name for a given pane changes about never, so cache it
+  # per-pane. Renaming a session costs you one stale minute.
+  _tx_cache="/tmp/nerdflair-tmux-${UID}-${TMUX_PANE//[^a-zA-Z0-9]/_}"
+  _tmux_name=""
+  if [[ -f "$_tx_cache" ]]; then
+    _tx_age=$(( EPOCHSECONDS - $(stat -c %Y "$_tx_cache" 2>/dev/null || stat -f %m "$_tx_cache" 2>/dev/null || echo 0) ))
+    (( _tx_age < 60 )) && _tmux_name=$(<"$_tx_cache")
+  fi
+  if [[ -z "$_tmux_name" ]]; then
+    _tmux_name=$(tmux display-message -p '#S' 2>/dev/null || true)
+    [[ -n "$_tmux_name" ]] && printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null
+  fi
+  [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
+fi
+
 # ── Plan rate limits (5h / 7d) ───────────────────────────────────
 # Straight from the Claude Code payload -- no subprocess, no network. Absent on
 # plans without rate limits, and until the first API response of the session.
@@ -1223,8 +1352,17 @@ if [[ -n "$cost_segment" ]]; then
   if [[ -n "$_chime_segment" ]]; then
     row3_right+="${_chime_segment}${BULLET}"
   fi
+  if [[ -n "$tmux_segment" ]]; then
+    row3_right+="${tmux_segment}${BULLET}"
+  fi
+  if [[ -n "$mcphealth_segment" ]]; then
+    row3_right+="${mcphealth_segment}${BULLET}"
+  fi
   if [[ -n "$limits_segment" ]]; then
     row3_right+="${limits_segment}${BULLET}"
+  fi
+  if [[ -n "$compact_segment" ]]; then
+    row3_right+="${compact_segment}${BULLET}"
   fi
   if [[ -n "$speed_segment" ]]; then
     row3_right+="${speed_segment}${BULLET}"
@@ -1243,10 +1381,11 @@ else
   # No cost yet (fresh session): still surface limits, which matter most early.
   _pre=""
   [[ -n "$_chime_segment" ]] && _pre="$_chime_segment"
-  if [[ -n "$limits_segment" ]]; then
+  for _extra in "$mcphealth_segment" "$limits_segment" "$compact_segment"; do
+    [[ -z "$_extra" ]] && continue
     [[ -n "$_pre" ]] && _pre+="$BULLET"
-    _pre+="$limits_segment"
-  fi
+    _pre+="$_extra"
+  done
   row3_right+="$_pre"
 fi
 
@@ -1285,7 +1424,8 @@ row3_left="\033[0m"
 if [[ -n "$_mcp_to_use" ]]; then
   row3_left+="${_mcp_to_use}"
 elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "$speed_segment" \
-     || -n "$burn_segment" || -n "$block_segment" || -n "$limits_segment" ]]; then
+     || -n "$burn_segment" || -n "$block_segment" || -n "$limits_segment" \
+     || -n "$mcphealth_segment" || -n "$compact_segment" ]]; then
   # No MCP servers — show cost/time/speed/chime on the left instead of right
   if [[ -n "$cost_segment" ]]; then
     row3_left+="$cost_segment"
@@ -1295,7 +1435,7 @@ elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "
     row3_left+="$time_segment"
     [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
   fi
-  for _extra in "$burn_segment" "$block_segment" "$limits_segment"; do
+  for _extra in "$tmux_segment" "$burn_segment" "$block_segment" "$limits_segment" "$mcphealth_segment" "$compact_segment"; do
     [[ -z "$_extra" ]] && continue
     [[ "$row3_left" != "\033[0m" ]] && row3_left+="${BULLET}"
     row3_left+="$_extra"
