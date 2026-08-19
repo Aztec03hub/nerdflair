@@ -36,7 +36,7 @@ _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 _sanitize() { printf '%s' "${1//\\/}"; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
-IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // empty) else (.model // empty) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")')
+IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")')
 
 
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
@@ -626,8 +626,12 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   # used_pct is the authoritative context fill percentage from Claude Code.
   # Derive total_used from it rather than cumulative token counts, which
   # measure something different (total tokens across all API calls).
-  ctx_total="$ctx_size"
-  pct="$used_pct"
+  # used_percentage is legal as a float (the docs' own example is 23.5) and
+  # bash has no float arithmetic, so the expansion below used to raise
+  # "syntax error: invalid arithmetic operator" and leave the count at 0.
+  # Truncate toward zero instead.
+  ctx_total="${ctx_size%%.*}"
+  pct="${used_pct%%.*}"
   total_used=$(( ctx_total * pct / 100 ))
 else
   # Fall back: parse last usage entry from transcript JSONL
