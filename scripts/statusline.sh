@@ -1409,57 +1409,57 @@ if [[ -n "$_mcp_ok" ]]; then
 fi
 
 # ── Time to auto-compaction ──────────────────────────────────────
-# Previously this divided the CUMULATIVE context percentage by the CUMULATIVE
-# session duration, i.e. a session-lifetime average. That is wrong in both
-# directions: a session that sat idle for an hour looks slow forever, and one
-# that just got compacted looks absurdly fast because used% collapsed while the
-# clock kept running. Prefer the fill rate measured between the last two
-# samples, and fall back to the session average only when there is no sample yet.
+# Projects when the context window reaches the 80% auto-compaction line the bar
+# already draws. Measured between the last two samples where possible, because
+# a session-lifetime average is wrong in both directions: an idle session looks
+# slow forever, and a freshly-compacted one looks absurdly fast.
+#
+# NOTE ON THE ARITHMETIC. An earlier version computed an intermediate fill RATE
+# and divided by it. In bash that is integer division, and for a long-lived
+# session with a slowly-filling window the rate truncated to 0 -- so the guard
+# `rate > 0` hid the segment on exactly the sessions where an ETA is most
+# useful. Measured: 14% over a 111-hour session gave rate 0 and vanished.
+# Computing the remaining seconds in ONE division removes the intermediate
+# entirely and cannot underflow:
+#
+#     remaining_s = (800 - used10) * elapsed_s / delta_used10
+#
+# Units are tenths of a percentage point, since used_percentage is fractional.
 compact_segment=""
 _ctx_dropped=""
-_fill10=""      # tenths of a percent per 1000 seconds
+_cp_secs=""
 if [[ -n "$_used10" && -n "$_smp_prev_used10" && -n "$_smp_prev_epoch" ]]; then
   _d_used10=$(( _used10 - _smp_prev_used10 ))
   _d_secs=$(( EPOCHSECONDS - _smp_prev_epoch ))
-  # A DROP in used% means a compaction or a /clear happened. Do not project
-  # from that -- the old baseline describes a window that no longer exists.
-  if (( _d_used10 > 0 && _d_secs > 0 )); then
-    _fill10=$(( _d_used10 * 1000 / _d_secs ))
+  if (( _d_used10 > 0 && _d_secs > 0 && _used10 < 800 )); then
+    _cp_secs=$(( (800 - _used10) * _d_secs / _d_used10 ))
   elif (( _d_used10 < 0 )); then
-    # Context SHRANK: a compaction or /clear. The session average would now be
-    # badly wrong in the optimistic direction (a small used% over a long
-    # elapsed time reads as a slow fill), so suppress the projection entirely
-    # rather than fall through to it. One render later a fresh positive delta
-    # exists against the new baseline and the estimate resumes, correctly.
+    # Context SHRANK: a compaction or /clear. The session average would now read
+    # optimistically wrong, so suppress rather than fall through to it. One
+    # render later a fresh positive delta exists against the new baseline.
     _ctx_dropped=1
   fi
 fi
-if [[ -z "$_fill10" && -z "${_ctx_dropped:-}" && -n "$_used10" && -n "$total_duration_ms" ]] \
-   && (( total_duration_ms > 120000 && _used10 > 0 )) 2>/dev/null; then
-  _fill10=$(( _used10 * 1000000 / total_duration_ms ))
+if [[ -z "$_cp_secs" && -z "$_ctx_dropped" && -n "$_used10" && -n "$total_duration_ms" ]] \
+   && (( total_duration_ms > 120000 && _used10 > 0 && _used10 < 800 )) 2>/dev/null; then
+  _cp_secs=$(( (800 - _used10) * (total_duration_ms / 1000) / _used10 ))
 fi
-if [[ -n "$_used10" && -n "$_fill10" ]] && (( _fill10 > 0 )) 2>/dev/null; then
-  # 800 tenths = the 80% auto-compaction line the bar already draws.
-  if (( _used10 >= 50 && _used10 < 800 )); then
-    _cp_secs=$(( (800 - _used10) * 1000 / _fill10 ))
-    if (( _cp_secs > 0 )); then
-      _cp_color="$DIM"
-      (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
-      (( _cp_secs < 300 )) && _cp_color="$ALERT"
-      if (( _cp_secs >= 86400 )); then
-        # Do not hide a long projection -- "more than a day" is information.
-        _cp_fmt=">1d"
-      elif (( _cp_secs >= 3600 )); then
-        printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
-      elif (( _cp_secs >= 60 )); then
-        printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
-      else
-        printf -v _cp_fmt '%ds' "$_cp_secs"
-      fi
-      compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
-    fi
+if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && _used10 < 800 )) 2>/dev/null; then
+  _cp_color="$DIM"
+  (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
+  (( _cp_secs < 300 )) && _cp_color="$ALERT"
+  if (( _cp_secs >= 86400 )); then
+    _cp_fmt=">1d"
+  elif (( _cp_secs >= 3600 )); then
+    printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
+  elif (( _cp_secs >= 60 )); then
+    printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
+  else
+    printf -v _cp_fmt '%ds' "$_cp_secs"
   fi
+  compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
 fi
+
 
 # ── Persist this sample for the next render ──────────────────────
 # Single printf into a temp file then rename: atomic for the reader, and no

@@ -1231,54 +1231,54 @@ fn render_inner(input: &str) -> Result<String, String> {
     }
 
     // ── Time to auto-compaction ──────────────────────────────────
-    // ── Time to auto-compaction ──────────────────────────────────
-    // Previously a session-lifetime average, which is wrong in both directions:
-    // an idle session looks slow forever, and a freshly-compacted one looks
-    // absurdly fast because used% collapsed while the clock kept running.
+    // Measured between the last two samples where possible; a session-lifetime
+    // average is wrong in both directions (idle looks slow forever, freshly
+    // compacted looks absurdly fast).
+    //
+    // NOTE ON THE ARITHMETIC. An earlier version computed an intermediate fill
+    // RATE and divided by it. That is integer division, and for a long-lived
+    // session with a slowly-filling window the rate truncated to 0, so the
+    // `rate > 0` guard hid the segment on exactly the sessions where an ETA is
+    // most useful (14% over a 111-hour session gave 0 and vanished). Computing
+    // the remaining seconds in ONE division removes the intermediate and cannot
+    // underflow. Units are tenths of a percentage point.
     let mut compact_segment = String::new();
-    let mut fill10: Option<i64> = None;   // tenths of a point per 1000 seconds
+    let mut cp_secs: Option<i64> = None;
     let mut ctx_dropped = false;
     if let (Some(u10), Some(pv)) = (used10, prev.as_ref()) {
         let d_used = u10 - pv.used10;
         let d_secs = now - pv.epoch;
-        if d_used > 0 && d_secs > 0 {
-            fill10 = Some(d_used * 1000 / d_secs);
+        if d_used > 0 && d_secs > 0 && u10 < 800 {
+            cp_secs = Some((800 - u10) * d_secs / d_used);
         } else if d_used < 0 {
-            // Context SHRANK: compaction or /clear. Falling back to the session
-            // average here would read optimistically wrong, so suppress the
-            // projection for one render until a fresh delta exists.
             ctx_dropped = true;
         }
     }
-    if fill10.is_none() && !ctx_dropped {
+    if cp_secs.is_none() && !ctx_dropped {
         if let Some(u10) = used10 {
             let dur = match arith(&f.total_duration_ms) {
                 Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
             };
-            if dur > 120000 && u10 > 0 {
-                fill10 = Some(u10 * 1_000_000 / dur);
+            if dur > 120000 && u10 > 0 && u10 < 800 {
+                cp_secs = Some((800 - u10) * (dur / 1000) / u10);
             }
         }
     }
-    if let (Some(u10), Some(fr)) = (used10, fill10) {
-        if fr > 0 && (50..800).contains(&u10) {
-            let secs = (800 - u10) * 1000 / fr;
-            if secs > 0 {
-                let mut color = pal.dim;
-                if secs < 900 { color = pal.mustard; }
-                if secs < 300 { color = pal.alert; }
-                let fmt = if secs >= 86400 {
-                    // Do not hide a long projection: "more than a day" is information.
-                    ">1d".to_string()
-                } else if secs >= 3600 {
-                    format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-                } else if secs >= 60 {
-                    format!("{}m", secs / 60)
-                } else {
-                    format!("{}s", secs)
-                };
-                compact_segment = format!("{}{}{}{}", color, DOWN_DASHED, fmt, RESET);
-            }
+    if let (Some(u10), Some(secs)) = (used10, cp_secs) {
+        if secs > 0 && (50..800).contains(&u10) {
+            let mut color = pal.dim;
+            if secs < 900 { color = pal.mustard; }
+            if secs < 300 { color = pal.alert; }
+            let fmt = if secs >= 86400 {
+                ">1d".to_string()
+            } else if secs >= 3600 {
+                format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+            } else if secs >= 60 {
+                format!("{}m", secs / 60)
+            } else {
+                format!("{}s", secs)
+            };
+            compact_segment = format!("{}{}{}{}", color, DOWN_DASHED, fmt, RESET);
         }
     }
 
