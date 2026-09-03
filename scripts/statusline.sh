@@ -1269,7 +1269,7 @@ fi
 # back to this session's own average (cost / wall-clock) when ccusage is absent.
 # Suppressed under 2 minutes of wall clock -- a 10-second session divides into
 # an absurd hourly rate and the number is noise, not signal.
-printf -v burn_icon '\xf3\xb1\x97\xb6'   # U+F15F6 chart-line-variant
+printf -v burn_icon '\xf3\xb0\x88\xb8'   # U+F0238 md-fire
 burn_segment=""
 _burn_val=""
 if [[ -n "$_ccusage_line" ]]; then
@@ -1340,7 +1340,7 @@ if [[ -n "$used_pct" && -n "$total_duration_ms" ]] \
         else
           printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
         fi
-        compact_segment="${_cp_color}\u21e3${_cp_fmt}${RESET}"
+        compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
       fi
     fi
   fi

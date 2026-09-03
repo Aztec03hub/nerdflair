@@ -252,7 +252,7 @@ pub const THINK_ICON: &str = "\u{f0820}"; // f3 b0 a0 a0
 pub const FAST_ICON: &str = "\u{f1807}"; // f3 b1 a0 87
 pub const REPO_ICON: &str = "\u{f401}"; // ef 90 81
 pub const COST_ICON: &str = "\u{f155}"; // ef 85 95
-pub const BURN_ICON: &str = "\u{f15f6}"; // f3 b1 97 b6
+pub const BURN_ICON: &str = "\u{f0238}"; // f3 b1 97 b6  // md-fire (was f15f6 md-fridge_variant_alert_outline)
 pub const BLOCK_ICON: &str = "\u{f094}"; // ef 82 94
 pub const VOL_ICON: &str = "\u{f028}"; // ef 80 a8
 pub const SPEED_ICON: &str = "\u{f04c5}"; // f3 b0 93 85 (literal in source)
@@ -288,7 +288,7 @@ pub const TMUX_ICON: &str = "\u{ea85}";
 pub const ARROW_UP: &str = "\u{2191}";
 pub const ARROW_DOWN: &str = "\u{2193}";
 pub const CROSS: &str = "\u{2717}";
-pub const DOWN_DASHED: &str = "\u{21e3}";
+pub const DOWN_DASHED: &str = "\u{f051f} ";  // md-timer_sand (21e3 is absent from JetBrainsMono NF)
 
 pub const NF_BRAND_COLOR: &str = "\x1b[38;2;145;130;155m";
 
