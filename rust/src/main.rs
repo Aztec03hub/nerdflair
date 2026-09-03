@@ -1264,7 +1264,11 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
         }
     }
-    if let (Some(u10), Some(secs)) = (used10, cp_secs) {
+    // At or past the 80% line there is nothing left to project -- but going
+    // silent there is backwards: that is when the reading matters most.
+    if used10.map_or(false, |u| u >= 800) {
+        compact_segment = format!("{}{}due{}", pal.alert, DOWN_DASHED, RESET);
+    } else if let (Some(u10), Some(secs)) = (used10, cp_secs) {
         if secs > 0 && (50..800).contains(&u10) {
             let mut color = pal.dim;
             if secs < 900 { color = pal.mustard; }

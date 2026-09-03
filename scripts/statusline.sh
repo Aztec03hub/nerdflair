@@ -1444,7 +1444,11 @@ if [[ -z "$_cp_secs" && -z "$_ctx_dropped" && -n "$_used10" && -n "$total_durati
    && (( total_duration_ms > 120000 && _used10 > 0 && _used10 < 800 )) 2>/dev/null; then
   _cp_secs=$(( (800 - _used10) * (total_duration_ms / 1000) / _used10 ))
 fi
-if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && _used10 < 800 )) 2>/dev/null; then
+# At or past the 80% line there is nothing left to project -- but going SILENT
+# there is backwards: that is the moment the reading matters most. Say so.
+if [[ -n "$_used10" ]] && (( _used10 >= 800 )) 2>/dev/null; then
+  compact_segment="${ALERT}\xf3\xb0\x94\x9f due${RESET}"
+elif [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && _used10 < 800 )) 2>/dev/null; then
   _cp_color="$DIM"
   (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
   (( _cp_secs < 300 )) && _cp_color="$ALERT"
