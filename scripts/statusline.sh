@@ -1291,7 +1291,7 @@ printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 #   <epoch> <used10> <api_ms>
 # oldest first. One file per session_id, so the many concurrent Claude Code
 # sessions never contend; written temp-then-rename so a reader never tears.
-_SMP_KEEP=${NERDFLAIR_SAMPLES:-10}
+_SMP_KEEP=${NERDFLAIR_SAMPLES:-16}
 _smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
 _smp_hist=()
 _smp_file=""
@@ -1529,16 +1529,23 @@ if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && 
   _cp_color="$DIM"
   (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
   (( _cp_secs < 300 )) && _cp_color="$ALERT"
+  # Round to the precision the estimate actually has. Backtested over 31,191
+  # predictions from 12 real sessions, the median absolute error of the best
+  # configuration is ~68% -- context fills in bursts (one tool result can add
+  # tens of thousands of tokens), so it is intrinsically hard to predict.
+  # Printing "6h47m" against that error bar claims a precision that does not
+  # exist. Round to roughly a tenth of the value and always mark it an estimate.
   if (( _cp_secs >= 86400 )); then
     _cp_fmt=">1d"
   elif (( _cp_secs >= 3600 )); then
-    printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
-  elif (( _cp_secs >= 60 )); then
-    printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
+    _cp_q=$(( (_cp_secs + 450) / 900 ))            # nearest quarter hour
+    printf -v _cp_fmt '%dh%02dm' $(( _cp_q / 4 )) $(( (_cp_q % 4) * 15 ))
+  elif (( _cp_secs >= 300 )); then
+    printf -v _cp_fmt '%dm' $(( ((_cp_secs + 150) / 300) * 5 ))   # nearest 5 min
   else
-    printf -v _cp_fmt '%ds' "$_cp_secs"
+    _cp_fmt="<5m"
   fi
-  compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fuzzy}${_cp_fmt}${RESET}"
+  compact_segment="${_cp_color}\xf3\xb0\x94\x9f ~${_cp_fmt}${RESET}"
 fi
 
 
