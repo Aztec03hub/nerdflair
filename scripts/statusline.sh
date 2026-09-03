@@ -1281,13 +1281,44 @@ printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 # session_id, not helpers sharing this one, so per-session is the right grain.
 # Written with one printf to a temp file then renamed: a reader never sees a
 # partial line, and there is no lock to go stale.
+# ── Per-session sample ring ──────────────────────────────────────
+# A ring of recent observations, not just the previous one. The compaction ETA
+# is a slope, and a slope from TWO points is maximally noisy: one large tool
+# result spikes it, one quick turn collapses it. Keeping a short history lets a
+# robust estimator throw the outliers away (see the ETA block below).
+#
+# File format v2: first line is "v2 <last_rate>", then up to _SMP_KEEP lines of
+#   <epoch> <used10> <api_ms>
+# oldest first. One file per session_id, so the many concurrent Claude Code
+# sessions never contend; written temp-then-rename so a reader never tears.
+_SMP_KEEP=${NERDFLAIR_SAMPLES:-10}
 _smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
+_smp_hist=()
 _smp_file=""
 if [[ -n "$session_id" ]]; then
   _smp_file="/tmp/nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"
   if [[ -r "$_smp_file" ]]; then
-    IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate \
-      < "$_smp_file" 2>/dev/null || true
+    _smp_ln=0
+    while IFS= read -r _sl || [[ -n "$_sl" ]]; do
+      if (( _smp_ln == 0 )); then
+        if [[ "$_sl" == v2\ * ]]; then
+          _smp_prev_rate="${_sl#v2 }"
+        else
+          # v1: "api used10 epoch rate" on one line. Read it, then let it be
+          # rewritten in v2 on this render.
+          IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate <<< "$_sl"
+          [[ -n "$_smp_prev_epoch" ]] && _smp_hist+=("$_smp_prev_epoch $_smp_prev_used10 $_smp_prev_api")
+          break
+        fi
+      else
+        [[ -n "$_sl" ]] && _smp_hist+=("$_sl")
+      fi
+      (( _smp_ln++ ))
+    done < "$_smp_file"
+    # newest entry also feeds the two-point paths below
+    if (( ${#_smp_hist[@]} > 0 )); then
+      IFS=' ' read -r _smp_prev_epoch _smp_prev_used10 _smp_prev_api <<< "${_smp_hist[-1]}"
+    fi
   fi
 fi
 # used_percentage is legitimately fractional; keep a tenth of a point.
@@ -1409,46 +1440,92 @@ if [[ -n "$_mcp_ok" ]]; then
 fi
 
 # ── Time to auto-compaction ──────────────────────────────────────
-# Projects when the context window reaches the 80% auto-compaction line the bar
-# already draws. Measured between the last two samples where possible, because
-# a session-lifetime average is wrong in both directions: an idle session looks
-# slow forever, and a freshly-compacted one looks absurdly fast.
+# Estimates when the context window fills. Three things make this better than
+# differencing the last two samples:
 #
-# NOTE ON THE ARITHMETIC. An earlier version computed an intermediate fill RATE
-# and divided by it. In bash that is integer division, and for a long-lived
-# session with a slowly-filling window the rate truncated to 0 -- so the guard
-# `rate > 0` hid the segment on exactly the sessions where an ETA is most
-# useful. Measured: 14% over a 111-hour session gave rate 0 and vanished.
-# Computing the remaining seconds in ONE division removes the intermediate
-# entirely and cannot underflow:
+#  1. THEIL-SEN instead of a single difference. Take the slope between every
+#     pair of samples and use the MEDIAN. A single pair is maximally noisy --
+#     one large tool result spikes it, one short turn collapses it -- whereas
+#     the median of pairwise slopes tolerates roughly 29% outliers before it
+#     breaks, needs no matrix arithmetic, and is a few integer ops.
 #
-#     remaining_s = (800 - used10) * elapsed_s / delta_used10
+#  2. IDLE EXCLUSION. Wall-clock elapsed counts time you were away from the
+#     keyboard as time the window was filling, which halves the apparent rate
+#     after any break. Pairs spanning a gap longer than _CP_IDLE are dropped;
+#     ordinary think-time is kept because that genuinely is your working pace.
 #
-# Units are tenths of a percentage point, since used_percentage is fractional.
+#  3. A CONFIDENCE SIGNAL. When the pairwise slopes disagree badly the estimate
+#     is a guess, and saying so is more useful than a precise-looking number.
+#     A wide spread prefixes the value with "~".
+#
+# Falls back to a two-point delta, then to the session average, so a fresh
+# session still shows something.
+_CP_TARGET=${NERDFLAIR_COMPACT_AT_TENTHS:-1000}
+_CP_IDLE=${NERDFLAIR_ETA_IDLE_GAP:-900}
 compact_segment=""
 _ctx_dropped=""
 _cp_secs=""
-if [[ -n "$_used10" && -n "$_smp_prev_used10" && -n "$_smp_prev_epoch" ]]; then
-  _d_used10=$(( _used10 - _smp_prev_used10 ))
-  _d_secs=$(( EPOCHSECONDS - _smp_prev_epoch ))
-  if (( _d_used10 > 0 && _d_secs > 0 && _used10 < 800 )); then
-    _cp_secs=$(( (800 - _used10) * _d_secs / _d_used10 ))
-  elif (( _d_used10 < 0 )); then
-    # Context SHRANK: a compaction or /clear. The session average would now read
-    # optimistically wrong, so suppress rather than fall through to it. One
-    # render later a fresh positive delta exists against the new baseline.
-    _ctx_dropped=1
+_cp_fuzzy=""
+
+# Detect a compaction: the newest reading is below the previous one.
+if [[ -n "$_used10" && -n "$_smp_prev_used10" ]] && (( _used10 < _smp_prev_used10 )) 2>/dev/null; then
+  _ctx_dropped=1
+fi
+
+if [[ -z "$_ctx_dropped" && -n "$_used10" ]] && (( ${#_smp_hist[@]} >= 3 )); then
+  # Build the pairwise slope set, in tenths of a point per 1000 seconds.
+  _slopes=()
+  _hn=${#_smp_hist[@]}
+  for (( _i=0; _i<_hn; _i++ )); do
+    IFS=' ' read -r _ti _ui _ <<< "${_smp_hist[_i]}"
+    for (( _j=_i+1; _j<_hn; _j++ )); do
+      IFS=' ' read -r _tj _uj _ <<< "${_smp_hist[_j]}"
+      _dt=$(( _tj - _ti )); _du=$(( _uj - _ui ))
+      (( _dt <= 0 || _du <= 0 )) && continue
+      (( _dt > _CP_IDLE )) && continue        # spans an idle gap
+      _slopes+=( $(( _du * 1000 / _dt )) )
+    done
+  done
+  if (( ${#_slopes[@]} >= 3 )); then
+    # median (and quartiles for the spread) via an insertion sort -- the list is
+    # at most 45 items for a 10-sample ring, so this is cheap and fork-free.
+    _sorted=(); for _v in "${_slopes[@]}"; do
+      _k=${#_sorted[@]}
+      _sorted+=("$_v")
+      while (( _k > 0 && _sorted[_k-1] > _v )); do
+        _sorted[_k]=${_sorted[_k-1]}; _sorted[_k-1]=$_v; (( _k-- ))
+      done
+    done
+    _sn=${#_sorted[@]}
+    _med=${_sorted[_sn/2]}
+    _q1=${_sorted[_sn/4]}
+    _q3=${_sorted[(3*_sn)/4]}
+    if (( _med > 0 )); then
+      _cp_secs=$(( (_CP_TARGET - _used10) * 1000 / _med ))
+      # Spread wider than the median itself means the slopes disagree badly.
+      (( (_q3 - _q1) * 2 > _med )) && _cp_fuzzy="~"
+    fi
   fi
 fi
-if [[ -z "$_cp_secs" && -z "$_ctx_dropped" && -n "$_used10" && -n "$total_duration_ms" ]] \
-   && (( total_duration_ms > 120000 && _used10 > 0 && _used10 < 800 )) 2>/dev/null; then
-  _cp_secs=$(( (800 - _used10) * (total_duration_ms / 1000) / _used10 ))
+
+# Fallback 1: the two most recent samples.
+if [[ -z "$_cp_secs" && -z "$_ctx_dropped" && -n "$_used10" && -n "$_smp_prev_used10" && -n "$_smp_prev_epoch" ]]; then
+  _d_used10=$(( _used10 - _smp_prev_used10 ))
+  _d_secs=$(( EPOCHSECONDS - _smp_prev_epoch ))
+  if (( _d_used10 > 0 && _d_secs > 0 && _d_secs <= _CP_IDLE && _used10 < _CP_TARGET )); then
+    _cp_secs=$(( (_CP_TARGET - _used10) * _d_secs / _d_used10 ))
+    _cp_fuzzy="~"
+  fi
 fi
-# At or past the 80% line there is nothing left to project -- but going SILENT
-# there is backwards: that is the moment the reading matters most. Say so.
-if [[ -n "$_used10" ]] && (( _used10 >= 800 )) 2>/dev/null; then
-  compact_segment="${ALERT}\xf3\xb0\x94\x9f due${RESET}"
-elif [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && _used10 < 800 )) 2>/dev/null; then
+
+# Fallback 2: the session average, for a session with no usable history yet.
+if [[ -z "$_cp_secs" && -z "$_ctx_dropped" && -n "$_used10" && -n "$total_duration_ms" ]] \
+   && (( total_duration_ms > 120000 && _used10 > 0 && _used10 < _CP_TARGET )) 2>/dev/null; then
+  _cp_secs=$(( (_CP_TARGET - _used10) * (total_duration_ms / 1000) / _used10 ))
+  _cp_fuzzy="~"
+fi
+
+if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && _used10 < _CP_TARGET )) 2>/dev/null; then
   _cp_color="$DIM"
   (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
   (( _cp_secs < 300 )) && _cp_color="$ALERT"
@@ -1461,21 +1538,35 @@ elif [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 &
   else
     printf -v _cp_fmt '%ds' "$_cp_secs"
   fi
-  compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
+  compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fuzzy}${_cp_fmt}${RESET}"
 fi
 
 
-# ── Persist this sample for the next render ──────────────────────
-# Single printf into a temp file then rename: atomic for the reader, and no
-# lock that could go stale. Only rewrite when something actually moved, so an
-# idle pane re-rendering every 30s does not churn the disk.
+# ── Persist this sample ──────────────────────────────────────────
+# Append to the ring, drop the oldest beyond _SMP_KEEP, write temp-then-rename.
+# Only when something actually moved, so an idle pane re-rendering on the 30s
+# timer does not churn the disk or pollute the slope set with zero-delta pairs.
 if [[ -n "$_smp_file" ]]; then
-  _smp_new="${total_api_ms:-0} ${_used10:-0} ${EPOCHSECONDS} ${_rate_show:-0}"
-  _smp_old="${_smp_prev_api:-} ${_smp_prev_used10:-} ${_smp_prev_epoch:-} ${_smp_prev_rate:-}"
-  if [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" \
-        || -z "$_smp_prev_epoch" ]]; then
-    printf '%s' "$_smp_new" > "${_smp_file}.tmp" 2>/dev/null \
-      && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null || true
+  _smp_moved=0
+  if (( ${#_smp_hist[@]} == 0 )); then
+    _smp_moved=1
+  elif [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
+    _smp_moved=1
+  fi
+  if (( _smp_moved )); then
+    # A compaction invalidates every earlier point: the window it described is
+    # gone. Start the ring over from here rather than averaging across the cut.
+    if [[ -n "$_ctx_dropped" ]]; then
+      _smp_hist=()
+    fi
+    _smp_hist+=("${EPOCHSECONDS} ${_used10:-0} ${total_api_ms:-0}")
+    while (( ${#_smp_hist[@]} > _SMP_KEEP )); do
+      _smp_hist=("${_smp_hist[@]:1}")
+    done
+    {
+      printf 'v2 %s\n' "${_rate_show:-0}"
+      printf '%s\n' "${_smp_hist[@]}"
+    } > "${_smp_file}.tmp" 2>/dev/null && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null || true
   fi
 fi
 

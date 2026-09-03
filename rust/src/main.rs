@@ -1091,7 +1091,8 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Read the previous sample first: several segments below difference
     // against it. used_percentage is legitimately fractional, so keep tenths.
     let smp_path = if f.session_id.is_empty() { None } else { Some(sample_path(uid, &f.session_id)) };
-    let prev = smp_path.as_ref().and_then(|p| read_sample(p));
+    let ring = smp_path.as_ref().map(|p| read_ring(p)).unwrap_or(Ring { rate: 0, hist: Vec::new() });
+    let prev = ring.hist.last();
     let used10: Option<i64> = if f.used_pct.is_empty() {
         None
     } else {
@@ -1118,7 +1119,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         let am = match arith(&f.total_api_ms) {
             Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
         };
-        if let Some(pv) = prev.as_ref() {
+        if let Some(pv) = prev {
             if ot > 0 && am > pv.api_ms {
                 let d = am - pv.api_ms;
                 if d > 0 {
@@ -1131,7 +1132,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     }
     // Between responses the api clock does not advance; hold the last real rate
     // rather than flickering to nothing on intermediate renders.
-    let rate_show = rate_now.or_else(|| prev.as_ref().map(|p| p.rate)).unwrap_or(0);
+    let rate_show = rate_now.unwrap_or(ring.rate);
     if rate_show > 0 {
         let sf = if rate_show >= 1000 {
             format!("{}.{}k", rate_show / 1000, rate_show % 1000 / 100)
@@ -1231,45 +1232,56 @@ fn render_inner(input: &str) -> Result<String, String> {
     }
 
     // ── Time to auto-compaction ──────────────────────────────────
-    // Measured between the last two samples where possible; a session-lifetime
-    // average is wrong in both directions (idle looks slow forever, freshly
-    // compacted looks absurdly fast).
-    //
-    // NOTE ON THE ARITHMETIC. An earlier version computed an intermediate fill
-    // RATE and divided by it. That is integer division, and for a long-lived
-    // session with a slowly-filling window the rate truncated to 0, so the
-    // `rate > 0` guard hid the segment on exactly the sessions where an ETA is
-    // most useful (14% over a 111-hour session gave 0 and vanished). Computing
-    // the remaining seconds in ONE division removes the intermediate and cannot
-    // underflow. Units are tenths of a percentage point.
+    // Theil-Sen over the sample ring, idle gaps excluded, with a confidence
+    // signal. See theil_sen() for why a single difference is not good enough.
+    let cp_target = env_int("NERDFLAIR_COMPACT_AT_TENTHS", 1000);
+    let cp_idle = env_int("NERDFLAIR_ETA_IDLE_GAP", 900);
     let mut compact_segment = String::new();
     let mut cp_secs: Option<i64> = None;
+    let mut cp_fuzzy = "";
     let mut ctx_dropped = false;
-    if let (Some(u10), Some(pv)) = (used10, prev.as_ref()) {
-        let d_used = u10 - pv.used10;
-        let d_secs = now - pv.epoch;
-        if d_used > 0 && d_secs > 0 && u10 < 800 {
-            cp_secs = Some((800 - u10) * d_secs / d_used);
-        } else if d_used < 0 {
-            ctx_dropped = true;
+
+    if let (Some(u10), Some(pv)) = (used10, prev) {
+        if u10 < pv.used10 { ctx_dropped = true; }
+    }
+
+    if !ctx_dropped {
+        if let Some(u10) = used10 {
+            if ring.hist.len() >= 3 {
+                if let Some((med, wide)) = theil_sen(&ring.hist, cp_idle) {
+                    if u10 < cp_target {
+                        cp_secs = Some((cp_target - u10) * 1000 / med);
+                        if wide { cp_fuzzy = "~"; }
+                    }
+                }
+            }
         }
     }
+    // Fallback 1: the two most recent samples.
+    if cp_secs.is_none() && !ctx_dropped {
+        if let (Some(u10), Some(pv)) = (used10, prev) {
+            let d_used = u10 - pv.used10;
+            let d_secs = now - pv.epoch;
+            if d_used > 0 && d_secs > 0 && d_secs <= cp_idle && u10 < cp_target {
+                cp_secs = Some((cp_target - u10) * d_secs / d_used);
+                cp_fuzzy = "~";
+            }
+        }
+    }
+    // Fallback 2: the session average, for a session with no usable history.
     if cp_secs.is_none() && !ctx_dropped {
         if let Some(u10) = used10 {
             let dur = match arith(&f.total_duration_ms) {
                 Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
             };
-            if dur > 120000 && u10 > 0 && u10 < 800 {
-                cp_secs = Some((800 - u10) * (dur / 1000) / u10);
+            if dur > 120000 && u10 > 0 && u10 < cp_target {
+                cp_secs = Some((cp_target - u10) * (dur / 1000) / u10);
+                cp_fuzzy = "~";
             }
         }
     }
-    // At or past the 80% line there is nothing left to project -- but going
-    // silent there is backwards: that is when the reading matters most.
-    if used10.map_or(false, |u| u >= 800) {
-        compact_segment = format!("{}{}due{}", pal.alert, DOWN_DASHED, RESET);
-    } else if let (Some(u10), Some(secs)) = (used10, cp_secs) {
-        if secs > 0 && (50..800).contains(&u10) {
+    if let (Some(u10), Some(secs)) = (used10, cp_secs) {
+        if secs > 0 && (50..cp_target).contains(&u10) {
             let mut color = pal.dim;
             if secs < 900 { color = pal.mustard; }
             if secs < 300 { color = pal.alert; }
@@ -1282,7 +1294,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             } else {
                 format!("{}s", secs)
             };
-            compact_segment = format!("{}{}{}{}", color, DOWN_DASHED, fmt, RESET);
+            compact_segment = format!("{}{}{}{}{}", color, DOWN_DASHED, cp_fuzzy, fmt, RESET);
         }
     }
 
@@ -1290,11 +1302,22 @@ fn render_inner(input: &str) -> Result<String, String> {
     if let Some(sp) = smp_path.as_ref() {
         let api_now = match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 };
         let u_now = used10.unwrap_or(0);
-        let changed = prev.as_ref().map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
-        if changed {
-            let line = format!("{} {} {} {}", api_now, u_now, now, rate_show);
+        let moved = prev.map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
+        if moved {
+            let keep = env_int("NERDFLAIR_SAMPLES", 10).max(2) as usize;
+            // A compaction invalidates every earlier point -- the window they
+            // describe is gone -- so start the ring over rather than averaging
+            // across the cut.
+            let mut hist: Vec<&Sample> = if ctx_dropped { Vec::new() } else { ring.hist.iter().collect() };
+            let fresh = Sample { epoch: now, used10: u_now, api_ms: api_now };
+            hist.push(&fresh);
+            let start = hist.len().saturating_sub(keep);
+            let mut body = format!("v2 {}\n", rate_show);
+            for h in &hist[start..] {
+                body.push_str(&format!("{} {} {}\n", h.epoch, h.used10, h.api_ms));
+            }
             let tmp = PathBuf::from(format!("{}.tmp", sp.display()));
-            if std::fs::write(&tmp, line.as_bytes()).is_ok() {
+            if std::fs::write(&tmp, body.as_bytes()).is_ok() {
                 let _ = std::fs::rename(&tmp, sp);
             }
         }
@@ -2002,21 +2025,75 @@ fn usage_row_ok(cols: &[&str], maxcost: f64) -> bool {
 /// Per-session file, so the many concurrent Claude Code sessions on this machine
 /// never contend -- agent-teams agents are full sessions with their own
 /// session_id, not helpers sharing one. Write is printf-to-temp then rename.
-struct Sample { api_ms: i64, used10: i64, epoch: i64, rate: i64 }
+struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 
 fn sample_path(uid: u32, session: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/nerdflair-sample-{}-{}", uid, slugify(session)))
 }
-fn read_sample(path: &Path) -> Option<Sample> {
-    let t = std::fs::read_to_string(path).ok()?;
-    let f: Vec<&str> = t.split_whitespace().collect();
-    if f.len() < 4 { return None; }
-    Some(Sample {
-        api_ms: fmtx::awk_num(f[0]) as i64,
-        used10: fmtx::awk_num(f[1]) as i64,
-        epoch:  fmtx::awk_num(f[2]) as i64,
-        rate:   fmtx::awk_num(f[3]) as i64,
-    })
+
+/// Ring of recent observations plus the last throughput reading.
+/// v2 format: "v2 <rate>\n" then up to N lines of "<epoch> <used10> <api_ms>".
+/// v1 was a single line "<api> <used10> <epoch> <rate>"; it is read once and
+/// then rewritten as v2, so the two renderers can share a file across upgrades.
+struct Ring { rate: i64, hist: Vec<Sample> }
+
+fn read_ring(path: &Path) -> Ring {
+    let mut r = Ring { rate: 0, hist: Vec::new() };
+    let Ok(t) = std::fs::read_to_string(path) else { return r };
+    let mut lines = t.lines();
+    match lines.next() {
+        Some(first) if first.starts_with("v2 ") => {
+            r.rate = fmtx::awk_num(&first[3..]) as i64;
+            for l in lines {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                if f.len() >= 3 {
+                    r.hist.push(Sample {
+                        epoch: fmtx::awk_num(f[0]) as i64,
+                        used10: fmtx::awk_num(f[1]) as i64,
+                        api_ms: fmtx::awk_num(f[2]) as i64,
+                    });
+                }
+            }
+        }
+        Some(first) => {
+            let f: Vec<&str> = first.split_whitespace().collect();
+            if f.len() >= 4 {
+                r.rate = fmtx::awk_num(f[3]) as i64;
+                r.hist.push(Sample {
+                    api_ms: fmtx::awk_num(f[0]) as i64,
+                    used10: fmtx::awk_num(f[1]) as i64,
+                    epoch:  fmtx::awk_num(f[2]) as i64,
+                });
+            }
+        }
+        None => {}
+    }
+    r
+}
+
+/// Theil-Sen: the median of all pairwise slopes. A single difference is
+/// maximally noisy -- one large tool result spikes it, one short turn collapses
+/// it -- while the median tolerates ~29% outliers, needs no matrix arithmetic,
+/// and is a handful of integer ops. Pairs spanning a gap longer than
+/// `idle_gap` are dropped so time away from the keyboard is not counted as
+/// fill time. Returns (median_slope, wide_spread).
+fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
+    let mut sl: Vec<i64> = Vec::new();
+    for i in 0..hist.len() {
+        for j in (i + 1)..hist.len() {
+            let dt = hist[j].epoch - hist[i].epoch;
+            let du = hist[j].used10 - hist[i].used10;
+            if dt <= 0 || du <= 0 || dt > idle_gap { continue; }
+            sl.push(du * 1000 / dt);
+        }
+    }
+    if sl.len() < 3 { return None; }
+    sl.sort_unstable();
+    let n = sl.len();
+    let med = sl[n / 2];
+    if med <= 0 { return None; }
+    let (q1, q3) = (sl[n / 4], sl[(3 * n) / 4]);
+    Some((med, (q3 - q1) * 2 > med))
 }
 
 fn repo_cost_segment(
