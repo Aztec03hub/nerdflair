@@ -136,6 +136,25 @@ if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
   done < <(jq -r --arg p "$project_dir" '[.projects[$p].mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$_claude_json" 2>/dev/null)
 fi
 mcp_total=$mcp_enabled
+# The config-file scan above sees ONLY ~/.claude.json mcpServers and project
+# .mcp.json. Plugin-provided servers (context7, figma, postman, svelte, github)
+# live elsewhere entirely and are invisible to it -- which is why the names
+# segment showed "jira" while the health probe counted 8. When the probe cache
+# is populated, use its names instead: same source as the health counts, so the
+# two can no longer disagree.
+_mcp_probe_names=""
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "/tmp/nerdflair-mcphealth-${UID}" ]]; then
+  IFS=$'\x1f' read -r _ _ _ _mcp_probe_names < "/tmp/nerdflair-mcphealth-${UID}" 2>/dev/null || true
+fi
+if [[ -n "${_mcp_probe_names:-}" ]]; then
+  IFS=$'\x1e' read -ra _probe_arr <<< "$_mcp_probe_names"
+  if (( ${#_probe_arr[@]} > 0 )); then
+    mcp_names=("${_probe_arr[@]}")
+    mcp_enabled=${#_probe_arr[@]}
+    mcp_total=$mcp_enabled
+  fi
+fi
+
 # Sort names alphabetically (handles names from multiple files)
 IFS=$'\n' mcp_names_sorted=($(printf '%s\n' "${mcp_names[@]}" | sort -f)); unset IFS
 
@@ -1191,7 +1210,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
   if [[ -f "$_mh_cache" ]]; then
     _mh_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_cache" 2>/dev/null || stat -f %m "$_mh_cache" 2>/dev/null || echo 0) ))
     (( _mh_age < _MCP_HEALTH_TTL )) && _mh_fresh=true
-    IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn < "$_mh_cache" 2>/dev/null || true
+    IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn _mcp_probe_names < "$_mh_cache" 2>/dev/null || true
   fi
   if [[ -d "$_mh_lock" ]]; then
     _mhl_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_lock" 2>/dev/null || stat -f %m "$_mh_lock" 2>/dev/null || echo 0) ))
@@ -1200,16 +1219,30 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
   if [[ "$_mh_fresh" == "false" ]] && mkdir "$_mh_lock" 2>/dev/null; then
     (
       trap 'rmdir "$_mh_lock" 2>/dev/null' EXIT
-      _out=$(timeout 30 claude mcp list 2>/dev/null || true)
-      _o=0; _b=0; _w=0
+      _out=$(timeout 30 claude mcp list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
+      _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
         case "$_ln" in
           *"Connected"*)            (( _o++ )) ;;
           *"Failed to connect"*)    (( _b++ )) ;;
           *"Needs authentication"*) (( _w++ )) ;;
+          *) continue ;;
         esac
+        # "<name>: <url> - <status>". The name itself may contain colons
+        # ("plugin:context7:context7"), so cut the status off first, then take
+        # everything before the LAST ": " -- that is the url separator.
+        _nn="${_ln%% - *}"; _nn="${_nn%: *}"
+        # plugin:<pkg>:<server> reads better as just <server>
+        case "$_nn" in
+          plugin:*)    _nn="${_nn##*:}" ;;
+          "claude.ai "*) _nn="${_nn#claude.ai }" ;;   # built-in connectors
+        esac
+        if [[ -n "$_nn" ]]; then
+          [[ -n "$_nm" ]] && _nm+=$'\x1e'
+          _nm+="$_nn"
+        fi
       done <<< "$_out"
-      (( _o + _b + _w > 0 )) && printf '%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" > "${_mh_cache}.tmp" \
+      (( _o + _b + _w > 0 )) && printf '%s\x1f%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" "$_nm" > "${_mh_cache}.tmp" \
         && mv -f "${_mh_cache}.tmp" "$_mh_cache"
     ) &>/dev/null &
     disown 2>/dev/null || true

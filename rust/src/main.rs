@@ -409,6 +409,24 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
         }
     }
+    // The scan above sees ONLY ~/.claude.json mcpServers and project .mcp.json.
+    // Plugin-provided servers live elsewhere and are invisible to it, which is
+    // why the names segment reported 1 server while the health probe counted 8.
+    // Prefer the probe's names so the two readouts cannot disagree.
+    if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
+        let mh = PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid));
+        if let Ok(t) = std::fs::read_to_string(&mh) {
+            let p = read_ifs_unit(&t, 4);
+            let probe: Vec<String> = p[3]
+                .split('\u{1e}')
+                .filter(|x| !x.is_empty())
+                .map(|x| x.to_string())
+                .collect();
+            if !probe.is_empty() {
+                mcp_names = probe;
+            }
+        }
+    }
     let mcp_enabled = mcp_names.len() as i64;
     let mut mcp_sorted = mcp_names.clone();
     sort_fold(&mut mcp_sorted);
@@ -1054,7 +1072,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
 
     // ── MCP health ───────────────────────────────────────────────
-    let (mcp_ok, mcp_bad, mcp_warn) = mcp_health(uid, now);
+    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now);
 
     // ── Time, cost, speed ────────────────────────────────────────
     let mut api_fmt = String::new();
@@ -1843,16 +1861,17 @@ fn resolve_ccusage_bin() -> Option<PathBuf> {
     Some(cc)
 }
 
-fn mcp_health(uid: u32, _now: i64) -> (String, String, String) {
+fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     let ttl = env_int("NERDFLAIR_MCP_HEALTH_TTL", 300);
     let mut ok = String::new();
     let mut bad = String::new();
     let mut warn = String::new();
+    let mut names = String::new();
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) == "0" {
-        return (ok, bad, warn);
+        return (ok, bad, warn, names);
     }
     if proc::which("claude").is_none() {
-        return (ok, bad, warn);
+        return (ok, bad, warn, names);
     }
     let cache = PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid));
     let lock = PathBuf::from(format!("{}.lock", cache.display()));
@@ -1862,10 +1881,11 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String) {
             fresh = true;
         }
         if let Ok(t) = std::fs::read_to_string(&cache) {
-            let p = read_ifs_unit(&t, 3);
+            let p = read_ifs_unit(&t, 4);
             ok = p[0].clone();
             bad = p[1].clone();
             warn = p[2].clone();
+            names = p[3].clone();
         }
     }
     if lock.is_dir() && file_age(&lock) > 300 {
@@ -1874,13 +1894,18 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String) {
     if !fresh && std::fs::create_dir(&lock).is_ok() {
         let script = format!(
             "trap 'rmdir {lock} 2>/dev/null' EXIT; \
-             _out=$(timeout 30 claude mcp list 2>/dev/null || true); _o=0; _b=0; _w=0; \
+             _out=$(timeout 30 claude mcp list 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' || true); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
              *\"Failed to connect\"*) _b=$((_b+1)) ;; \
              *\"Needs authentication\"*) _w=$((_w+1)) ;; \
-             esac; done <<< \"$_out\"; \
-             [ $((_o+_b+_w)) -gt 0 ] && printf '%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" > {cache}.tmp \
+             *) continue ;; \
+             esac; \
+             _nn=\"${{_ln%% - *}}\"; _nn=\"${{_nn%: *}}\"; \
+             case \"$_nn\" in plugin:*) _nn=\"${{_nn##*:}}\" ;; \"claude.ai \"*) _nn=\"${{_nn#claude.ai }}\" ;; esac; \
+             if [ -n \"$_nn\" ]; then [ -n \"$_nm\" ] && _nm=\"$_nm$(printf '\\036')\"; _nm=\"$_nm$_nn\"; fi; \
+             done <<< \"$_out\"; \
+             [ $((_o+_b+_w)) -gt 0 ] && printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
              && mv -f {cache}.tmp {cache}",
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
@@ -1894,7 +1919,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String) {
             .stderr(std::process::Stdio::null());
         let _ = c.spawn();
     }
-    (ok, bad, warn)
+    (ok, bad, warn, names)
 }
 
 /// A well-formed usage row: exactly 4 columns, a plausible epoch, and a cost in
