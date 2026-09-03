@@ -1137,9 +1137,17 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
       # and writes via a temp file so a concurrent reader never sees a partial.
       _rc_bytes=$(stat -c %s "$_REPO_COST_FILE" 2>/dev/null || echo 0)
       if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )); then
+        # A process that dies between mkdir and rmdir leaves the lock forever
+        # and compaction never runs again. Observed: a 12-day-old lock and a
+        # 12.7MB / 174k-row log. Every other lock here already self-clears.
+        if [[ -d "${_REPO_COST_FILE}.lock" ]]; then
+          _rcl_age=$(( EPOCHSECONDS - $(stat -c %Y "${_REPO_COST_FILE}.lock" 2>/dev/null || stat -f %m "${_REPO_COST_FILE}.lock" 2>/dev/null || echo 0) ))
+          (( _rcl_age > 300 )) && rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
+        fi
         if mkdir "${_REPO_COST_FILE}.lock" 2>/dev/null; then
           awk -F'\t' -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
-            'NF>=4 && $1+0 >= cutoff' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
+              -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" \
+            'NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
             && mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
           rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
         fi
@@ -1153,8 +1161,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     if [[ "$_rc_due" == "false" && -r "$_rc_memo" ]]; then
       _rc_total=$(<"$_rc_memo")
     elif [[ -r "$_REPO_COST_FILE" ]]; then
-      _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) '
-        NF>=4 && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
+      _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
+                      -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" '
+        NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
       ' "$_REPO_COST_FILE" 2>/dev/null || true)
       printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || true

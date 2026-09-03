@@ -1897,6 +1897,19 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String) {
     (ok, bad, warn)
 }
 
+/// A well-formed usage row: exactly 4 columns, a plausible epoch, and a cost in
+/// a sane range. Spliced rows from the old non-atomic append can carry an epoch
+/// concatenated onto a cost; unbounded, one such row wins the per-session max
+/// and dominates the sum. Mirrors the awk predicate in statusline.sh.
+fn usage_row_ok(cols: &[&str], maxcost: f64) -> bool {
+    if cols.len() != 4 {
+        return false;
+    }
+    let ts = fmtx::awk_num(cols[0]);
+    let v = fmtx::awk_num(cols[3]);
+    (1_600_000_000.0..=4_000_000_000.0).contains(&ts) && v > 0.0 && v < maxcost
+}
+
 fn repo_cost_segment(
     f: &Fields,
     git_dir: &str,
@@ -1945,6 +1958,7 @@ fn repo_cost_segment(
         uid,
         slugify(&f.session_id)
     ));
+    let maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
     let mut due = true;
     if stamp.is_file() && file_age(&stamp) < ttl {
         due = false;
@@ -1956,7 +1970,13 @@ fn repo_cost_segment(
             .append(true)
             .open(&cost_file)
         {
-            if write!(fh, "{}\t{}\t{}\t{}\n", now, f.session_id, slug, f.cost).is_ok() {
+            // ONE write_all of a pre-built line. `write!` on a std::fs::File
+            // is unbuffered and emits a separate write() per format fragment;
+            // O_APPEND makes each fragment atomic but lets another process
+            // interleave BETWEEN them. That spliced an epoch onto a cost and
+            // produced a $1,787,994,297.21 repo total.
+            let line = format!("{}\t{}\t{}\t{}\n", now, f.session_id, slug, f.cost);
+            if fh.write_all(line.as_bytes()).is_ok() {
                 let _ = std::fs::write(&stamp, "");
             }
         }
@@ -1964,6 +1984,11 @@ fn repo_cost_segment(
         let maxb = env_int("NERDFLAIR_REPO_COST_MAXBYTES", 2_000_000) as u64;
         if bytes > maxb {
             let lock = PathBuf::from(format!("{}.lock", cost_file.display()));
+            // Clear a lock left by a process that died before removing it;
+            // without this, compaction stops forever (observed: 12 days).
+            if lock.is_dir() && file_age(&lock) > 300 {
+                let _ = std::fs::remove_dir(&lock);
+            }
             if std::fs::create_dir(&lock).is_ok() {
                 let cutoff = now - days * 86400;
                 if let Ok(text) = std::fs::read_to_string(&cost_file) {
@@ -1971,7 +1996,8 @@ fn repo_cost_segment(
                         .lines()
                         .filter(|l| {
                             let cols: Vec<&str> = l.split('\t').collect();
-                            cols.len() >= 4 && fmtx::awk_num(cols[0]) >= cutoff as f64
+                            usage_row_ok(&cols, maxcost)
+                                && fmtx::awk_num(cols[0]) >= cutoff as f64
                         })
                         .map(|l| format!("{}\n", l))
                         .collect();
@@ -2001,7 +2027,7 @@ fn repo_cost_segment(
         let mut m: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         for line in text.lines() {
             let cols: Vec<&str> = line.split('\t').collect();
-            if cols.len() < 4 {
+            if !usage_row_ok(&cols, maxcost) {
                 continue;
             }
             if fmtx::awk_num(cols[0]) < cutoff {
