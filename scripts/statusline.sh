@@ -1270,23 +1270,69 @@ time_segment=""
 printf -v cost_icon '\xef\x85\x95'       # U+F155 dollar
 printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 
+# ── Per-session sampler ──────────────────────────────────────────
+# Throughput and the compaction ETA are both RATES, and neither can be derived
+# from a single payload: the payload carries CUMULATIVE api time but only the
+# LAST response's output tokens, and a cumulative context percentage with no
+# indication of how fast it got there. So remember the previous sample.
+#
+# One file per session_id, so the 14+ concurrent Claude Code sessions on this
+# machine never contend. agent-teams agents are FULL sessions with their own
+# session_id, not helpers sharing this one, so per-session is the right grain.
+# Written with one printf to a temp file then renamed: a reader never sees a
+# partial line, and there is no lock to go stale.
+_smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
+_smp_file=""
+if [[ -n "$session_id" ]]; then
+  _smp_file="/tmp/nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"
+  if [[ -r "$_smp_file" ]]; then
+    IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate \
+      < "$_smp_file" 2>/dev/null || true
+  fi
+fi
+# used_percentage is legitimately fractional; keep a tenth of a point.
+_used10=""
+if [[ -n "$used_pct" ]]; then
+  _u_int=${used_pct%%.*}; _u_frac=${used_pct#*.}
+  [[ "$_u_frac" == "$used_pct" ]] && _u_frac=0
+  _used10=$(( ${_u_int:-0} * 10 + ${_u_frac:0:1} ))
+fi
+
 TIME_COLOR="$MAUVE"
 api_fmt=""
 if [[ -n "$total_api_ms" && "$total_api_ms" -gt 999 ]] 2>/dev/null; then
   api_fmt=$(_fmt_duration "$total_api_ms")
-  time_segment="${TIME_COLOR}${api_fmt}${RESET}"
+  time_segment="${TIME_COLOR}${time_icon} ${api_fmt}${RESET}"
 fi
 
-# Token speed (output tokens / API seconds)
+# ── Token throughput ─────────────────────────────────────────────
+# context_window.total_output_tokens is the LAST response's output, not a
+# running total -- verified against this session's transcript: 432 for the last
+# response against a cumulative 1,158,497. Dividing it by CUMULATIVE api time
+# produced a figure that shrank as the session aged and sat at 0 or 1 forever.
+# The right denominator is how long that one response took, i.e. the growth in
+# cost.total_api_duration_ms since the previous sample.
 speed_segment=""
-if [[ -n "$output_tokens" && -n "$total_api_ms" ]] && (( output_tokens > 0 && total_api_ms > 0 )); then
-  _tok_per_sec=$(( output_tokens * 1000 / total_api_ms ))
-  if (( _tok_per_sec >= 1000 )); then
-    _speed_fmt="$(( _tok_per_sec / 1000 )).$(( _tok_per_sec % 1000 / 100 ))k"
-  else
-    _speed_fmt="$_tok_per_sec"
+_rate_now=""
+if [[ -n "$output_tokens" && -n "$total_api_ms" && -n "$_smp_prev_api" ]] \
+   && (( output_tokens > 0 && total_api_ms > _smp_prev_api )) 2>/dev/null; then
+  _d_api=$(( total_api_ms - _smp_prev_api ))
+  if (( _d_api > 0 )); then
+    _cand=$(( output_tokens * 1000 / _d_api ))
+    # Reject nonsense from a clock jump, a resume, or a compaction reset.
+    (( _cand > 0 && _cand < 10000 )) && _rate_now=$_cand
   fi
-  speed_segment="${MAUVE}󰓅 ${_speed_fmt}${RESET}"
+fi
+# Between responses the api clock does not advance, so hold the last real rate
+# instead of flickering to nothing on every intermediate render.
+_rate_show="${_rate_now:-$_smp_prev_rate}"
+if [[ -n "$_rate_show" ]] && (( _rate_show > 0 )) 2>/dev/null; then
+  if (( _rate_show >= 1000 )); then
+    _speed_fmt="$(( _rate_show / 1000 )).$(( _rate_show % 1000 / 100 ))k"
+  else
+    _speed_fmt="$_rate_show"
+  fi
+  speed_segment="${MAUVE}󰓅 ${_speed_fmt}/s${RESET}"
 fi
 
 COST_COLOR="${COST_GREEN}"
@@ -1325,13 +1371,24 @@ printf -v block_icon '\xef\x82\x94'       # U+F094 moon-o / block marker
 block_segment=""
 if [[ -n "$_ccusage_line" ]]; then
   _blk_cost=""; _blk_left=""
-  [[ "$_ccusage_line" =~ (\$[0-9]+\.[0-9]+)\ block ]] && _blk_cost="${BASH_REMATCH[1]}"
-  if [[ "$_ccusage_line" =~ \(([0-9]+h\ )?([0-9]+m)\ left\) ]]; then
-    _blk_left="${BASH_REMATCH[1]// /}${BASH_REMATCH[2]}"
+  # ccusage renders "$55.75 block (4h 3m left)", but the cost can be a bare
+  # integer, the remaining time can be minutes-only or seconds-only, and when
+  # the 5-hour window has lapsed it says "No active block" with no figures at
+  # all. The old pattern demanded a decimal cost AND an "Xm left" clause, so
+  # any of those shapes silently hid the whole segment.
+  if [[ "$_ccusage_line" =~ (\$[0-9]+(\.[0-9]+)?)[[:space:]]+block ]]; then
+    _blk_cost="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$_ccusage_line" =~ \(([0-9]+h[[:space:]]*)?([0-9]+m[[:space:]]*)?([0-9]+s[[:space:]]*)?left\) ]]; then
+    _blk_left="${BASH_REMATCH[1]// /}${BASH_REMATCH[2]// /}${BASH_REMATCH[3]// /}"
   fi
   if [[ -n "$_blk_cost" ]]; then
     block_segment="${MAUVE}${block_icon} ${_blk_cost}${RESET}"
     [[ -n "$_blk_left" ]] && block_segment+="${DIM} ${_blk_left}${RESET}"
+  elif [[ "$_ccusage_line" == *"No active block"* ]]; then
+    # Say so rather than vanishing: an absent segment is indistinguishable from
+    # a broken one, and "no block open" is a real, useful state.
+    block_segment="${DIM}${block_icon} idle${RESET}"
   fi
 fi
 
@@ -1352,32 +1409,72 @@ if [[ -n "$_mcp_ok" ]]; then
 fi
 
 # ── Time to auto-compaction ──────────────────────────────────────
-# Pure arithmetic on values already in hand: how fast the window is filling,
-# extrapolated to the 80% divider the bar already draws. Only shown once there
-# is enough signal to mean anything (>2 min elapsed, >5% used, below the line).
+# Previously this divided the CUMULATIVE context percentage by the CUMULATIVE
+# session duration, i.e. a session-lifetime average. That is wrong in both
+# directions: a session that sat idle for an hour looks slow forever, and one
+# that just got compacted looks absurdly fast because used% collapsed while the
+# clock kept running. Prefer the fill rate measured between the last two
+# samples, and fall back to the session average only when there is no sample yet.
 compact_segment=""
-if [[ -n "$used_pct" && -n "$total_duration_ms" ]] \
-   && (( total_duration_ms > 120000 )) 2>/dev/null; then
-  _cp_used=${used_pct%%.*}; : "${_cp_used:=0}"
-  if (( _cp_used >= 5 && _cp_used < 80 )); then
-    # elapsed_s = duration_ms/1000; rate = used/elapsed_s;
-    # remaining_s = (80 - used) / rate  ->  (80 - used) * duration_ms / (used * 1000)
-    if (( _cp_used > 0 )); then
-      _cp_secs=$(( (80 - _cp_used) * total_duration_ms / (_cp_used * 1000) ))
-      if (( _cp_secs > 0 && _cp_secs < 86400 )); then
-        _cp_color="$DIM"
-        (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
-        (( _cp_secs < 300 )) && _cp_color="$ALERT"
-        if (( _cp_secs >= 3600 )); then
-          printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
-        else
-          printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
-        fi
-        compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
+_ctx_dropped=""
+_fill10=""      # tenths of a percent per 1000 seconds
+if [[ -n "$_used10" && -n "$_smp_prev_used10" && -n "$_smp_prev_epoch" ]]; then
+  _d_used10=$(( _used10 - _smp_prev_used10 ))
+  _d_secs=$(( EPOCHSECONDS - _smp_prev_epoch ))
+  # A DROP in used% means a compaction or a /clear happened. Do not project
+  # from that -- the old baseline describes a window that no longer exists.
+  if (( _d_used10 > 0 && _d_secs > 0 )); then
+    _fill10=$(( _d_used10 * 1000 / _d_secs ))
+  elif (( _d_used10 < 0 )); then
+    # Context SHRANK: a compaction or /clear. The session average would now be
+    # badly wrong in the optimistic direction (a small used% over a long
+    # elapsed time reads as a slow fill), so suppress the projection entirely
+    # rather than fall through to it. One render later a fresh positive delta
+    # exists against the new baseline and the estimate resumes, correctly.
+    _ctx_dropped=1
+  fi
+fi
+if [[ -z "$_fill10" && -z "${_ctx_dropped:-}" && -n "$_used10" && -n "$total_duration_ms" ]] \
+   && (( total_duration_ms > 120000 && _used10 > 0 )) 2>/dev/null; then
+  _fill10=$(( _used10 * 1000000 / total_duration_ms ))
+fi
+if [[ -n "$_used10" && -n "$_fill10" ]] && (( _fill10 > 0 )) 2>/dev/null; then
+  # 800 tenths = the 80% auto-compaction line the bar already draws.
+  if (( _used10 >= 50 && _used10 < 800 )); then
+    _cp_secs=$(( (800 - _used10) * 1000 / _fill10 ))
+    if (( _cp_secs > 0 )); then
+      _cp_color="$DIM"
+      (( _cp_secs < 900 )) && _cp_color="$MUSTARD"
+      (( _cp_secs < 300 )) && _cp_color="$ALERT"
+      if (( _cp_secs >= 86400 )); then
+        # Do not hide a long projection -- "more than a day" is information.
+        _cp_fmt=">1d"
+      elif (( _cp_secs >= 3600 )); then
+        printf -v _cp_fmt '%dh%02dm' $(( _cp_secs / 3600 )) $(( (_cp_secs % 3600) / 60 ))
+      elif (( _cp_secs >= 60 )); then
+        printf -v _cp_fmt '%dm' $(( _cp_secs / 60 ))
+      else
+        printf -v _cp_fmt '%ds' "$_cp_secs"
       fi
+      compact_segment="${_cp_color}\xf3\xb0\x94\x9f ${_cp_fmt}${RESET}"
     fi
   fi
 fi
+
+# ── Persist this sample for the next render ──────────────────────
+# Single printf into a temp file then rename: atomic for the reader, and no
+# lock that could go stale. Only rewrite when something actually moved, so an
+# idle pane re-rendering every 30s does not churn the disk.
+if [[ -n "$_smp_file" ]]; then
+  _smp_new="${total_api_ms:-0} ${_used10:-0} ${EPOCHSECONDS} ${_rate_show:-0}"
+  _smp_old="${_smp_prev_api:-} ${_smp_prev_used10:-} ${_smp_prev_epoch:-} ${_smp_prev_rate:-}"
+  if [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" \
+        || -z "$_smp_prev_epoch" ]]; then
+    printf '%s' "$_smp_new" > "${_smp_file}.tmp" 2>/dev/null \
+      && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null || true
+  fi
+fi
+
 
 # ── tmux session name ────────────────────────────────────────────
 # 1ms measured, and only when actually inside tmux. Many parallel sessions

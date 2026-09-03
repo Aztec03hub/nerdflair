@@ -1082,37 +1082,63 @@ fn render_inner(input: &str) -> Result<String, String> {
             Ar::Fatal => return Err(out),
             Ar::Val(v) if v > 999 => {
                 api_fmt = fmtx::duration(v, fmt_num);
-                time_segment = format!("{}{}{}", pal.mauve, api_fmt, RESET);
+                time_segment = format!("{}{} {}{}", pal.mauve, TIME_ICON, api_fmt, RESET);
             }
             _ => {}
         }
     }
 
+    // Read the previous sample first: several segments below difference
+    // against it. used_percentage is legitimately fractional, so keep tenths.
+    let smp_path = if f.session_id.is_empty() { None } else { Some(sample_path(uid, &f.session_id)) };
+    let prev = smp_path.as_ref().and_then(|p| read_sample(p));
+    let used10: Option<i64> = if f.used_pct.is_empty() {
+        None
+    } else {
+        let mut it = f.used_pct.splitn(2, '.');
+        let int_part = fmtx::awk_num(it.next().unwrap_or("0")) as i64;
+        let frac_digit = it.next().and_then(|x| x.chars().next())
+            .and_then(|c| c.to_digit(10)).unwrap_or(0) as i64;
+        Some(int_part * 10 + frac_digit)
+    };
+
+    // ── Token throughput ─────────────────────────────────────────
+    // context_window.total_output_tokens is the LAST response's output, not a
+    // running total (verified against a real transcript: 432 vs a cumulative
+    // 1,158,497). Dividing it by CUMULATIVE api time yielded a figure that
+    // shrank as the session aged and sat at 0 or 1 forever. The right
+    // denominator is how long that one response took: the growth in
+    // total_api_duration_ms since the previous sample.
     let mut speed_segment = String::new();
+    let mut rate_now: Option<i64> = None;
     if !f.output_tokens.is_empty() && !f.total_api_ms.is_empty() {
         let ot = match arith(&f.output_tokens) {
-            Ar::Fatal => return Err(out),
-            Ar::Val(v) => v,
-            Ar::Syntax => 0,
+            Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
         };
-        let am = if ot > 0 {
-            match arith(&f.total_api_ms) {
-                Ar::Fatal => return Err(out),
-                Ar::Val(v) => v,
-                Ar::Syntax => 0,
+        let am = match arith(&f.total_api_ms) {
+            Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
+        };
+        if let Some(pv) = prev.as_ref() {
+            if ot > 0 && am > pv.api_ms {
+                let d = am - pv.api_ms;
+                if d > 0 {
+                    let c = ot.wrapping_mul(1000) / d;
+                    // Reject nonsense from a clock jump, resume, or reset.
+                    if c > 0 && c < 10000 { rate_now = Some(c); }
+                }
             }
-        } else {
-            0
-        };
-        if ot > 0 && am > 0 {
-            let tps = ot.wrapping_mul(1000) / am;
-            let sf = if tps >= 1000 {
-                format!("{}.{}k", tps / 1000, tps % 1000 / 100)
-            } else {
-                format!("{}", tps)
-            };
-            speed_segment = format!("{}{} {}{}", pal.mauve, SPEED_ICON, sf, RESET);
         }
+    }
+    // Between responses the api clock does not advance; hold the last real rate
+    // rather than flickering to nothing on intermediate renders.
+    let rate_show = rate_now.or_else(|| prev.as_ref().map(|p| p.rate)).unwrap_or(0);
+    if rate_show > 0 {
+        let sf = if rate_show >= 1000 {
+            format!("{}.{}k", rate_show / 1000, rate_show % 1000 / 100)
+        } else {
+            format!("{}", rate_show)
+        };
+        speed_segment = format!("{}{} {}/s{}", pal.mauve, SPEED_ICON, sf, RESET);
     }
 
     // `printf '%.2f' "${cost:-0}"` -> C strtod semantics, not Rust's parser.
@@ -1168,6 +1194,11 @@ fn render_inner(input: &str) -> Result<String, String> {
             if let Some(left) = scan_block_left(&ccusage_line) {
                 block_segment.push_str(&format!("{} {}{}", pal.dim, left, RESET));
             }
+        } else if ccusage_line.contains("No active block") {
+            // Say so rather than vanishing: an absent segment is
+            // indistinguishable from a broken one, and "no block open" is a
+            // real state worth showing.
+            block_segment = format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET);
         }
     }
 
@@ -1200,43 +1231,67 @@ fn render_inner(input: &str) -> Result<String, String> {
     }
 
     // ── Time to auto-compaction ──────────────────────────────────
+    // ── Time to auto-compaction ──────────────────────────────────
+    // Previously a session-lifetime average, which is wrong in both directions:
+    // an idle session looks slow forever, and a freshly-compacted one looks
+    // absurdly fast because used% collapsed while the clock kept running.
     let mut compact_segment = String::new();
-    if !f.used_pct.is_empty() && !f.total_duration_ms.is_empty() {
-        let dur = match arith(&f.total_duration_ms) {
-            Ar::Fatal => return Err(out),
-            Ar::Val(v) => v,
-            Ar::Syntax => 0,
-        };
-        {
-            if dur > 120000 {
-                let head = f.used_pct.split('.').next().unwrap_or("");
-                let cp_used = if head.is_empty() {
-                    0
+    let mut fill10: Option<i64> = None;   // tenths of a point per 1000 seconds
+    let mut ctx_dropped = false;
+    if let (Some(u10), Some(pv)) = (used10, prev.as_ref()) {
+        let d_used = u10 - pv.used10;
+        let d_secs = now - pv.epoch;
+        if d_used > 0 && d_secs > 0 {
+            fill10 = Some(d_used * 1000 / d_secs);
+        } else if d_used < 0 {
+            // Context SHRANK: compaction or /clear. Falling back to the session
+            // average here would read optimistically wrong, so suppress the
+            // projection for one render until a fresh delta exists.
+            ctx_dropped = true;
+        }
+    }
+    if fill10.is_none() && !ctx_dropped {
+        if let Some(u10) = used10 {
+            let dur = match arith(&f.total_duration_ms) {
+                Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
+            };
+            if dur > 120000 && u10 > 0 {
+                fill10 = Some(u10 * 1_000_000 / dur);
+            }
+        }
+    }
+    if let (Some(u10), Some(fr)) = (used10, fill10) {
+        if fr > 0 && (50..800).contains(&u10) {
+            let secs = (800 - u10) * 1000 / fr;
+            if secs > 0 {
+                let mut color = pal.dim;
+                if secs < 900 { color = pal.mustard; }
+                if secs < 300 { color = pal.alert; }
+                let fmt = if secs >= 86400 {
+                    // Do not hide a long projection: "more than a day" is information.
+                    ">1d".to_string()
+                } else if secs >= 3600 {
+                    format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+                } else if secs >= 60 {
+                    format!("{}m", secs / 60)
                 } else {
-                    match arith(head) {
-                        Ar::Fatal => return Err(out),
-                        Ar::Val(v) => v,
-                        Ar::Syntax => 0,
-                    }
+                    format!("{}s", secs)
                 };
-                if (5..80).contains(&cp_used) && cp_used > 0 {
-                    let secs = (80 - cp_used) * dur / (cp_used * 1000);
-                    if secs > 0 && secs < 86400 {
-                        let mut color = pal.dim;
-                        if secs < 900 {
-                            color = pal.mustard;
-                        }
-                        if secs < 300 {
-                            color = pal.alert;
-                        }
-                        let fmt = if secs >= 3600 {
-                            format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-                        } else {
-                            format!("{}m", secs / 60)
-                        };
-                        compact_segment = format!("{}{}{}{}", color, DOWN_DASHED, fmt, RESET);
-                    }
-                }
+                compact_segment = format!("{}{}{}{}", color, DOWN_DASHED, fmt, RESET);
+            }
+        }
+    }
+
+    // ── Persist this sample ──────────────────────────────────────
+    if let Some(sp) = smp_path.as_ref() {
+        let api_now = match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 };
+        let u_now = used10.unwrap_or(0);
+        let changed = prev.as_ref().map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
+        if changed {
+            let line = format!("{} {} {} {}", api_now, u_now, now, rate_show);
+            let tmp = PathBuf::from(format!("{}.tmp", sp.display()));
+            if std::fs::write(&tmp, line.as_bytes()).is_ok() {
+                let _ = std::fs::rename(&tmp, sp);
             }
         }
     }
@@ -1935,6 +1990,31 @@ fn usage_row_ok(cols: &[&str], maxcost: f64) -> bool {
     (1_600_000_000.0..=4_000_000_000.0).contains(&ts) && v > 0.0 && v < maxcost
 }
 
+/// One sample per session_id. Throughput and the compaction ETA are RATES and
+/// neither can be derived from a single payload: the payload has cumulative api
+/// time but only the LAST response's output tokens, and a cumulative context
+/// percentage with no indication of how fast it got there.
+///
+/// Per-session file, so the many concurrent Claude Code sessions on this machine
+/// never contend -- agent-teams agents are full sessions with their own
+/// session_id, not helpers sharing one. Write is printf-to-temp then rename.
+struct Sample { api_ms: i64, used10: i64, epoch: i64, rate: i64 }
+
+fn sample_path(uid: u32, session: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/nerdflair-sample-{}-{}", uid, slugify(session)))
+}
+fn read_sample(path: &Path) -> Option<Sample> {
+    let t = std::fs::read_to_string(path).ok()?;
+    let f: Vec<&str> = t.split_whitespace().collect();
+    if f.len() < 4 { return None; }
+    Some(Sample {
+        api_ms: fmtx::awk_num(f[0]) as i64,
+        used10: fmtx::awk_num(f[1]) as i64,
+        epoch:  fmtx::awk_num(f[2]) as i64,
+        rate:   fmtx::awk_num(f[3]) as i64,
+    })
+}
+
 fn repo_cost_segment(
     f: &Fields,
     git_dir: &str,
@@ -2107,62 +2187,50 @@ fn scan_burn(s: &str) -> Option<String> {
     None
 }
 
+/// `$<digits>[.<digits>] block` -- the cost can arrive as a bare integer.
 fn scan_block_cost(s: &str) -> Option<String> {
     let b = s.as_bytes();
     for i in 0..b.len() {
-        if b[i] != b'$' {
-            continue;
-        }
+        if b[i] != b'$' { continue; }
         let mut j = i + 1;
-        while j < b.len() && b[j].is_ascii_digit() {
-            j += 1;
+        while j < b.len() && b[j].is_ascii_digit() { j += 1; }
+        if j == i + 1 { continue; }              // "$" with no digits
+        let mut k = j;
+        if k < b.len() && b[k] == b'.' {         // optional fractional part
+            let mut m = k + 1;
+            while m < b.len() && b[m].is_ascii_digit() { m += 1; }
+            if m > k + 1 { k = m; }
         }
-        if j == i + 1 || j >= b.len() || b[j] != b'.' {
-            continue;
-        }
-        let mut k = j + 1;
-        while k < b.len() && b[k].is_ascii_digit() {
-            k += 1;
-        }
-        if k == j + 1 {
-            continue;
-        }
-        if s[k..].starts_with(" block") {
+        // tolerate any run of spaces before "block"
+        let rest = &s[k..];
+        if rest.trim_start().starts_with("block") && rest.starts_with(' ') {
             return Some(s[i..k].to_string());
         }
     }
     None
 }
 
-/// `\(([0-9]+h )?([0-9]+m) left\)`
+/// `(<Xh> <Ym> <Zs> left)` -- every component optional, so "1h left",
+/// "12m left" and "45s left" all parse. The strict "Xh Ym" shape silently hid
+/// the whole segment whenever the window was under a minute or on the hour.
 fn scan_block_left(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    for i in 0..b.len() {
-        if b[i] != b'(' {
-            continue;
-        }
-        let mut p = i + 1;
-        let mut hours = String::new();
-        // optional "<digits>h "
-        let mut q = p;
-        while q < b.len() && b[q].is_ascii_digit() {
-            q += 1;
-        }
-        if q > p && q + 1 < b.len() && b[q] == b'h' && b[q + 1] == b' ' {
-            hours = s[p..q + 1].to_string();
-            p = q + 2;
-        }
-        let mut r = p;
-        while r < b.len() && b[r].is_ascii_digit() {
-            r += 1;
-        }
-        if r == p || r >= b.len() || b[r] != b'm' {
-            continue;
-        }
-        let mins = s[p..r + 1].to_string();
-        if s[r + 1..].starts_with(" left)") {
-            return Some(format!("{}{}", hours, mins));
+    let open = s.find('(')?;
+    let close = s[open..].find(')')? + open;
+    let inner = &s[open + 1..close];
+    if !inner.trim_end().ends_with("left") { return None; }
+    let body = inner.trim_end().trim_end_matches("left").trim_end();
+    let mut outp = String::new();
+    let mut num = String::new();
+    for c in body.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else if matches!(c, 'h' | 'm' | 's') && !num.is_empty() {
+            outp.push_str(&num);
+            outp.push(c);
+            num.clear();
+        } else {
+            num.clear();
         }
     }
-    None
+    if outp.is_empty() { None } else { Some(outp) }
 }

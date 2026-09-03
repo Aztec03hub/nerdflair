@@ -370,6 +370,7 @@ run_side() {
   rm -f /tmp/nerdflair-mcphealth-${UID} /tmp/nerdflair-mcphealth-${UID}.tmp 2>/dev/null
   rmdir /tmp/nerdflair-mcphealth-${UID}.lock 2>/dev/null
   rm -f /tmp/nerdflair-repocost-${UID}-* /tmp/nerdflair-repocost-total-${UID}-* 2>/dev/null
+  rm -f /tmp/nerdflair-sample-${UID}-* /tmp/nerdflair-sample-${UID}-*.tmp 2>/dev/null
   rm -f /tmp/nerdflair-tmux-${UID}-* 2>/dev/null
 
   # ── seed the async caches this case asks for ────────────────────────────

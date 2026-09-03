@@ -244,6 +244,7 @@ pub const FOLDER_ICON: &str = "\u{f024b}"; // f3 b0 89 8b
 pub const HOME_ICON: &str = "\u{f015}"; // ef 80 95
 pub const BRANCH_ICON: &str = "\u{f062c}"; // f3 b0 98 ac
 pub const MODEL_ICON: &str = "\u{f51b}"; // ef 94 9b
+pub const TIME_ICON: &str = "\u{f017}"; // fa-clock_o
 pub const MCP_ICON: &str = "\u{f1e6}"; // ef 87 a6
 pub const STYLE_EXPLANATORY: &str = "\u{f05a}"; // ef 81 9a
 pub const STYLE_LEARNING: &str = "\u{f059}"; // ef 81 99
