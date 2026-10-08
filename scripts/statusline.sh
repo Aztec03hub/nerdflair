@@ -759,18 +759,26 @@ _justified_row() {
   printf '%b%s%b%b' "$left_str" "$pad" "$right_str" "${RESET}"
 }
 
-# ── Total row width = bar max + 2 caps ────────────────────────────
+# ── Total row width, and the bar inside it ───────────────────────
+# The configured number IS the row width; the bar is that less its two cap
+# glyphs. Treating it as the bar width instead made every row COLUMNS+2 wide.
+#
+# Claude Code draws the status line inset two columns on each side (the same
+# inset its own mode line gets), so a row has COLUMNS-4 to live in. Anything
+# wider is silently cut and given a trailing "…", which is what ate the right
+# half of row 3 and left the padding behind as a gap. Measured on 2.1.294 at
+# panes of 100 and 120 columns: 96 and 116 columns shown. NERDFLAIR_WIDTH_INSET
+# retunes it if a future build insets differently or `padding` is set.
 # Limits: min 50, default 80, max 150 (enforced here regardless of state)
+_WIDTH_INSET=${NERDFLAIR_WIDTH_INSET:-4}
 if [[ "$_SL_WIDTH" != "auto" && "$_SL_WIDTH" =~ ^[0-9]+$ ]]; then
-  MAX_BAR=$_SL_WIDTH
-  (( MAX_BAR < 50 )) && MAX_BAR=50
-  (( MAX_BAR > 150 )) && MAX_BAR=150
+  ROW_WIDTH=$_SL_WIDTH
 else
-  MAX_BAR=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
-  (( MAX_BAR < 50 )) && MAX_BAR=50
-  (( MAX_BAR > 150 )) && MAX_BAR=150
+  ROW_WIDTH=$(( ${COLUMNS:-$(tput cols 2>/dev/null || echo 80)} - _WIDTH_INSET ))
 fi
-ROW_WIDTH=$(( MAX_BAR + 2 ))
+(( ROW_WIDTH < 50 )) && ROW_WIDTH=50
+(( ROW_WIDTH > 150 )) && ROW_WIDTH=150
+MAX_BAR=$(( ROW_WIDTH - 2 ))
 
 # ── Row 1: proactive budget-based truncation ──────────────────────
 # Right side (dirty segment) is never truncated — measure it first.
@@ -1090,7 +1098,26 @@ elif command -v ccusage &>/dev/null; then
   [[ -z "$_CCUSAGE_BIN" ]] && _CCUSAGE_BIN="$(command -v ccusage)"
 fi
 
-if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
+# DEFAULT OFF since 2026-10-08. This bridge took down the machine: 22
+# concurrent ccusage runs, ~46 GB RSS, load ~240, WSL out of memory and swap.
+#
+# The design below assumed the "1.5s ccusage" named in the comment further
+# down, which is what it measured when it was written. It is not a 1.5s job
+# any more: ccusage re-walks every transcript under ~/.claude/projects on
+# EVERY invocation, and that corpus has grown to 9.6 GB across 8,910 .jsonl
+# files (largest 617 MB). Measured 2026-10-08: 12.5s wall and 290 MB RSS per
+# run, warm or cold, because ccusage's own --cache does not prevent the walk.
+#
+# That turned the stale-lock breaker into an amplifier. A run slower than the
+# 120s breaker gets a second runner spawned on top of it; two runners are
+# slower still, so a third follows, and the pile grows without bound. It is
+# bistable: fine until the machine is busy, unrecoverable after.
+#
+# Set NERDFLAIR_CCUSAGE=1 to re-enable. It is now bounded even then: a hard
+# timeout shorter than the breaker, so a wedged run dies before it is doubled.
+if [[ "${NERDFLAIR_CCUSAGE:-0}" == "1" && -n "$_CCUSAGE_BIN" ]]; then
+  _CU_KILL=${NERDFLAIR_CCUSAGE_TIMEOUT:-45}
+  _CU_BREAK=$(( _CU_KILL * 4 ))
   _cu_cache="/tmp/nerdflair-ccusage-${UID}"
   _cu_lock="${_cu_cache}.lock"
   _cu_fresh=false
@@ -1102,14 +1129,15 @@ if [[ "${NERDFLAIR_CCUSAGE:-1}" != "0" && -n "$_CCUSAGE_BIN" ]]; then
   # A stale lock means a refresh died; clear it before deciding to spawn.
   if [[ -d "$_cu_lock" ]]; then
     _lk_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_cu_lock" 2>/dev/null || stat -f %m "$_cu_lock" 2>/dev/null || echo 0) ))
-    (( _lk_age > 120 )) && rmdir "$_cu_lock" 2>/dev/null || true
+    (( _lk_age > _CU_BREAK )) && rmdir "$_cu_lock" 2>/dev/null || true
   fi
   # mkdir is atomic, so it IS the lock. Without it, many parallel Claude Code
-  # sessions would each fork a 1.5s ccusage at the same moment.
+  # sessions would each fork a ccusage at the same moment. The breaker above
+  # MUST stay longer than the timeout below, or it re-creates the pile-up.
   if [[ "$_cu_fresh" == "false" ]] && mkdir "$_cu_lock" 2>/dev/null; then
     (
       trap 'rmdir "$_cu_lock" 2>/dev/null' EXIT
-      printf '%s' "$input" | "$_CCUSAGE_BIN" statusline --refresh-interval "$_CCUSAGE_TTL" \
+      printf '%s' "$input" | timeout -k 5 "$_CU_KILL" "$_CCUSAGE_BIN" statusline --refresh-interval "$_CCUSAGE_TTL" \
         > "${_cu_cache}.tmp" 2>/dev/null && mv -f "${_cu_cache}.tmp" "$_cu_cache"
     ) &>/dev/null &
     disown 2>/dev/null || true
@@ -1164,9 +1192,42 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
           (( _rcl_age > 300 )) && rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
         fi
         if mkdir "${_REPO_COST_FILE}.lock" 2>/dev/null; then
+          # Dropping only rows older than _REPO_COST_DAYS is not a bound: at 14
+          # live sessions a 30-day window is ~400k rows and ~30 MB, so the 2 MB
+          # trigger fired on every refresh and rewrote 30 MB each time. Bound it
+          # by what each reader actually needs instead of by age alone.
+          #
+          # Older than FULL_DAYS, only the LAST row per session+repo survives.
+          # Repo totals take the MAX cumulative cost per session, so that is
+          # lossless for them; burn and block only look at the last hour and
+          # the last five, both well inside the full-resolution window. The
+          # result is bounded by how many sessions have ever run, not by how
+          # long the machine has been up. Survivors are emitted in epoch order
+          # so the file stays in append order and the tail read above keeps
+          # covering the recent window. Measured on the real ledger: 396,627
+          # rows / 30 MB in, 31,815 rows / 2.4 MB out.
           awk -F'\t' -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
-              -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" \
-            'NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
+              -v full_from=$(( EPOCHSECONDS - ${NERDFLAIR_LEDGER_FULL_DAYS:-3}*86400 )) \
+              -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" '
+            NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 \
+              && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff {
+              if ($1+0 >= full_from) { recent[++r] = $0; next }
+              k = $2 "\t" $3
+              if (!(k in ot) || $1+0 >= ot[k]) { ot[k] = $1+0; ol[k] = $0 }
+            }
+            END {
+              n = 0
+              for (k in ol) { n++; ts[n] = ot[k]; ln[n] = ol[k] }
+              for (i = 2; i <= n; i++) {          # insertion sort by epoch,
+                vt = ts[i]; vl = ln[i]; j = i - 1 # then by line, for a stable
+                while (j >= 1 && (ts[j] > vt || (ts[j] == vt && ln[j] > vl))) {
+                  ts[j+1] = ts[j]; ln[j+1] = ln[j]; j--
+                }
+                ts[j+1] = vt; ln[j+1] = vl
+              }
+              for (i = 1; i <= n; i++) print ln[i]
+              for (i = 1; i <= r; i++) print recent[i]
+            }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
             && mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
           rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
         fi
@@ -1373,10 +1434,66 @@ if [[ "$formatted_cost" != "0.00" ]]; then
   cost_segment="${COST_COLOR}${cost_icon}${formatted_cost}${RESET}"
 fi
 
+# ── Ledger tail, shared by burn rate and billing block ───────────
+# Both figures used to come from ccusage, which re-walked 9.6 GB of transcripts
+# per call to learn what this ledger already records once a minute. Read the
+# TAIL of it instead: the ledger is append-only, so the tail IS the recent
+# window and the read costs a bounded number of bytes however long the machine
+# has been up. Never stream the whole file from here.
+#
+# Append order is time order only to within concurrent-append jitter (measured
+# on the real ledger: 878 inversions, largest backstep 22s), which is far
+# inside the hour and five-hour windows read from it, and _window_spend filters
+# each row by its own timestamp anyway. At the default cap the tail covered 40
+# hours of history.
+_LEDGER_CAP=${NERDFLAIR_LEDGER_TAIL_BYTES:-1048576}
+_LEDGER_MAXCOST=${NERDFLAIR_REPO_COST_MAX:-100000}
+_LEDGER_FILE=${NERDFLAIR_REPO_COST_FILE:-$HOME/.claude/nerdflair-usage.tsv}
+_ledger=""
+if [[ -f "$_LEDGER_FILE" ]]; then
+  _lg_bytes=$(stat -c %s "$_LEDGER_FILE" 2>/dev/null || stat -f %z "$_LEDGER_FILE" 2>/dev/null || echo 0)
+  _ledger=$(tail -c "$_LEDGER_CAP" "$_LEDGER_FILE" 2>/dev/null || true)
+  # A tail that did not start at byte 0 begins mid-record; that partial line
+  # would parse as a row with a truncated epoch or cost.
+  if (( _lg_bytes > _LEDGER_CAP )); then
+    if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
+  fi
+fi
+
+# Dollars spent within [since, now] and the span the samples cover. Cost is
+# CUMULATIVE PER SESSION, so a window's spend is the sum over sessions of
+# (last - first) inside it. A cumulative counter only rises, so a fall means a
+# reused session id or a corrupt row and contributes nothing.
+_window_spend() {  # $1=since $2=now -> "<spent> <span>"
+  printf '%s\n' "$_ledger" | awk -F'\t' \
+    -v since="$1" -v now="$2" -v maxcost="$_LEDGER_MAXCOST" '
+    NF == 4 {
+      t = $1 + 0; v = $4 + 0
+      if (t < 1600000000 || t > 4000000000) next
+      if (v <= 0 || v >= maxcost) next
+      if (t < since || t > now) next
+      s = $2
+      if (!(s in fc)) { fc[s] = v; lc[s] = v; ft[s] = t; lt[s] = t; next }
+      if (t <  ft[s]) { fc[s] = v; ft[s] = t }
+      if (t >= lt[s]) { lc[s] = v; lt[s] = t }
+    }
+    END {
+      total = 0; lo = ""; hi = ""
+      for (s in fc) {
+        if (lc[s] > fc[s]) total += lc[s] - fc[s]
+        if (lo == "" || ft[s] < lo) lo = ft[s]
+        if (hi == "" || lt[s] > hi) hi = lt[s]
+      }
+      span = (hi != "" && lo != "" && hi > lo) ? hi - lo : 0
+      printf "%.10f %d", total, span
+    }'
+}
+
 # ── Burn rate ($/hr) ─────────────────────────────────────────────
-# Prefer ccusage's figure: it is the spend rate of the current 5-hour billing
-# BLOCK across every session, which is what you actually want to watch. Fall
-# back to this session's own average (cost / wall-clock) when ccusage is absent.
+# A ROLLING rate over the last hour across every session, which is what "burn
+# rate" should mean. Needs BURN_MIN_SPAN of samples before dividing: over a
+# couple of minutes the quotient swings wildly and reads as noise. Falls back
+# to this session's own lifetime average when the ledger is too young.
 # Suppressed under 2 minutes of wall clock -- a 10-second session divides into
 # an absurd hourly rate and the number is noise, not signal.
 printf -v burn_icon '\xf3\xb0\x88\xb8'   # U+F0238 md-fire
@@ -1384,6 +1501,14 @@ burn_segment=""
 _burn_val=""
 if [[ -n "$_ccusage_line" ]]; then
   [[ "$_ccusage_line" =~ \$([0-9]+\.[0-9]+)/hr ]] && _burn_val="${BASH_REMATCH[1]}"
+fi
+if [[ -z "$_burn_val" && -n "$_ledger" ]]; then
+  _bw=${NERDFLAIR_BURN_WINDOW:-3600}
+  _bmin=${NERDFLAIR_BURN_MIN_SPAN:-600}
+  read -r _bspent _bspan < <(_window_spend "$(( EPOCHSECONDS - _bw ))" "$EPOCHSECONDS")
+  if (( _bspan >= _bmin )) 2>/dev/null; then
+    _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>/dev/null)
+  fi
 fi
 if [[ -z "$_burn_val" && -n "$cost" && -n "$total_duration_ms" ]] \
    && (( total_duration_ms > 120000 )) 2>/dev/null; then
@@ -1420,6 +1545,25 @@ if [[ -n "$_ccusage_line" ]]; then
     # Say so rather than vanishing: an absent segment is indistinguishable from
     # a broken one, and "no block open" is a real, useful state.
     block_segment="${DIM}${block_icon} idle${RESET}"
+  fi
+fi
+# Spend inside the CURRENT five-hour rate-limit window, from our own ledger.
+# The window is the payload's own rate_limits.five_hour.resets_at less five
+# hours, so this is pinned to the block Anthropic is actually metering rather
+# than to a guess of our own. Without that field there is no block to report,
+# and a made-up window would be worse than none.
+if [[ -z "$block_segment" && -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
+  if (( rl_5h_reset > 0 )) 2>/dev/null; then
+    _blk_start=$(( rl_5h_reset - 18000 ))
+    if (( EPOCHSECONDS >= _blk_start )); then
+      read -r _kspent _kspan < <(_window_spend "$_blk_start" "$EPOCHSECONDS")
+      _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>/dev/null)
+      if [[ -n "$_kfmt" ]]; then
+        block_segment="${MAUVE}${block_icon} \$${_kfmt}${RESET}"
+      else
+        block_segment="${DIM}${block_icon} idle${RESET}"
+      fi
+    fi
   fi
 fi
 

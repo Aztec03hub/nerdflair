@@ -720,12 +720,24 @@ fn render_inner(input: &str) -> Result<String, String> {
     let ctx_label = format!("{}/{} {}%", used_fmt, size_fmt, pct);
 
     // ── Width ────────────────────────────────────────────────────
-    let mut max_bar: i64 = if sl_width != "auto" && !sl_width.is_empty()
+    // The configured number IS the row width; the bar is that less its two
+    // cap glyphs. Treating it as the bar width instead made every row
+    // COLUMNS+2 wide.
+    //
+    // Claude Code draws the status line inset two columns on each side (the
+    // same inset its own mode line gets), so a row has COLUMNS-4 to live in.
+    // Anything wider is silently cut and given a trailing "…", which is what
+    // ate the right half of row 3 and left the padding behind as a gap.
+    // Measured on 2.1.294 at panes of 100 and 120 columns: 96 and 116 columns
+    // shown. NERDFLAIR_WIDTH_INSET retunes it if a future build insets
+    // differently or `padding` is set.
+    let inset = env_int("NERDFLAIR_WIDTH_INSET", 4);
+    let mut row_width: i64 = if sl_width != "auto" && !sl_width.is_empty()
         && sl_width.bytes().all(|b| b.is_ascii_digit())
     {
         sl_width.parse::<i64>().unwrap_or(80)
     } else {
-        match std::env::var("COLUMNS").ok().filter(|s| !s.is_empty()) {
+        let cols = match std::env::var("COLUMNS").ok().filter(|s| !s.is_empty()) {
             Some(c) => bash_int(&c).unwrap_or(80),
             None => {
                 let (o, ok) = proc::out("tput", &["cols"], None);
@@ -735,15 +747,16 @@ fn render_inner(input: &str) -> Result<String, String> {
                     80
                 }
             }
-        }
+        };
+        cols - inset
     };
-    if max_bar < 50 {
-        max_bar = 50;
+    if row_width < 50 {
+        row_width = 50;
     }
-    if max_bar > 150 {
-        max_bar = 150;
+    if row_width > 150 {
+        row_width = 150;
     }
-    let row_width = max_bar + 2;
+    let max_bar = row_width - 2;
 
     // ── Git divergence ───────────────────────────────────────────
     let gc_ahead = bash_int(&gc.ahead).unwrap_or(0);
@@ -1039,7 +1052,28 @@ fn render_inner(input: &str) -> Result<String, String> {
     let ccusage_ttl: i64 = env_int("NERDFLAIR_CCUSAGE_TTL", 60);
     let mut ccusage_line = String::new();
     let ccusage_bin = resolve_ccusage_bin();
-    if std::env::var("NERDFLAIR_CCUSAGE").unwrap_or_else(|_| "1".into()) != "0" {
+    // DEFAULT OFF since 2026-10-08. This bridge took down the machine: 22
+    // concurrent ccusage runs, ~46 GB RSS, load ~240, WSL out of memory and
+    // swap.
+    //
+    // The design assumed the "1.5s ccusage" the bash comment names, which is
+    // what it measured when it was written. It is not a 1.5s job any more:
+    // ccusage re-walks every transcript under ~/.claude/projects on EVERY
+    // invocation, and that corpus has grown to 9.6 GB across 8,910 .jsonl
+    // files (largest 617 MB). Measured 2026-10-08: 12.5s wall and 290 MB RSS
+    // per run, warm or cold, because ccusage's own --cache does not prevent
+    // the walk.
+    //
+    // That turned the stale-lock breaker into an amplifier. A run slower than
+    // the 120s breaker gets a second runner spawned on top of it; two runners
+    // are slower still, so a third follows, and the pile grows without bound.
+    // It is bistable: fine until the machine is busy, unrecoverable after.
+    //
+    // Set NERDFLAIR_CCUSAGE=1 to re-enable. It is bounded even then: a hard
+    // timeout shorter than the breaker, so a wedged run dies before doubling.
+    let cu_kill = env_int("NERDFLAIR_CCUSAGE_TIMEOUT", 45);
+    let cu_break = cu_kill * 4;
+    if std::env::var("NERDFLAIR_CCUSAGE").unwrap_or_else(|_| "0".into()) == "1" {
         if let Some(binp) = &ccusage_bin {
             let cache = PathBuf::from(format!("/tmp/nerdflair-ccusage-{}", uid));
             let lock = PathBuf::from(format!("{}.lock", cache.display()));
@@ -1050,15 +1084,17 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
                 ccusage_line = std::fs::read_to_string(&cache).unwrap_or_default();
             }
-            if lock.is_dir() && file_age(&lock) > 120 {
+            // MUST stay longer than cu_kill, or it re-creates the pile-up.
+            if lock.is_dir() && file_age(&lock) > cu_break {
                 let _ = std::fs::remove_dir(&lock);
             }
             if !fresh && std::fs::create_dir(&lock).is_ok() {
                 let script = format!(
                     "trap 'rmdir {lock} 2>/dev/null' EXIT; \
-                     {bin} statusline --refresh-interval {ttl} > {cache}.tmp 2>/dev/null \
+                     timeout -k 5 {kill} {bin} statusline --refresh-interval {ttl} > {cache}.tmp 2>/dev/null \
                      && mv -f {cache}.tmp {cache}",
                     lock = shq(&lock.to_string_lossy()),
+                    kill = cu_kill,
                     bin = shq(&binp.to_string_lossy()),
                     ttl = ccusage_ttl,
                     cache = shq_bare(&cache.to_string_lossy()),
@@ -1154,6 +1190,19 @@ fn render_inner(input: &str) -> Result<String, String> {
         cost_segment = format!("{}{}{}{}", pal.cost_green, COST_ICON, formatted_cost, RESET);
     }
 
+    // ── Burn rate and billing block, from our own ledger ─────────
+    // Both used to come from ccusage, which re-walked 9.6 GB of transcripts
+    // per call to learn what this ledger already records once a minute. We
+    // read the TAIL of it instead: bounded bytes, no matter how long the
+    // machine has been running.
+    let ledger_cap = env_int("NERDFLAIR_LEDGER_TAIL_BYTES", 1_048_576) as u64;
+    let ledger_maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
+    let ledger_file = PathBuf::from(
+        std::env::var("NERDFLAIR_REPO_COST_FILE")
+            .unwrap_or_else(|_| format!("{}/.claude/nerdflair-usage.tsv", home)),
+    );
+    let ledger = ledger_tail(&ledger_file, ledger_cap);
+
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
     if !ccusage_line.is_empty() {
@@ -1161,6 +1210,19 @@ fn render_inner(input: &str) -> Result<String, String> {
             burn_val = v;
         }
     }
+    // A rolling rate over the last hour, which is what "burn rate" should
+    // mean. Needs MIN_SPAN of samples before dividing: over a couple of
+    // minutes the quotient swings wildly and reads as noise.
+    if burn_val.is_empty() && !ledger.is_empty() {
+        let win = env_int("NERDFLAIR_BURN_WINDOW", 3600);
+        let min_span = env_int("NERDFLAIR_BURN_MIN_SPAN", 600);
+        let (spent, span) = window_spend(&ledger, ledger_maxcost, now - win, now);
+        if span >= min_span && spent > 0.0 {
+            burn_val = fmtx::f2(spent / (span as f64 / 3600.0));
+        }
+    }
+    // Last resort for a session too young to have an hour of ledger: the
+    // session's own lifetime average, which is what this did before.
     if burn_val.is_empty() && !f.cost.is_empty() && !f.total_duration_ms.is_empty() {
         match arith(&f.total_duration_ms) {
             Ar::Fatal => return Err(out),
@@ -1187,7 +1249,12 @@ fn render_inner(input: &str) -> Result<String, String> {
         burn_segment = format!("{}{} ${}/h{}", color, BURN_ICON, burn_val, RESET);
     }
 
-    // ── ccusage billing block ────────────────────────────────────
+    // ── Billing block ────────────────────────────────────────────
+    // Spend inside the CURRENT five-hour rate-limit window. The window is the
+    // payload's own `rate_limits.five_hour.resets_at` less five hours, so this
+    // is pinned to the block Anthropic is actually metering rather than to a
+    // guess of our own. Without that field there is no block to report, and a
+    // made-up window would be worse than none.
     let mut block_segment = String::new();
     if !ccusage_line.is_empty() {
         if let Some(blk_cost) = scan_block_cost(&ccusage_line) {
@@ -1200,6 +1267,22 @@ fn render_inner(input: &str) -> Result<String, String> {
             // indistinguishable from a broken one, and "no block open" is a
             // real state worth showing.
             block_segment = format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET);
+        }
+    }
+    // An absent `resets_at` arrives as "", which integer arithmetic reads as
+    // 0; that would put the block start in 1969 and total the whole ledger.
+    // No field means no block.
+    if block_segment.is_empty() && !ledger.is_empty() && !f.rl_5h_reset.is_empty() {
+        if let Some(reset) = bash_int(&f.rl_5h_reset).filter(|r| *r > 0) {
+            let block_start = reset - 18000;
+            if now >= block_start {
+                let (spent, _) = window_spend(&ledger, ledger_maxcost, block_start, now);
+                block_segment = if spent > 0.0 {
+                    format!("{}{} ${}{}", pal.mauve, BLOCK_ICON, fmtx::f2(spent), RESET)
+                } else {
+                    format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET)
+                };
+            }
         }
     }
 
@@ -2182,16 +2265,62 @@ fn repo_cost_segment(
             }
             if std::fs::create_dir(&lock).is_ok() {
                 let cutoff = now - days * 86400;
+                // Dropping only rows older than `days` is not a bound: at 14
+                // live sessions a 30-day window is ~400k rows and ~30 MB, so
+                // the 2 MB trigger fired on every refresh and rewrote 30 MB
+                // each time. Bound it by what each reader actually needs
+                // instead of by age alone.
+                //
+                // Older than `full_days`, only the LAST row per session+repo
+                // survives. Repo totals take the MAX cumulative cost per
+                // session, so that is lossless for them; burn and block only
+                // ever look at the last hour and the last five, both well
+                // inside the full-resolution window. The result is bounded by
+                // how many sessions have ever run, not by how long the
+                // machine has been up.
+                let full_days = env_int("NERDFLAIR_LEDGER_FULL_DAYS", 3);
+                let full_from = (now - full_days * 86400) as f64;
                 if let Ok(text) = std::fs::read_to_string(&cost_file) {
-                    let kept: String = text
-                        .lines()
-                        .filter(|l| {
-                            let cols: Vec<&str> = l.split('\t').collect();
-                            usage_row_ok(&cols, maxcost)
-                                && fmtx::awk_num(cols[0]) >= cutoff as f64
-                        })
-                        .map(|l| format!("{}\n", l))
-                        .collect();
+                    let mut old: std::collections::HashMap<String, (i64, String)> =
+                        std::collections::HashMap::new();
+                    let mut recent: Vec<&str> = Vec::new();
+                    for l in text.lines() {
+                        let cols: Vec<&str> = l.split('\t').collect();
+                        if !usage_row_ok(&cols, maxcost) {
+                            continue;
+                        }
+                        let t = fmtx::awk_num(cols[0]);
+                        if t < cutoff as f64 {
+                            continue;
+                        }
+                        if t >= full_from {
+                            recent.push(l);
+                        } else {
+                            let key = format!("{}\t{}", cols[1], cols[2]);
+                            let ti = t as i64;
+                            match old.get(&key) {
+                                Some((pt, _)) if *pt >= ti => {}
+                                _ => {
+                                    old.insert(key, (ti, l.to_string()));
+                                }
+                            }
+                        }
+                    }
+                    // Keep the survivors in epoch order so the file stays in
+                    // append order overall and the tail read keeps covering
+                    // the recent window. Measured on the real ledger: 396,627
+                    // rows / 30 MB in, 31,815 rows / 2.4 MB out.
+                    let mut survivors: Vec<(i64, String)> = old.into_values().collect();
+                    survivors.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                    let mut kept = String::new();
+                    for (_, l) in survivors {
+                        kept.push_str(&l);
+                        kept.push('\n');
+                    }
+                    for l in recent {
+                        kept.push_str(l);
+                        kept.push('\n');
+                    }
                     let tmp = PathBuf::from(format!("{}.tmp", cost_file.display()));
                     if std::fs::write(&tmp, kept).is_ok() {
                         let _ = std::fs::rename(&tmp, &cost_file);
@@ -2243,6 +2372,102 @@ fn repo_cost_segment(
         return format!("{}{} ${}{}", pal.dark_green, REPO_ICON, total, RESET);
     }
     String::new()
+}
+
+/// The last `cap` bytes of the ledger, with a partial leading line dropped.
+///
+/// The ledger is append-only, so its tail IS the recent window and reading it
+/// costs O(cap) however large the file grows. Append order is time order only
+/// to within concurrent-append jitter (measured on the real ledger: 878
+/// inversions, largest backstep 22s), which is far inside the hour and
+/// five-hour windows read from it, and `window_spend` filters each row by its
+/// own timestamp regardless. At the default cap the tail covered 40 hours.
+/// The whole file is deliberately never streamed here: a per-refresh path
+/// whose cost tracks a file that grows on its own is exactly what took the
+/// machine down on 2026-10-08, and the same mistake is available here.
+fn ledger_tail(path: &Path, cap: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut fh = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let len = fh.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(cap);
+    if fh.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if fh.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    // A seek lands mid-record unless it landed at byte 0; that first partial
+    // line would otherwise parse as a row with a truncated epoch or cost.
+    if start > 0 {
+        match s.find('\n') {
+            Some(i) => s = s[i + 1..].to_string(),
+            None => s.clear(),
+        }
+    }
+    s
+}
+
+/// Dollars spent within [since, now], and the span the samples actually cover.
+///
+/// Cost in the ledger is CUMULATIVE PER SESSION, so a window's spend is the
+/// sum over sessions of (last - first) seen inside it. A session whose first
+/// sample falls inside the window contributes only from that sample onward,
+/// so spend before it (at most one sampling interval, ~60s) is not counted.
+/// The span is returned so a caller can refuse to divide by a window it has
+/// barely any samples for.
+fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64) {
+    // session -> (first_cost, last_cost, first_t, last_t)
+    let mut m: std::collections::HashMap<&str, (f64, f64, i64, i64)> =
+        std::collections::HashMap::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if !usage_row_ok(&cols, maxcost) {
+            continue;
+        }
+        let t = fmtx::awk_num(cols[0]) as i64;
+        if t < since || t > now {
+            continue;
+        }
+        let v = fmtx::awk_num(cols[3]);
+        match m.get_mut(cols[1]) {
+            None => {
+                m.insert(cols[1], (v, v, t, t));
+            }
+            Some(e) => {
+                if t < e.2 {
+                    e.0 = v;
+                    e.2 = t;
+                }
+                if t >= e.3 {
+                    e.1 = v;
+                    e.3 = t;
+                }
+            }
+        }
+    }
+    let mut total = 0.0;
+    let mut lo = i64::MAX;
+    let mut hi = i64::MIN;
+    for (first, last, ft, lt) in m.values() {
+        // A cumulative counter only rises. A fall means the session id was
+        // reused or a row was corrupt; contributing a negative would show a
+        // spend that never happened.
+        if last > first {
+            total += last - first;
+        }
+        if *ft < lo {
+            lo = *ft;
+        }
+        if *lt > hi {
+            hi = *lt;
+        }
+    }
+    (total, if hi > lo { hi - lo } else { 0 })
 }
 
 // ── ccusage line scanners (bash =~ equivalents) ──────────────────
