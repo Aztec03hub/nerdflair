@@ -1128,7 +1128,6 @@ fi
 # timeout shorter than the breaker, so a wedged run dies before it is doubled.
 if [[ "${NERDFLAIR_CCUSAGE:-0}" == "1" && -n "$_CCUSAGE_BIN" ]]; then
   _CU_KILL=${NERDFLAIR_CCUSAGE_TIMEOUT:-45}
-  _CU_BREAK=$(( _CU_KILL * 4 ))
   _cu_cache="/tmp/nerdflair-ccusage-${UID}"
   _cu_lock="${_cu_cache}.lock"
   _cu_fresh=false
@@ -1137,17 +1136,23 @@ if [[ "${NERDFLAIR_CCUSAGE:-0}" == "1" && -n "$_CCUSAGE_BIN" ]]; then
     (( _cu_age < _CCUSAGE_TTL )) && _cu_fresh=true
     _ccusage_line=$(cat "$_cu_cache" 2>/dev/null || true)
   fi
-  # A stale lock means a refresh died; clear it before deciding to spawn.
-  if [[ -d "$_cu_lock" ]]; then
-    _lk_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_cu_lock" 2>/dev/null || stat -f %m "$_cu_lock" 2>/dev/null || echo 0) ))
-    (( _lk_age > _CU_BREAK )) && rmdir "$_cu_lock" 2>/dev/null || true
-  fi
-  # mkdir is atomic, so it IS the lock. Without it, many parallel Claude Code
-  # sessions would each fork a ccusage at the same moment. The breaker above
-  # MUST stay longer than the timeout below, or it re-creates the pile-up.
-  if [[ "$_cu_fresh" == "false" ]] && mkdir "$_cu_lock" 2>/dev/null; then
+  # A leftover DIRECTORY from the previous mkdir-lock scheme would make the
+  # job's `9>>` redirect fail forever. rmdir only succeeds on an empty one.
+  [[ -d "$_cu_lock" ]] && rmdir "$_cu_lock" 2>/dev/null || true
+  # flock held by the JOB, not a mkdir lock with a stale-breaker. A breaker
+  # shorter than the job it guards does not recover the lock, it ADDS a runner
+  # every time it fires, which is exactly what took the machine down on
+  # 2026-10-08. The kernel releases a flock when its holder dies, so there is
+  # no stale state and no breaker to get wrong. The hard timeout stays: it
+  # bounds a job that merely runs long rather than dying.
+  #
+  # The lock is taken INSIDE the subshell, which outlives this render. A flock
+  # belongs to the open file description, so one taken out here would be
+  # released microseconds later when the render exits, protecting nothing.
+  if [[ "$_cu_fresh" == "false" ]]; then
     (
-      trap 'rmdir "$_cu_lock" 2>/dev/null' EXIT
+      exec 9>>"$_cu_lock" 2>/dev/null || exit 0
+      flock -n 9 || exit 0
       printf '%s' "$input" | timeout -k 5 "$_CU_KILL" "$_CCUSAGE_BIN" statusline --refresh-interval "$_CCUSAGE_TTL" \
         > "${_cu_cache}.tmp" 2>/dev/null && mv -f "${_cu_cache}.tmp" "$_cu_cache"
     ) &>/dev/null &
@@ -1197,6 +1202,13 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # CUMULATIVE total, so the next sample a minute later carries everything
     # this one would have. Skipping loses nothing.
     _RC_LOCK="${_REPO_COST_FILE}.lock"
+    # The Rust build calls flock(2) directly; this one shells out to
+    # util-linux `flock`, which is absent on macOS and in minimal containers.
+    # Without this check the subshell exits 127, so NOTHING is ever appended
+    # and compaction never runs, silently and forever. A single O_APPEND write
+    # is atomic, so an unlocked append is safe on its own; only compaction
+    # needs exclusion, and it is skipped entirely rather than run unprotected.
+    _HAVE_FLOCK=1; command -v flock >/dev/null 2>&1 || _HAVE_FLOCK=0
     # An earlier version took this same path as a mkdir lock, and a process
     # killed mid-compaction left the DIRECTORY behind. A `9>>dir` redirect
     # fails, so every append and every compaction would then fail, silently
@@ -1204,10 +1216,20 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # re-entering through the migration. rmdir only succeeds on an empty dir.
     [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
     if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
-      ( flock -s -n 9 || exit 1
+      if (( _HAVE_FLOCK )); then
+        ( flock -s -n 9 || exit 1
+          printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
+        ) 9>>"$_RC_LOCK" 2>/dev/null
+      else
         printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
-      ) 9>>"$_RC_LOCK" 2>/dev/null \
-        && : > "$_rc_stamp" 2>/dev/null
+      fi
+      # Stamped whether or not the append happened, including on a missed lock.
+      # The stamp rate-limits the ATTEMPT; it is not a record of success.
+      # Leaving it unwritten kept _rc_due true, so every render re-read the
+      # whole ledger for as long as a compaction held the lock: the per-refresh
+      # cost scaling with a file that grows on its own, which is the incident
+      # pattern. A skipped sample costs nothing, the column being cumulative.
+      : > "$_rc_stamp" 2>/dev/null || true
       # Compact when the log gets big AND the cooldown has expired, writing via
       # a temp file so a reader without the lock never sees a partial.
       #
@@ -1224,7 +1246,8 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         _rcd_age=$(( EPOCHSECONDS - $(stat -c %Y "$_RC_DONE" 2>/dev/null || stat -f %m "$_RC_DONE" 2>/dev/null || echo 0) ))
         (( _rcd_age < ${NERDFLAIR_LEDGER_COMPACT_EVERY:-3600} )) && _rc_cooled=false
       fi
-      if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )) && [[ "$_rc_cooled" == "true" ]]; then
+      if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )) && [[ "$_rc_cooled" == "true" ]] \
+         && (( _HAVE_FLOCK )); then
         # EXCLUSIVE and non-blocking: one compactor at a time, and every
         # appender is excluded for the whole read-rewrite-rename, so a row
         # appended under the rewrite cannot be lost with the old inode.
@@ -1235,6 +1258,13 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         # took the machine down on 2026-10-08.
         (
           flock -x -n 9 || exit 1
+          # Claim the cooldown FIRST, inside the lock. Stamping after the work
+          # means a renderer killed mid-compaction (the host kills a slow
+          # status line) never stamps, so the next refresh redoes the whole
+          # rewrite holding the exclusive lock and starving every appender.
+          # Stamping OUTSIDE the lock was worse still: a process that merely
+          # lost the race stamped, blocking compaction for the full interval.
+          : > "$_RC_DONE" 2>/dev/null || true
           # Dropping only rows older than _REPO_COST_DAYS is not a bound: at 14
           # live sessions a 30-day window is ~400k rows and ~30 MB, so the 2 MB
           # trigger fired on every refresh and rewrote 30 MB each time. Bound it
@@ -1270,12 +1300,23 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
               }
               for (i = 1; i <= n; i++) print ln[i]
               for (i = 1; i <= r; i++) print recent[i]
-            }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
-            && mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
+            }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null
+          # Refuse to replace a ledger that HAD rows with one that has none. A
+          # clock jumping past the retention window makes cutoff exceed every
+          # row, so the filter keeps nothing and the rename would wipe the
+          # history. Count rows rather than trusting awk's exit status: an awk
+          # that exits 0 after a short write (full disk) yields a believable
+          # truncated file. fsync before the rename, because the rename is
+          # atomic in the directory but the DATA need not have reached disk.
+          _rc_in=$(awk -F'\t' 'NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0' "$_REPO_COST_FILE" 2>/dev/null | wc -l)
+          _rc_out=$(wc -l < "${_REPO_COST_FILE}.tmp" 2>/dev/null || echo 0)
+          if (( _rc_in > 0 && _rc_out == 0 )); then
+            rm -f "${_REPO_COST_FILE}.tmp" 2>/dev/null || true
+          else
+            sync "${_REPO_COST_FILE}.tmp" 2>/dev/null || true
+            mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
+          fi
         ) 9>>"$_RC_LOCK" 2>/dev/null
-        # Stamp even when the rewrite failed or the lock was busy, or a ledger
-        # that cannot be compacted is retried on every single refresh.
-        : > "$_RC_DONE" 2>/dev/null || true
       fi
     fi
     # One awk pass over the log costs ~7ms, which is 14% of the render budget --
@@ -1318,14 +1359,29 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
     (( _mh_age < _MCP_HEALTH_TTL )) && _mh_fresh=true
     IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn _mcp_probe_names < "$_mh_cache" 2>/dev/null || true
   fi
-  if [[ -d "$_mh_lock" ]]; then
-    _mhl_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_lock" 2>/dev/null || stat -f %m "$_mh_lock" 2>/dev/null || echo 0) ))
-    (( _mhl_age > 300 )) && rmdir "$_mh_lock" 2>/dev/null || true
-  fi
-  if [[ "$_mh_fresh" == "false" ]] && mkdir "$_mh_lock" 2>/dev/null; then
+  # A leftover DIRECTORY from the previous mkdir-lock scheme would make the
+  # `9>>` redirect below fail forever. rmdir only succeeds on an empty one.
+  [[ -d "$_mh_lock" ]] && rmdir "$_mh_lock" 2>/dev/null || true
+  # flock, not a mkdir lock with a stale-breaker. The breaker WAS the
+  # 2026-10-08 failure: a runner slower than the breaker gets a second runner
+  # started on top of it and the pile only grows. This probe still had that
+  # shape, just slower (a 300s breaker against a 30s timeout), and it is
+  # reachable whenever `claude mcp list` hangs rather than exits: WSL 9p I/O,
+  # or a child ignoring SIGTERM. A live flock holder blocks a second runner
+  # however long it has held it, and the kernel releases it when the holder
+  # dies, so no breaker is needed and nothing can pile up.
+  #
+  # The lock is taken by the JOB, inside the subshell that outlives this
+  # render, not here: a flock belongs to the open file description and one
+  # taken out here would be released microseconds later when the render exits.
+  #
+  # `timeout -k 5`: plain timeout sends only TERM, and a process ignoring it
+  # runs forever.
+  if [[ "$_mh_fresh" == "false" ]]; then
     (
-      trap 'rmdir "$_mh_lock" 2>/dev/null' EXIT
-      _out=$(timeout 30 claude mcp list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
+      exec 9>>"$_mh_lock" 2>/dev/null || exit 0
+      flock -n 9 || exit 0
+      _out=$(timeout -k 5 30 claude mcp list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
       _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
         case "$_ln" in
@@ -1348,6 +1404,13 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
           _nm+="$_nn"
         fi
       done <<< "$_out"
+      # Touch the cache even on failure. It used to be written ONLY on a
+      # successful probe, so a failing or timing-out `claude mcp list` left
+      # _mh_fresh false forever and the next render started another one: a
+      # 100% duty cycle of a command that spawns every MCP server, on a
+      # machine already slow enough to have caused the failure. The TTL now
+      # gates the retries and the last known values stay on screen.
+      if (( _o + _b + _w == 0 )); then touch "$_mh_cache" 2>/dev/null || true; fi
       (( _o + _b + _w > 0 )) && printf '%s\x1f%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" "$_nm" > "${_mh_cache}.tmp" \
         && mv -f "${_mh_cache}.tmp" "$_mh_cache"
     ) &>/dev/null &
@@ -1495,20 +1558,36 @@ _LEDGER_CAP=${NERDFLAIR_LEDGER_TAIL_BYTES:-1048576}
 _LEDGER_MAXCOST=${NERDFLAIR_REPO_COST_MAX:-100000}
 _LEDGER_FILE=${NERDFLAIR_REPO_COST_FILE:-$HOME/.claude/nerdflair-usage.tsv}
 _ledger=""
+_ledger_cut=0   # the file was CUT: a window reaching past the cap is undercounted
 if [[ -f "$_LEDGER_FILE" ]]; then
   _lg_bytes=$(stat -c %s "$_LEDGER_FILE" 2>/dev/null || stat -f %z "$_LEDGER_FILE" 2>/dev/null || echo 0)
   _ledger=$(tail -c "$_LEDGER_CAP" "$_LEDGER_FILE" 2>/dev/null || true)
   # A tail that did not start at byte 0 begins mid-record; that partial line
   # would parse as a row with a truncated epoch or cost.
   if (( _lg_bytes > _LEDGER_CAP )); then
+    _ledger_cut=1
     if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
   fi
 fi
 
-# Dollars spent within [since, now] and the span the samples cover. Cost is
-# CUMULATIVE PER SESSION, so a window's spend is the sum over sessions of
-# (last - first) inside it. A cumulative counter only rises, so a fall means a
-# reused session id or a corrupt row and contributes nothing.
+# Dollars spent within [since, now] and the span the samples cover.
+#
+# Cost is cumulative per session but NOT monotonic: a session that is resumed,
+# compacted or restarted reports a lower total than before. Measured on the
+# real ledger 2026-10-08: 11 sessions with 12 drops, including 677.62 ->
+# 435.53 and 517.19 -> 0.94, one of them an hour old. Ordinary behaviour, not
+# incident debris.
+#
+# Taking (last - first) across such a drop yields a negative, which then gets
+# discarded, silently throwing away EVERYTHING that session spent in the
+# window. Summing the positive increments between consecutive samples is
+# reset-proof: a drop contributes nothing and the spend either side still
+# counts.
+#
+# Consecutive means consecutive IN FILE ORDER, which is time order within a
+# session: one session appends its own rows serially, and compaction keeps at
+# most one pre-cutoff row per session so it cannot reorder them. The measured
+# 22s of jitter is BETWEEN sessions, which does not matter here.
 _window_spend() {  # $1=since $2=now -> "<spent> <span>"
   printf '%s\n' "$_ledger" | awk -F'\t' \
     -v since="$1" -v now="$2" -v maxcost="$_LEDGER_MAXCOST" '
@@ -1518,19 +1597,24 @@ _window_spend() {  # $1=since $2=now -> "<spent> <span>"
       if (v <= 0 || v >= maxcost) next
       if (t < since || t > now) next
       s = $2
-      if (!(s in fc)) { fc[s] = v; lc[s] = v; ft[s] = t; lt[s] = t; next }
-      if (t <  ft[s]) { fc[s] = v; ft[s] = t }
-      if (t >= lt[s]) { lc[s] = v; lt[s] = t }
+      if (!(s in pv)) { gain[s] = 0; pv[s] = v; ft[s] = t; lt[s] = t; next }
+      if (v > pv[s]) gain[s] += v - pv[s]
+      pv[s] = v
+      if (t < ft[s]) ft[s] = t
+      if (t > lt[s]) lt[s] = t
     }
     END {
       total = 0; lo = ""; hi = ""
-      for (s in fc) {
-        if (lc[s] > fc[s]) total += lc[s] - fc[s]
+      for (s in pv) {
+        total += gain[s]
         if (lo == "" || ft[s] < lo) lo = ft[s]
         if (hi == "" || lt[s] > hi) hi = lt[s]
       }
-      span = (hi != "" && lo != "" && hi > lo) ? hi - lo : 0
-      printf "%.10f %d", total, span
+      if (lo == "") { printf "0 0 0 0"; exit }
+      span = (hi > lo) ? hi - lo : 0
+      # oldest and newest let the caller tell a window it COVERS from one it
+      # only sampled the recent end of, and a live rate from a stale one.
+      printf "%.10f %d %d %d", total, span, lo, hi
     }'
 }
 
@@ -1550,8 +1634,17 @@ fi
 if [[ -z "$_burn_val" && -n "$_ledger" ]]; then
   _bw=${NERDFLAIR_BURN_WINDOW:-3600}
   _bmin=${NERDFLAIR_BURN_MIN_SPAN:-600}
-  read -r _bspent _bspan < <(_window_spend "$(( EPOCHSECONDS - _bw ))" "$EPOCHSECONDS")
-  if (( _bspan >= _bmin )) 2>/dev/null; then
+  # Two sampling intervals. Past that the newest sample is not evidence of
+  # anything happening NOW: dividing old spend by its own span keeps printing
+  # the rate it was going at when work stopped, so an idle machine shows a
+  # healthy burn for as long as the window is wide.
+  _bstale=${NERDFLAIR_BURN_STALE_AFTER:-180}
+  read -r _bspent _bspan _bold _bnew < <(_window_spend "$(( EPOCHSECONDS - _bw ))" "$EPOCHSECONDS")
+  # A cut tail that does not reach the window start means the earliest spend
+  # is simply missing, and an undercount looks like a real figure.
+  _bcov=1
+  (( _ledger_cut == 1 )) && { (( _bold > 0 && _bold <= EPOCHSECONDS - _bw )) || _bcov=0; }
+  if (( _bspan > 0 && _bspan >= _bmin && _bcov == 1 && EPOCHSECONDS - _bnew <= _bstale )) 2>/dev/null; then
     _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>/dev/null)
   fi
 fi
@@ -1600,13 +1693,27 @@ fi
 if [[ -z "$block_segment" && -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
   if (( rl_5h_reset > 0 )) 2>/dev/null; then
     _blk_start=$(( rl_5h_reset - 18000 ))
-    if (( EPOCHSECONDS >= _blk_start )); then
-      read -r _kspent _kspan < <(_window_spend "$_blk_start" "$EPOCHSECONDS")
-      _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>/dev/null)
-      if [[ -n "$_kfmt" ]]; then
-        block_segment="${MAUVE}${block_icon} \$${_kfmt}${RESET}"
-      else
-        block_segment="${DIM}${block_icon} idle${RESET}"
+    # EPOCHSECONDS >= rl_5h_reset means the window in the payload has already
+    # lapsed and the host has not refreshed it yet, which is the normal state
+    # on the first render after a session wakes. Summing to now then spans the
+    # lapsed block AND the time since, so a resets_at one hour stale reported
+    # SIX hours of spend as the current block: measured $282.99 against a true
+    # $163. Say idle rather than invent a number.
+    if (( EPOCHSECONDS >= rl_5h_reset )); then
+      block_segment="${DIM}${block_icon} idle${RESET}"
+    elif (( EPOCHSECONDS >= _blk_start )); then
+      read -r _kspent _kspan _kold _knew < <(_window_spend "$_blk_start" "$EPOCHSECONDS")
+      # Suppress rather than undercount: unlike the burn rate this is an
+      # absolute amount of money, and a quietly low one is read as fact.
+      _kcov=1
+      (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
+      if (( _kcov == 1 )); then
+        _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>/dev/null)
+        if [[ -n "$_kfmt" ]]; then
+          block_segment="${MAUVE}${block_icon} \$${_kfmt}${RESET}"
+        else
+          block_segment="${DIM}${block_icon} idle${RESET}"
+        fi
       fi
     fi
   fi

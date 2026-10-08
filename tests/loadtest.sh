@@ -21,9 +21,14 @@
 # Pass criteria. Each is written to catch the 2026-10-08 failure specifically,
 # and NOT to catch the harness working as intended:
 #
-#   - no accumulation: mean helper count over the last third of the run is no
-#     higher than the first third. This is the one that matters. The outage was
-#     a pile that only ever grew; a steady state at any height is fine.
+#   - no accumulation: the peak helper count never exceeds WORKERS. This is
+#     the exact invariant. Each worker drives one render at a time, so the
+#     count can only pass WORKERS if something is outliving the render that
+#     started it, which is precisely what the outage was: 22 processes against
+#     14 sessions. A mean-of-thirds trend was tried first and is WRONG here --
+#     the count is bimodal (0 between renders, a burst during them), so the
+#     comparison only measures which samples happened to land on a burst, and
+#     it both failed clean runs and passed by luck.
 #   - helper RSS total stays under RSS_CAP_MB (no memory runaway).
 #   - no orphans: once the workers are killed, every helper is gone within
 #     ORPHAN_GRACE seconds. This is the direct test for the detached spawn that
@@ -45,6 +50,7 @@ WORKERS=20
 SECS=600
 RSS_CAP_MB=1500
 WITH_CCUSAGE=0
+WITH_MCP=0
 ORPHAN_GRACE=10
 # Claude Code debounces the status line to ~300ms and refreshes on a 30s timer.
 # 0.2s per worker is already far faster than it can ever be driven for real;
@@ -60,6 +66,7 @@ while (( $# )); do
     --hammer) PACE=0; shift ;;
     --pace) PACE="$2"; shift 2 ;;
     --ccusage) WITH_CCUSAGE=1; shift ;;
+    --mcp) WITH_MCP=1; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'loadtest: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -89,6 +96,11 @@ JSON
 }
 
 export NERDFLAIR_CCUSAGE=$WITH_CCUSAGE
+# Off by default: the probe shells out to `claude mcp list`, which starts
+# every configured MCP server. A load test must not drive the real ones, and
+# leaving it unset meant it silently did. --mcp exercises that path on
+# purpose, and the census below can see it pile up when it is on.
+export NERDFLAIR_MCP_HEALTH=${WITH_MCP:-0}
 # Point per-repo cost accounting at the scratch dir so a load test never
 # contaminates the real ledger that drives the dollar readouts.
 export NERDFLAIR_REPO_COST_FILE="$RUN_DIR/usage.tsv"
@@ -125,12 +137,21 @@ done
 # changes to setsid, this census goes blind and the orphan check below is the
 # one that still catches it, system-wide.
 MY_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+# Every process already in our group before the workers start is the HARNESS,
+# not a helper: this script, its shell, and whatever wrapper the caller used.
+# A `timeout 200 ./loadtest.sh` wrapper has comm "timeout", which the census
+# pattern matches, so without this the test counts its own invocation as a
+# surviving orphan and fails. Captured once, excluded forever after.
+BASELINE=$(ps -eo pid,pgid --no-headers 2>/dev/null \
+  | awk -v g="$MY_PGID" '$2 == g { printf "%s ", $1 }')
 
 # Match on comm (the executable name, truncated to 15 chars by the kernel), not
 # args: an args match also matches the awk program text that names them.
 census() {
-  ps -eo pgid,rss,comm --no-headers 2>/dev/null | awk -v g="$MY_PGID" '
-    $1 == g && $3 ~ /^(nerdflair-stat|ccusage|nvidia-smi)/ { n++; kb += $2 }
+  ps -eo pgid,rss,comm,pid --no-headers 2>/dev/null \
+    | awk -v g="$MY_PGID" -v base=" $BASELINE " '
+    $1 == g && index(base, " " $4 " ") == 0 \
+      && $3 ~ /^(nerdflair-stat|ccusage|nvidia-smi|claude|timeout)/ { n++; kb += $2 }
     END { printf "%d %d\n", n+0, kb+0 }'
 }
 
@@ -198,26 +219,19 @@ chk() { # label actual limit truth
 }
 printf '\nsamples: %s over %ss\n' "$samples" "$SECS"
 
-# Accumulation is a TREND, not a ceiling: a steady state at any height is fine,
-# a pile that only grows is the bug. Compare the first third to the last third.
-third=$(( samples / 3 ))
-if (( third >= 2 )); then
-  head_mean=$(printf '%s\n' "${counts[@]:0:$third}" | awk '{s+=$1} END {printf "%.2f", s/NR}')
-  tail_mean=$(printf '%s\n' "${counts[@]: -$third}" | awk '{s+=$1} END {printf "%.2f", s/NR}')
-  if awk -v a="$head_mean" -v b="$tail_mean" 'BEGIN { exit !(b <= a + 1.0) }'; then
-    printf '  PASS  %-30s %s -> %s\n' "helper count did not grow" "$head_mean" "$tail_mean"
-  else
-    printf '  FAIL  %-30s %s -> %s\n' "helper count GREW" "$head_mean" "$tail_mean"; fail=1
-  fi
-else
-  printf '  SKIP  %-30s need >=6 samples\n' "accumulation trend"
-fi
-
+chk "peak helpers <= workers" "$max_n" "$WORKERS" "$(( max_n <= WORKERS ))"
 chk "peak helper RSS (MB)" "$max_rss_mb" "$RSS_CAP_MB" "$(( max_rss_mb <= RSS_CAP_MB ))"
 chk "consecutive samples w/ zombie" "$zomb_run_max" 1 "$(( zomb_run_max <= 1 ))"
 chk "orphans after workers killed" "$orphans" 0 "$(( orphans == 0 ))"
 chk "young ccusage runs left alive" "$(census_global "$SECS")" 0 "$(( $(census_global "$SECS") == 0 ))"
-printf '  ----  peak concurrent helpers %s (workers %s)\n' "$max_n" "$WORKERS"
+# Reported, not judged: see the header on why a trend is the wrong statistic
+# for a bimodal instantaneous count.
+third=$(( samples / 3 ))
+if (( third >= 2 )); then
+  printf '  ----  mean helpers, first third %s, last third %s (context only)\n' \
+    "$(printf '%s\n' "${counts[@]:0:$third}" | awk '{s+=$1} END {printf "%.2f", s/NR}')" \
+    "$(printf '%s\n' "${counts[@]: -$third}" | awk '{s+=$1} END {printf "%.2f", s/NR}')"
+fi
 # Load average is NOT a criterion. It belongs to the whole machine, and this
 # box runs real Claude Code sessions while the test runs, so a rise here is not
 # attributable to the status line. Peak RSS and the count trend are.

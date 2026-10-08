@@ -659,8 +659,13 @@ fn render_inner(input: &str) -> Result<String, String> {
             // machine down on 2026-10-08, just with a different file. Every
             // assistant message carries a usage object, so the last one is a
             // few KB from the end in practice.
-            let tcap = env_int("NERDFLAIR_TRANSCRIPT_TAIL_BYTES", 1_048_576) as u64;
-            let text = ledger_tail(Path::new(&transcript), tcap);
+            // Clamped: `as u64` turns a negative into u64::MAX, which makes `start`
+            // 0 and streams the entire file, reinstating the unbounded read
+            // this whole change exists to remove.
+            let tcap = clamp_cap(env_int("NERDFLAIR_TRANSCRIPT_TAIL_BYTES", 1_048_576));
+            // Truncation is harmless here: we want the LAST usage line, and
+            // cutting the head only removes older ones.
+            let (text, _cut) = ledger_tail(Path::new(&transcript), tcap);
             {
                 if let Some(line) = text.lines().filter(|l| l.contains("\"usage\"")).next_back() {
                     if let Ok(v) = serde_json::from_str::<Value>(line) {
@@ -1080,7 +1085,6 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Set NERDFLAIR_CCUSAGE=1 to re-enable. It is bounded even then: a hard
     // timeout shorter than the breaker, so a wedged run dies before doubling.
     let cu_kill = env_int("NERDFLAIR_CCUSAGE_TIMEOUT", 45);
-    let cu_break = cu_kill * 4;
     if std::env::var("NERDFLAIR_CCUSAGE").unwrap_or_else(|_| "0".into()) == "1" {
         if let Some(binp) = &ccusage_bin {
             let cache = PathBuf::from(format!("/tmp/nerdflair-ccusage-{}", uid));
@@ -1092,13 +1096,25 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
                 ccusage_line = std::fs::read_to_string(&cache).unwrap_or_default();
             }
-            // MUST stay longer than cu_kill, or it re-creates the pile-up.
-            if lock.is_dir() && file_age(&lock) > cu_break {
+            // A leftover DIRECTORY from the previous mkdir-lock scheme would
+            // make the job's `9>>` redirect fail forever.
+            if lock.is_dir() {
                 let _ = std::fs::remove_dir(&lock);
             }
-            if !fresh && std::fs::create_dir(&lock).is_ok() {
+            // flock held by the JOB, not a mkdir lock with a stale-breaker. A
+            // breaker shorter than the job it guards does not recover the
+            // lock, it ADDS a runner every time it fires, which is exactly
+            // what took the machine down on 2026-10-08. The kernel releases a
+            // flock when its holder dies, so there is no stale state and no
+            // breaker to get wrong. The hard timeout stays: it bounds a job
+            // that merely runs long rather than dying.
+            //
+            // Taken inside the spawned job, which outlives this render: a
+            // flock belongs to the open file description, so one taken here
+            // would be released microseconds later and protect nothing.
+            if !fresh {
                 let script = format!(
-                    "trap 'rmdir {lock} 2>/dev/null' EXIT; \
+                    "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
                      timeout -k 5 {kill} {bin} statusline --refresh-interval {ttl} > {cache}.tmp 2>/dev/null \
                      && mv -f {cache}.tmp {cache}",
                     lock = shq(&lock.to_string_lossy()),
@@ -1203,13 +1219,13 @@ fn render_inner(input: &str) -> Result<String, String> {
     // per call to learn what this ledger already records once a minute. We
     // read the TAIL of it instead: bounded bytes, no matter how long the
     // machine has been running.
-    let ledger_cap = env_int("NERDFLAIR_LEDGER_TAIL_BYTES", 1_048_576) as u64;
+    let ledger_cap = clamp_cap(env_int("NERDFLAIR_LEDGER_TAIL_BYTES", 1_048_576));
     let ledger_maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
     let ledger_file = PathBuf::from(
         std::env::var("NERDFLAIR_REPO_COST_FILE")
             .unwrap_or_else(|_| format!("{}/.claude/nerdflair-usage.tsv", home)),
     );
-    let ledger = ledger_tail(&ledger_file, ledger_cap);
+    let (ledger, ledger_cut) = ledger_tail(&ledger_file, ledger_cap);
 
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
@@ -1221,11 +1237,20 @@ fn render_inner(input: &str) -> Result<String, String> {
     // A rolling rate over the last hour, which is what "burn rate" should
     // mean. Needs MIN_SPAN of samples before dividing: over a couple of
     // minutes the quotient swings wildly and reads as noise.
-    if burn_val.is_empty() && !ledger.is_empty() {
+    if burn_val.is_empty() && !ledger.trim_end_matches('\n').is_empty() {
         let win = env_int("NERDFLAIR_BURN_WINDOW", 3600);
         let min_span = env_int("NERDFLAIR_BURN_MIN_SPAN", 600);
-        let (spent, span) = window_spend(&ledger, ledger_maxcost, now - win, now);
-        if span >= min_span && spent > 0.0 {
+        // Two sampling intervals. Past that the newest sample is not evidence
+        // of anything happening NOW: dividing old spend by its own span keeps
+        // printing the rate it was going at when work stopped, so an idle
+        // machine shows a healthy burn for as long as the window is wide.
+        let stale_after = env_int("NERDFLAIR_BURN_STALE_AFTER", 180);
+        let (spent, span, oldest, newest) =
+            window_spend(&ledger, ledger_maxcost, now - win, now);
+        // A cut tail that does not reach the window start means the earliest
+        // spend is simply missing, and an undercount looks like a real figure.
+        let covered = !ledger_cut || (oldest > 0 && oldest <= now - win);
+        if span > 0 && span >= min_span && spent > 0.0 && covered && now - newest <= stale_after {
             burn_val = fmtx::f2(spent / (span as f64 / 3600.0));
         }
     }
@@ -1280,12 +1305,33 @@ fn render_inner(input: &str) -> Result<String, String> {
     // An absent `resets_at` arrives as "", which integer arithmetic reads as
     // 0; that would put the block start in 1969 and total the whole ledger.
     // No field means no block.
-    if block_segment.is_empty() && !ledger.is_empty() && !f.rl_5h_reset.is_empty() {
+    // trim_end: bash's $(...) strips trailing newlines, so a ledger of
+    // nothing but newlines is empty there and must be here too.
+    if block_segment.is_empty()
+        && !ledger.trim_end_matches('\n').is_empty()
+        && !f.rl_5h_reset.is_empty()
+    {
         if let Some(reset) = bash_int(&f.rl_5h_reset).filter(|r| *r > 0) {
             let block_start = reset - 18000;
-            if now >= block_start {
-                let (spent, _) = window_spend(&ledger, ledger_maxcost, block_start, now);
-                block_segment = if spent > 0.0 {
+            // `now >= reset` means the window in the payload has already
+            // lapsed and the host has not refreshed it yet, which is the
+            // normal state on the first render after a session wakes. Summing
+            // to `now` then spans the lapsed block AND the time since, so a
+            // reset_at one hour stale reported SIX hours of spend as the
+            // current block: measured $282.99 against a true $163. Say idle
+            // rather than invent a number.
+            if now >= reset {
+                block_segment = format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET);
+            } else if now >= block_start {
+                let (spent, _span, oldest, _newest) =
+                    window_spend(&ledger, ledger_maxcost, block_start, now);
+                // Suppress rather than undercount: unlike the burn rate, this
+                // is an absolute amount of money, and a quietly low one is
+                // read as fact.
+                let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
+                block_segment = if !covered {
+                    String::new()
+                } else if spent > 0.0 {
                     format!("{}{} ${}{}", pal.mauve, BLOCK_ICON, fmtx::f2(spent), RESET)
                 } else {
                     format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET)
@@ -2066,13 +2112,34 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
             names = p[3].clone();
         }
     }
-    if lock.is_dir() && file_age(&lock) > 300 {
-        let _ = std::fs::remove_dir(&lock);
-    }
-    if !fresh && std::fs::create_dir(&lock).is_ok() {
+    // flock, not a mkdir lock with a stale-breaker. The breaker was the
+    // 2026-10-08 failure: a runner slower than the breaker gets a SECOND
+    // runner started on top of it, and the pile only grows. This probe still
+    // had that shape, just slower (a 300s breaker against a 30s timeout), and
+    // it is reachable whenever `claude mcp list` hangs rather than exits:
+    // uninterruptible I/O on WSL's 9p, or a child ignoring SIGTERM. A live
+    // flock holder blocks a second runner no matter how long it has held it,
+    // and the kernel releases it when the holder dies, so nothing needs a
+    // breaker and nothing can pile up.
+    //
+    // `timeout -k 5` as well: plain `timeout` sends only TERM, and a process
+    // that ignores it runs forever. The ccusage bridge already had the -k.
+    //
+    // The lock is taken INSIDE the spawned job, not here. A flock belongs to
+    // the open file description, so one taken in this process would be
+    // released the instant this render exits, microseconds later, and would
+    // protect nothing: the job it is meant to guard outlives it by design.
+    // The try_flock below is only a cheap probe to avoid forking when a job
+    // is plainly already running; it is dropped immediately and the child's
+    // own `flock -n` is what actually decides.
+    let idle = match try_flock(&lock, true) {
+        Some(_probe) => true,
+        None => false,
+    };
+    if !fresh && idle {
         let script = format!(
-            "trap 'rmdir {lock} 2>/dev/null' EXIT; \
-             _out=$(timeout 30 claude mcp list 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' || true); _o=0; _b=0; _w=0; _nm=\"\"; \
+            "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
+             _out=$(timeout -k 5 30 claude mcp list 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' || true); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
              *\"Failed to connect\"*) _b=$((_b+1)) ;; \
@@ -2083,11 +2150,21 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
              case \"$_nn\" in plugin:*) _nn=\"${{_nn##*:}}\" ;; \"claude.ai \"*) _nn=\"${{_nn#claude.ai }}\" ;; esac; \
              if [ -n \"$_nn\" ]; then [ -n \"$_nm\" ] && _nm=\"$_nm$(printf '\\036')\"; _nm=\"$_nm$_nn\"; fi; \
              done <<< \"$_out\"; \
-             [ $((_o+_b+_w)) -gt 0 ] && printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
-             && mv -f {cache}.tmp {cache}",
+             if [ $((_o+_b+_w)) -gt 0 ]; then \
+               printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
+               && mv -f {cache}.tmp {cache}; \
+             else touch {cache} 2>/dev/null; fi",
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
         );
+        // The `else touch` above matters as much as the lock. The cache used
+        // to be written ONLY on a successful probe, so a failing or timing
+        // out `claude mcp list` left `fresh` false forever and the next
+        // render started another one: a 100% duty cycle of a command that
+        // spawns every MCP server, on a machine already slow enough to have
+        // caused the failure. Touching it on failure makes the TTL gate the
+        // retries and keeps the last known values on screen.
+        //
         // `<<<` is a bashism; run the refresher under bash explicitly.
         let mut c = std::process::Command::new("bash");
         c.arg("-c")
@@ -2275,11 +2352,18 @@ fn repo_cost_segment(
             // interleave BETWEEN them. That spliced an epoch onto a cost and
             // produced a $1,787,994,297.21 repo total.
             let line = format!("{}\t{}\t{}\t{}\n", now, f.session_id, slug, f.cost);
-            if fh.write_all(line.as_bytes()).is_ok() {
-                let _ = std::fs::write(&stamp, "");
-            }
+            let _ = fh.write_all(line.as_bytes());
         }
         }
+        // Stamped whether or not the append happened, including when the
+        // shared lock was missed or the open failed. The stamp rate-limits
+        // the ATTEMPT; it is not a record of success. Leaving it unwritten
+        // kept `due` true, so every render re-read the whole ledger for as
+        // long as a compaction held the lock, which is the per-refresh cost
+        // scaling with a file that grows on its own: the incident pattern.
+        // Skipping a sample costs nothing permanent, the column being
+        // cumulative.
+        let _ = std::fs::write(&stamp, "");
         } // shared lock released here, before the exclusive one is requested
         let bytes = std::fs::metadata(&cost_file).map(|m| m.len()).unwrap_or(0);
         let maxb = env_int("NERDFLAIR_REPO_COST_MAXBYTES", 2_000_000) as u64;
@@ -2298,6 +2382,15 @@ fn repo_cost_segment(
             // appender is excluded for the whole read-rewrite-rename, so a row
             // appended under the rewrite cannot be lost with the old inode.
             if let Some(_ex) = try_flock(&lock_file, true) {
+                // Claim the cooldown FIRST, inside the lock. Stamping after
+                // the work means a renderer killed mid-compaction (the host
+                // kills a slow status line) never stamps, so the next refresh
+                // redoes the whole read and rewrite, holding the exclusive
+                // lock and starving every appender, forever if the job always
+                // outlives the kill window. Stamping only on success has the
+                // same shape. Claiming first bounds a pathological compaction
+                // to one attempt per interval.
+                let _ = std::fs::write(&compacted_stamp, "");
                 let cutoff = now - days * 86400;
                 // Dropping only rows older than `days` is not a bound: at 14
                 // live sessions a 30-day window is ~400k rows and ~30 MB, so
@@ -2314,15 +2407,17 @@ fn repo_cost_segment(
                 // machine has been up.
                 let full_days = env_int("NERDFLAIR_LEDGER_FULL_DAYS", 3);
                 let full_from = (now - full_days * 86400) as f64;
-                if let Ok(text) = std::fs::read_to_string(&cost_file) {
+                if let Ok(text) = read_lossy(&cost_file) {
                     let mut old: std::collections::HashMap<String, (i64, String)> =
                         std::collections::HashMap::new();
                     let mut recent: Vec<&str> = Vec::new();
+                    let mut kept_in = 0usize;
                     for l in text.lines() {
                         let cols: Vec<&str> = l.split('\t').collect();
                         if !usage_row_ok(&cols, maxcost) {
                             continue;
                         }
+                        kept_in += 1;
                         let t = fmtx::awk_num(cols[0]);
                         if t < cutoff as f64 {
                             continue;
@@ -2332,8 +2427,13 @@ fn repo_cost_segment(
                         } else {
                             let key = format!("{}\t{}", cols[1], cols[2]);
                             let ti = t as i64;
+                            // Strictly greater, so an EQUAL epoch replaces:
+                            // later in the file is the later append. awk's
+                            // `>=` already did this, and Rust's `>=`-to-skip
+                            // kept the first instead, so the two compacted
+                            // the same ledger differently.
                             match old.get(&key) {
-                                Some((pt, _)) if *pt >= ti => {}
+                                Some((pt, _)) if *pt > ti => {}
                                 _ => {
                                     old.insert(key, (ti, l.to_string()));
                                 }
@@ -2358,14 +2458,32 @@ fn repo_cost_segment(
                     // Temp then rename, so a reader without the lock never
                     // sees a half-written ledger and a crash mid-write leaves
                     // the old file intact.
-                    let tmp = PathBuf::from(format!("{}.tmp", cost_file.display()));
-                    if std::fs::write(&tmp, kept).is_ok() {
-                        let _ = std::fs::rename(&tmp, &cost_file);
+                    // Refuse to replace a ledger that HAD rows with one that
+                    // has none. A clock jumping forward past the retention
+                    // window makes `cutoff` exceed every row, the filter keeps
+                    // nothing, and the rename would then wipe the history with
+                    // no way back. Row counts, not just emptiness, because an
+                    // awk that exits 0 after a short write (full disk) also
+                    // produces a believable truncated file.
+                    let kept_rows = kept.lines().count();
+                    if kept_in > 0 && kept_rows == 0 {
+                        // nothing survived a non-empty input: refuse
+                    } else {
+                        let tmp = PathBuf::from(format!("{}.tmp", cost_file.display()));
+                        if let Ok(mut fh) = std::fs::File::create(&tmp) {
+                            use std::io::Write as _;
+                            // fsync before the rename: the rename is atomic in
+                            // the directory, but the DATA need not have reached
+                            // disk, so a crash can leave an empty inode under
+                            // the ledger's name.
+                            if fh.write_all(kept.as_bytes()).is_ok() && fh.sync_all().is_ok() {
+                                drop(fh);
+                                let _ = std::fs::rename(&tmp, &cost_file);
+                            }
+                        }
                     }
                 }
-                // Stamp even when the rewrite failed, or a ledger that cannot
-                // be compacted is retried on every single refresh.
-                let _ = std::fs::write(&compacted_stamp, "");
+                // (claimed before the work above)
             }
         }
     }
@@ -2381,7 +2499,7 @@ fn repo_cost_segment(
         while total.ends_with('\n') {
             total.pop();
         }
-    } else if let Ok(text) = std::fs::read_to_string(&cost_file) {
+    } else if let Ok(text) = read_lossy(&cost_file) {
         let cutoff = (now - days * 86400) as f64;
         let mut m: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         for line in text.lines() {
@@ -2468,20 +2586,42 @@ fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
 /// The whole file is deliberately never streamed here: a per-refresh path
 /// whose cost tracks a file that grows on its own is exactly what took the
 /// machine down on 2026-10-08, and the same mistake is available here.
-fn ledger_tail(path: &Path, cap: u64) -> String {
+/// A byte cap that cannot be turned into "no cap". `env_int` yields i64, and
+/// casting a negative straight to u64 wraps to u64::MAX.
+fn clamp_cap(v: i64) -> u64 {
+    v.clamp(4096, 64 * 1024 * 1024) as u64
+}
+
+/// Read a file as text, replacing invalid bytes rather than failing.
+///
+/// `read_to_string` errors on a single bad byte. The ledger is appended to by
+/// ~14 processes and a crash or ENOSPC can tear a write mid-multibyte; one
+/// such byte would then make compaction skip forever (while still stamping
+/// its cooldown as if it had run) and drop the repo total entirely, where
+/// bash's awk carries on. That is a permanent freeze AND a parity break from
+/// one bad byte.
+fn read_lossy(path: &Path) -> std::io::Result<String> {
+    std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Returns the text and whether the file was CUT: a caller summing over a
+/// time window must know, because a window reaching back past the cap is
+/// silently undercounted otherwise, and an undercounted dollar figure looks
+/// exactly like a real one.
+fn ledger_tail(path: &Path, cap: u64) -> (String, bool) {
     use std::io::{Read, Seek, SeekFrom};
     let mut fh = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return String::new(),
+        Err(_) => return (String::new(), false),
     };
     let len = fh.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(cap);
     if fh.seek(SeekFrom::Start(start)).is_err() {
-        return String::new();
+        return (String::new(), false);
     }
     let mut buf = Vec::new();
     if fh.read_to_end(&mut buf).is_err() {
-        return String::new();
+        return (String::new(), false);
     }
     let mut s = String::from_utf8_lossy(&buf).into_owned();
     // A seek lands mid-record unless it landed at byte 0; that first partial
@@ -2492,19 +2632,37 @@ fn ledger_tail(path: &Path, cap: u64) -> String {
             None => s.clear(),
         }
     }
-    s
+    (s, start > 0)
 }
 
 /// Dollars spent within [since, now], and the span the samples actually cover.
 ///
-/// Cost in the ledger is CUMULATIVE PER SESSION, so a window's spend is the
-/// sum over sessions of (last - first) seen inside it. A session whose first
-/// sample falls inside the window contributes only from that sample onward,
-/// so spend before it (at most one sampling interval, ~60s) is not counted.
-/// The span is returned so a caller can refuse to divide by a window it has
-/// barely any samples for.
-fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64) {
-    // session -> (first_cost, last_cost, first_t, last_t)
+/// Cost in the ledger is cumulative per session, but NOT monotonic: a session
+/// that is resumed, compacted or restarted reports a lower total than it did
+/// before. Measured on the real ledger 2026-10-08: 11 sessions with 12 drops,
+/// including 677.62 -> 435.53 and 517.19 -> 0.94, one of them an hour old. So
+/// this is ordinary behaviour, not incident debris.
+///
+/// Taking (last - first) across such a drop yields a negative, which then gets
+/// discarded, silently throwing away EVERYTHING that session spent in the
+/// window. Summing the positive increments between consecutive samples is
+/// reset-proof: a drop simply contributes nothing, and the spend on either
+/// side of it still counts.
+///
+/// Consecutive means consecutive IN FILE ORDER, which is time order within a
+/// session: one session appends its own rows serially, and compaction keeps at
+/// most one pre-cutoff row per session so it cannot reorder them either. The
+/// measured 22s of jitter is BETWEEN sessions, which does not matter here.
+///
+/// A session whose first sample falls inside the window contributes only from
+/// that sample onward, so spend before it (at most one sampling interval,
+/// ~60s) is not counted. The span is returned so a caller can refuse to divide
+/// by a window it has barely any samples for.
+/// Returns (spend, span, oldest sample, newest sample). The last two let a
+/// caller tell a window it actually COVERS from one it merely sampled the
+/// recent end of, and a live rate from a stale one.
+fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64, i64, i64) {
+    // session -> (accumulated positive increments, previous cost, first_t, last_t)
     let mut m: std::collections::HashMap<&str, (f64, f64, i64, i64)> =
         std::collections::HashMap::new();
     for line in text.lines() {
@@ -2519,15 +2677,20 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64) {
         let v = fmtx::awk_num(cols[3]);
         match m.get_mut(cols[1]) {
             None => {
-                m.insert(cols[1], (v, v, t, t));
+                m.insert(cols[1], (0.0, v, t, t));
             }
             Some(e) => {
+                // Only a RISE is spend. A fall is a counter reset and
+                // contributes nothing, rather than cancelling what came
+                // before it.
+                if v > e.1 {
+                    e.0 += v - e.1;
+                }
+                e.1 = v;
                 if t < e.2 {
-                    e.0 = v;
                     e.2 = t;
                 }
-                if t >= e.3 {
-                    e.1 = v;
+                if t > e.3 {
                     e.3 = t;
                 }
             }
@@ -2536,13 +2699,8 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64) {
     let mut total = 0.0;
     let mut lo = i64::MAX;
     let mut hi = i64::MIN;
-    for (first, last, ft, lt) in m.values() {
-        // A cumulative counter only rises. A fall means the session id was
-        // reused or a row was corrupt; contributing a negative would show a
-        // spend that never happened.
-        if last > first {
-            total += last - first;
-        }
+    for (gained, _prev, ft, lt) in m.values() {
+        total += gained;
         if *ft < lo {
             lo = *ft;
         }
@@ -2550,7 +2708,10 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64) {
             hi = *lt;
         }
     }
-    (total, if hi > lo { hi - lo } else { 0 })
+    if m.is_empty() {
+        return (0.0, 0, 0, 0);
+    }
+    (total, if hi > lo { hi - lo } else { 0 }, lo, hi)
 }
 
 // ── ccusage line scanners (bash =~ equivalents) ──────────────────

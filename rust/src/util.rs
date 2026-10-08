@@ -223,6 +223,13 @@ pub fn epoch_secs() -> i64 {
 /// Seconds since a file's mtime, mirroring `EPOCHSECONDS - stat -c %Y`.
 /// A missing file yields `EPOCHSECONDS - 0`, exactly as the bash fallback
 /// (`|| echo 0`) does.
+///
+/// Never negative. Callers all ask "is this older than N", and a NEGATIVE age
+/// is younger than every N, so a clock that steps backwards (WSL does this
+/// across suspend) or an mtime in the future would freeze every one of them:
+/// no session would append to the ledger, and no cooldown or TTL would ever
+/// expire again, for as long as real time took to catch up. Treating a
+/// future mtime as "infinitely old" instead fails toward doing the work.
 pub fn file_age(path: &Path) -> i64 {
     let mtime = std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -230,7 +237,12 @@ pub fn file_age(path: &Path) -> i64 {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    epoch_secs() - mtime
+    let age = epoch_secs() - mtime;
+    if age < 0 {
+        i64::MAX / 4
+    } else {
+        age
+    }
 }
 
 pub fn uid() -> u32 {
