@@ -2427,11 +2427,28 @@ fn repo_cost_segment(
 /// would leave two holders on two inodes both believing they hold it.
 fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
     use std::os::unix::io::AsRawFd;
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .ok()?;
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    };
+    let f = match open() {
+        Ok(f) => f,
+        Err(_) => {
+            // An earlier version took this same path as a mkdir lock, and a
+            // process killed mid-compaction left the DIRECTORY behind.
+            // Opening a directory fails with EISDIR, so every append and
+            // every compaction would then fail, silently and forever: the
+            // same permanent wedge flock was adopted to remove, re-entering
+            // through the migration. rmdir only succeeds on an empty dir,
+            // so this cannot eat anything that matters.
+            if path.is_dir() {
+                let _ = std::fs::remove_dir(path);
+            }
+            open().ok()?
+        }
+    };
     let op = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH } | libc::LOCK_NB;
     if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
         Some(f)

@@ -1197,6 +1197,12 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # CUMULATIVE total, so the next sample a minute later carries everything
     # this one would have. Skipping loses nothing.
     _RC_LOCK="${_REPO_COST_FILE}.lock"
+    # An earlier version took this same path as a mkdir lock, and a process
+    # killed mid-compaction left the DIRECTORY behind. A `9>>dir` redirect
+    # fails, so every append and every compaction would then fail, silently
+    # and forever: the same permanent wedge flock was adopted to remove,
+    # re-entering through the migration. rmdir only succeeds on an empty dir.
+    [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
     if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
       ( flock -s -n 9 || exit 1
         printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
