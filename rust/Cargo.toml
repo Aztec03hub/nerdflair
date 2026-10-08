@@ -10,10 +10,15 @@ name = "nerdflair-statusline"
 path = "src/main.rs"
 
 [dependencies]
-# Only dependency. `preserve_order` is required: state.json is rewritten in
-# place and must keep jq's key ordering so the bash and Rust renderers can
-# coexist against the same file.
+# `preserve_order` is required: state.json is rewritten in place and must keep
+# jq's key ordering so the bash and Rust renderers can coexist against the
+# same file.
 serde_json = { version = "1", features = ["preserve_order", "raw_value", "arbitrary_precision"] }
+# For flock(2) only. A lock the KERNEL releases when the holder dies cannot go
+# stale, so the ledger needs no stale-lock breaker, and a breaker shorter than
+# the job it guards is exactly what turned the ccusage guard into an amplifier
+# and took the machine down on 2026-10-08.
+libc = "0.2.190"
 
 [profile.release]
 opt-level = 3

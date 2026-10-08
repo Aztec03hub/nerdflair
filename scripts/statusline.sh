@@ -1188,21 +1188,47 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
       (( _rc_age < _REPO_COST_TTL )) && _rc_due=false
     fi
     # Append at most once per TTL per session, not once per render.
+    # A SHARED flock, so the many appenders never block each other but all of
+    # them are excluded while the compactor holds the exclusive one. That is
+    # what stops a rewrite from dropping a row appended under it.
+    #
+    # Non-blocking, and a failure SKIPS this sample rather than waiting: the
+    # render path must not stall behind a rewrite, and the column is a
+    # CUMULATIVE total, so the next sample a minute later carries everything
+    # this one would have. Skipping loses nothing.
+    _RC_LOCK="${_REPO_COST_FILE}.lock"
     if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
-      printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null \
+      ( flock -s -n 9 || exit 1
+        printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
+      ) 9>>"$_RC_LOCK" 2>/dev/null \
         && : > "$_rc_stamp" 2>/dev/null
-      # Compact when the log gets big. Runs at most once per TTL per session,
-      # and writes via a temp file so a concurrent reader never sees a partial.
+      # Compact when the log gets big AND the cooldown has expired, writing via
+      # a temp file so a reader without the lock never sees a partial.
+      #
+      # A size trigger alone is not a trigger, it is a treadmill: once the
+      # COMPACTED file is still over the threshold, every refresh rewrites the
+      # whole thing forever. That is what the 30-day rule produced, and
+      # compacting to 2.4 MB against a 2 MB threshold did not fix it, it just
+      # made the treadmill 12x cheaper. Gate on elapsed time as well, so a
+      # rewrite happens at most once per interval no matter what the size says.
       _rc_bytes=$(stat -c %s "$_REPO_COST_FILE" 2>/dev/null || echo 0)
-      if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )); then
-        # A process that dies between mkdir and rmdir leaves the lock forever
-        # and compaction never runs again. Observed: a 12-day-old lock and a
-        # 12.7MB / 174k-row log. Every other lock here already self-clears.
-        if [[ -d "${_REPO_COST_FILE}.lock" ]]; then
-          _rcl_age=$(( EPOCHSECONDS - $(stat -c %Y "${_REPO_COST_FILE}.lock" 2>/dev/null || stat -f %m "${_REPO_COST_FILE}.lock" 2>/dev/null || echo 0) ))
-          (( _rcl_age > 300 )) && rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
-        fi
-        if mkdir "${_REPO_COST_FILE}.lock" 2>/dev/null; then
+      _RC_DONE="${_REPO_COST_FILE}.compacted"
+      _rc_cooled=true
+      if [[ -f "$_RC_DONE" ]]; then
+        _rcd_age=$(( EPOCHSECONDS - $(stat -c %Y "$_RC_DONE" 2>/dev/null || stat -f %m "$_RC_DONE" 2>/dev/null || echo 0) ))
+        (( _rcd_age < ${NERDFLAIR_LEDGER_COMPACT_EVERY:-3600} )) && _rc_cooled=false
+      fi
+      if (( _rc_bytes > ${NERDFLAIR_REPO_COST_MAXBYTES:-2000000} )) && [[ "$_rc_cooled" == "true" ]]; then
+        # EXCLUSIVE and non-blocking: one compactor at a time, and every
+        # appender is excluded for the whole read-rewrite-rename, so a row
+        # appended under the rewrite cannot be lost with the old inode.
+        #
+        # flock, not mkdir: the kernel drops it when the holder dies, so there
+        # is no stale state and no breaker. A breaker shorter than the job it
+        # guards does not recover a lock, it DOUBLES the work, which is what
+        # took the machine down on 2026-10-08.
+        (
+          flock -x -n 9 || exit 1
           # Dropping only rows older than _REPO_COST_DAYS is not a bound: at 14
           # live sessions a 30-day window is ~400k rows and ~30 MB, so the 2 MB
           # trigger fired on every refresh and rewrote 30 MB each time. Bound it
@@ -1240,8 +1266,10 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
               for (i = 1; i <= r; i++) print recent[i]
             }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null \
             && mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
-          rmdir "${_REPO_COST_FILE}.lock" 2>/dev/null || true
-        fi
+        ) 9>>"$_RC_LOCK" 2>/dev/null
+        # Stamp even when the rewrite failed or the lock was busy, or a ledger
+        # that cannot be compacted is retried on every single refresh.
+        : > "$_RC_DONE" 2>/dev/null || true
       fi
     fi
     # One awk pass over the log costs ~7ms, which is 14% of the render budget --

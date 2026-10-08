@@ -2245,8 +2245,25 @@ fn repo_cost_segment(
     if stamp.is_file() && file_age(&stamp) < ttl {
         due = false;
     }
+    let lock_file = PathBuf::from(format!("{}.lock", cost_file.display()));
     if due && !f.cost.is_empty() && f.cost != "0" {
         use std::io::Write as _;
+        // A SHARED lock, so the many appenders never block each other but all
+        // of them are excluded while the compactor holds the exclusive one.
+        // That is what stops a rewrite from dropping a row appended under it.
+        //
+        // Non-blocking, and a failure SKIPS this sample rather than waiting:
+        // the render path must not stall behind a rewrite, and the column is
+        // a CUMULATIVE total, so the next sample a minute later carries
+        // everything this one would have. Skipping loses nothing.
+        //
+        // Scoped, and the scope matters: flock conflicts between two open
+        // file descriptions even inside ONE process, so holding this shared
+        // lock while asking for the exclusive one below makes the exclusive
+        // request fail against ourselves and compaction never runs at all.
+        {
+        let _shared = try_flock(&lock_file, false);
+        if _shared.is_some() {
         if let Ok(mut fh) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -2262,16 +2279,25 @@ fn repo_cost_segment(
                 let _ = std::fs::write(&stamp, "");
             }
         }
+        }
+        } // shared lock released here, before the exclusive one is requested
         let bytes = std::fs::metadata(&cost_file).map(|m| m.len()).unwrap_or(0);
         let maxb = env_int("NERDFLAIR_REPO_COST_MAXBYTES", 2_000_000) as u64;
-        if bytes > maxb {
-            let lock = PathBuf::from(format!("{}.lock", cost_file.display()));
-            // Clear a lock left by a process that died before removing it;
-            // without this, compaction stops forever (observed: 12 days).
-            if lock.is_dir() && file_age(&lock) > 300 {
-                let _ = std::fs::remove_dir(&lock);
-            }
-            if std::fs::create_dir(&lock).is_ok() {
+        // A size trigger alone is not a trigger, it is a treadmill: once the
+        // COMPACTED file is still over the threshold, every refresh rewrites
+        // the whole thing forever. That is what the 30-day rule produced, and
+        // compacting to 2.4 MB against a 2 MB threshold did not fix it, it
+        // just made the treadmill 12x cheaper. Gate on elapsed time as well,
+        // so a rewrite happens at most once per interval no matter what the
+        // size says.
+        let every = env_int("NERDFLAIR_LEDGER_COMPACT_EVERY", 3600);
+        let compacted_stamp = PathBuf::from(format!("{}.compacted", cost_file.display()));
+        let cooled = !compacted_stamp.is_file() || file_age(&compacted_stamp) >= every;
+        if bytes > maxb && cooled {
+            // Exclusive and non-blocking: one compactor at a time, and every
+            // appender is excluded for the whole read-rewrite-rename, so a row
+            // appended under the rewrite cannot be lost with the old inode.
+            if let Some(_ex) = try_flock(&lock_file, true) {
                 let cutoff = now - days * 86400;
                 // Dropping only rows older than `days` is not a bound: at 14
                 // live sessions a 30-day window is ~400k rows and ~30 MB, so
@@ -2329,12 +2355,17 @@ fn repo_cost_segment(
                         kept.push_str(l);
                         kept.push('\n');
                     }
+                    // Temp then rename, so a reader without the lock never
+                    // sees a half-written ledger and a crash mid-write leaves
+                    // the old file intact.
                     let tmp = PathBuf::from(format!("{}.tmp", cost_file.display()));
                     if std::fs::write(&tmp, kept).is_ok() {
                         let _ = std::fs::rename(&tmp, &cost_file);
                     }
                 }
-                let _ = std::fs::remove_dir(&lock);
+                // Stamp even when the rewrite failed, or a ledger that cannot
+                // be compacted is retried on every single refresh.
+                let _ = std::fs::write(&compacted_stamp, "");
             }
         }
     }
@@ -2380,6 +2411,33 @@ fn repo_cost_segment(
         return format!("{}{} ${}{}", pal.dark_green, REPO_ICON, total, RESET);
     }
     String::new()
+}
+
+/// A non-blocking flock on `path`, held for as long as the returned File
+/// lives and released by the KERNEL when this process exits, however it
+/// exits.
+///
+/// This replaces the mkdir lock the ledger used to take. A mkdir lock cannot
+/// be released by a process that was killed, so it needs a stale-breaker, and
+/// a breaker shorter than the job it guards does not recover the lock, it
+/// DOUBLES the work: that is what took the machine down on 2026-10-08. flock
+/// has no stale state to break.
+///
+/// The lock file is created once and never removed. Unlinking a flocked file
+/// would leave two holders on two inodes both believing they hold it.
+fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()?;
+    let op = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH } | libc::LOCK_NB;
+    if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
+        Some(f)
+    } else {
+        None
+    }
 }
 
 /// The last `cap` bytes of the ledger, with a partial leading line dropped.
