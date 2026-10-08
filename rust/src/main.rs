@@ -653,7 +653,15 @@ fn render_inner(input: &str) -> Result<String, String> {
             .map(jqx::tostring)
             .unwrap_or_default();
         if !transcript.is_empty() && Path::new(&transcript).is_file() {
-            if let Ok(text) = std::fs::read_to_string(&transcript) {
+            // Only the LAST usage line is wanted, so read the tail, not the
+            // file. Transcripts here reach 617 MB and this is the render
+            // path; slurping one would be the same mistake that took the
+            // machine down on 2026-10-08, just with a different file. Every
+            // assistant message carries a usage object, so the last one is a
+            // few KB from the end in practice.
+            let tcap = env_int("NERDFLAIR_TRANSCRIPT_TAIL_BYTES", 1_048_576) as u64;
+            let text = ledger_tail(Path::new(&transcript), tcap);
+            {
                 if let Some(line) = text.lines().filter(|l| l.contains("\"usage\"")).next_back() {
                     if let Ok(v) = serde_json::from_str::<Value>(line) {
                         if let Ok(u) = jqx::path(&v, &["message", "usage"]) {

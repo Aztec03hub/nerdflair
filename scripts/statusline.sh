@@ -656,7 +656,18 @@ else
   # Fall back: parse last usage entry from transcript JSONL
   transcript=$(echo "$input" | jq -r '.transcript_path // empty')
   if [[ -n "$transcript" && -f "$transcript" ]]; then
-    last_usage=$(grep '"usage"' "$transcript" 2>/dev/null | tail -1 | jq -r '.message.usage // empty' 2>/dev/null)
+    # Only the LAST usage line is wanted, so read the tail, not the file.
+    # Transcripts here reach 617 MB and this is the render path; streaming one
+    # is the same mistake that took the machine down on 2026-10-08, just with a
+    # different file. Every assistant message carries a usage object, so the
+    # last one is a few KB from the end in practice.
+    _tcap=${NERDFLAIR_TRANSCRIPT_TAIL_BYTES:-1048576}
+    _tbytes=$(stat -c %s "$transcript" 2>/dev/null || stat -f %z "$transcript" 2>/dev/null || echo 0)
+    _ttail=$(tail -c "$_tcap" "$transcript" 2>/dev/null || true)
+    if (( _tbytes > _tcap )); then
+      if [[ "$_ttail" == *$'\n'* ]]; then _ttail="${_ttail#*$'\n'}"; else _ttail=""; fi
+    fi
+    last_usage=$(printf '%s\n' "$_ttail" | grep '"usage"' 2>/dev/null | tail -1 | jq -r '.message.usage // empty' 2>/dev/null)
     if [[ -n "$last_usage" && "$last_usage" != "null" ]]; then
       u_input=$(echo "$last_usage" | jq -r '.input_tokens // 0')
       u_cache_create=$(echo "$last_usage" | jq -r '.cache_creation_input_tokens // 0')
