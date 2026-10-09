@@ -33,12 +33,48 @@ PY
 
 # setsid: a plain background job is killed by the hangup when its session
 # leader exits; a daemon that detached itself is not, and keeps the pty open.
-read -r rc secs < <(run 'setsid sleep 25 < /dev/tty > /dev/tty 2>&1 & sleep 0.3; exit 7')
+read -r rc secs < <(run 'setsid sleep 8 < /dev/tty > /dev/tty 2>&1 & sleep 0.3; exit 7')
 check "descendant holds the pty: exit code 7 comes through" 7 "$rc"
 if (( secs < 6 )); then r=prompt; else r=slow; fi
 check "descendant holds the pty: nfpty does not wait for it" prompt "$r"
 read -r rc _ < <(run 'kill -TERM $$'); check "child killed by SIGTERM exits 143" 143 "$rc"
 read -r rc _ < <(run 'exit 0'); check "plain exit 0" 0 "$rc"
+
+# The child's last words must survive its exit (finding M1 of round 2).
+out=$(python3 - "$NFPTY" <<'PY'
+import os, subprocess, sys
+p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "printf LASTWORDS; exit 0"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                     env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
+# Read stdout directly: communicate() would close stdin, which nfpty rightly
+# takes for a terminal hangup.
+import threading
+threading.Timer(10, p.kill).start()
+data = p.stdout.read()
+p.wait()
+print("yes" if b"LASTWORDS" in data else "no")
+PY
+)
+check "output written just before exit is not lost" yes "$out"
+
+# SIGTERM to nfpty is forwarded, and a child that ignores it is killed.
+read -r rc secs < <(python3 - "$NFPTY" <<'PY'
+import os, signal, subprocess, sys, time
+p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "trap '' TERM; sleep 6"],
+                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
+time.sleep(1.0)
+t = time.time()
+p.send_signal(signal.SIGTERM)
+try:
+    rc = p.wait(timeout=8)
+except subprocess.TimeoutExpired:
+    p.kill(); rc = 124
+print(rc, int(time.time() - t))
+PY
+)
+if (( rc != 124 )); then r=exited; else r=hung; fi
+check "SIGTERM to nfpty with a child that ignores it: nfpty still exits" exited "$r"
 
 printf '\n'
 if (( fail )); then echo "nfpty-exit: FAIL"; exit 1; fi

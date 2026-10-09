@@ -245,31 +245,60 @@ def split_hovers(buf):
     return bytes(forward + rest), hovers, b""
 
 
-def ends_clean(data):
-    """True if `data` does not stop in the middle of an escape sequence or a
-    UTF-8 character, i.e. if it is safe to write something of our own next.
-
-    Our panel is painted into the same byte stream the engine writes, in
-    separate writes. Landing between two halves of one sequence corrupts the
-    engine's output, so painting waits for a boundary.
-    """
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        if e.end >= len(data):
-            return False
+def incomplete_tail(data):
+    """How many bytes at the end of `data` are an unfinished escape sequence
+    or UTF-8 character; 0 if it ends on a boundary."""
+    # UTF-8: a lead byte whose continuation bytes have not all arrived.
+    for k in (1, 2, 3):
+        if len(data) < k:
+            break
+        c = data[-k]
+        if 0x80 <= c < 0xC0:
+            continue
+        if c >= 0xC0:
+            need = 2 if c < 0xE0 else 3 if c < 0xF0 else 4
+            if k < need:
+                return k
+        break
     i = data.rfind(b"\x1b")
     if i < 0:
-        return True
+        return 0
     rest = data[i + 1:]
     if not rest:
-        return False                                   # a bare ESC
-    if rest[:1] == b"[":                               # CSI: ends on 0x40-0x7e
-        body = rest[1:]
-        return any(0x40 <= b <= 0x7e for b in body)
-    if rest[:1] == b"]":                               # OSC: BEL or ST
-        return b"\x07" in rest or b"\x1b\\" in data[i:]
-    return True
+        return 1                                       # a bare ESC
+    c = rest[0]
+    if c == 0x5b:                                      # CSI: ends on 0x40-0x7e
+        done = any(0x40 <= b <= 0x7e for b in rest[1:])
+    elif c in b"]P_^X":                                # OSC, DCS, APC, PM, SOS
+        done = b"\x07" in rest or b"\x1b\\" in rest
+    elif 0x20 <= c <= 0x2f:                            # ESC ( B and friends
+        done = len(rest) >= 2
+    elif c == 0x4f:                                    # SS3
+        done = len(rest) >= 2
+    else:
+        done = True
+    return 0 if done else len(data) - i
+
+
+class Stream:
+    """Tracks whether the engine's output is on a sequence boundary, across
+    chunks: a sequence split over three reads is still unfinished after the
+    second."""
+
+    def __init__(self):
+        self.carry = b""
+
+    def feed(self, data):
+        """Returns True if it is safe to write something of our own now."""
+        buf = self.carry + data
+        n = incomplete_tail(buf)
+        # A tail this long is not a sequence; do not hold the panel hostage.
+        self.carry = buf[-n:] if 0 < n <= 4096 else b""
+        return n == 0 or n > 4096
+
+
+def ends_clean(data):
+    return incomplete_tail(data) == 0
 
 
 def selfcheck():
@@ -307,6 +336,13 @@ def selfcheck():
     assert not ends_clean(b"abc\x1b") and not ends_clean(b"abc\x1b[38;2;1")
     assert not ends_clean("é".encode()[:1]) and ends_clean("é".encode())
     assert not ends_clean(b"\x1b]0;title") and ends_clean(b"\x1b]0;title\x07")
+    assert not ends_clean(b"\x1b(") and ends_clean(b"\x1b(B") and not ends_clean(b"\x1bP1$r")
+    # A sequence split over THREE reads is unfinished until the last one.
+    st = Stream()
+    assert st.feed(b"x\x1b[38;2") is False
+    assert st.feed(b";1;2") is False, "the middle chunk has no ESC and is still inside the sequence"
+    assert st.feed(b"mok") is True
+    assert Stream().feed(b"plain") is True
     # A "mouse report" fragment that is too long to be one is not held back.
     junk = b"\x1b[<" + b"1" * 40
     assert split_hovers(junk) == (junk, [], b""), "an overlong fragment must pass through"
@@ -379,6 +415,8 @@ def main():
     # last chunk we relayed ended on a sequence boundary (see ends_clean).
     clean = [True]
     pending: list = []
+    stream = Stream()
+    unclean_since = [0.0]
 
     def flush_pending():
         if pending and clean[0]:
@@ -418,8 +456,11 @@ def main():
     status_box = [None]
     quit_sig = [None]
 
+    quit_at = [0.0]
+
     def on_term(sig, _frame):
         quit_sig[0] = sig
+        quit_at[0] = time.monotonic()
         try:
             os.kill(pid, sig)            # the child decides how to die
         except OSError:
@@ -447,6 +488,9 @@ def main():
                 done, st = os.waitpid(pid, os.WNOHANG)
                 if done:
                     status_box[0] = st
+                    # The child may have written its last words between the
+                    # select above and the reap; look again before giving up.
+                    ready, _, _ = select.select([stdin_fd, master], [], [], 0)
             if status_box[0] is not None and master not in ready:
                 break
 
@@ -462,7 +506,11 @@ def main():
                 note_modes(data, dbg)
                 out.write(data)
                 out.flush()
-                clean[0] = ends_clean(data)
+                clean[0] = stream.feed(data)
+                if not clean[0] and not unclean_since[0]:
+                    unclean_since[0] = time.monotonic()
+                if clean[0]:
+                    unclean_since[0] = 0.0
                 m = CURSOR.findall(data)
                 if m:
                     panel.cursor_visible = m[-1] == b"h"
@@ -523,10 +571,26 @@ def main():
 
             now = time.monotonic()
 
-            # A held fragment that never completes is not a mouse report.
+            # A held fragment that never completes is not a mouse report, and
+            # is dropped rather than typed into the engine as stray text.
             if tail and now - tail_since[0] > 0.3:
-                os.write(master, tail)
                 tail = b""
+
+            # An engine that stalls inside a sequence must not hold our paints
+            # (and a panel stuck on screen) hostage for ever.
+            if pending and not clean[0] and unclean_since[0] and now - unclean_since[0] > 0.5:
+                clean[0] = True
+                unclean_since[0] = 0.0
+                flush_pending()
+            if len(pending) > 64:
+                del pending[:-64]
+
+            # A forwarded signal the child ignores must not trap us here.
+            if quit_sig[0] is not None and status_box[0] is None and now - quit_at[0] > 2.0:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
 
             if hide_at[0] is not None and now >= hide_at[0]:
                 hide_at[0] = None
@@ -544,6 +608,8 @@ def main():
     finally:
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.
+        clean[0] = True
+        flush_pending()
         try:
             out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
             out.flush()

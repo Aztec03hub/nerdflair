@@ -33,7 +33,7 @@ wrap=1
 { [[ -f "$HOVER/nfpty.py" ]] && command -v python3 >/dev/null; } || wrap=0   # dangling link: plain claude
 # Import check, about 30ms: catches python older than the wrapper needs and a
 # broken install before they can take claude down with them.
-(( wrap )) && { python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import mklayout, panel" "$HOVER" >/dev/null 2>&1 || wrap=0; }
+(( wrap )) && { python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import mklayout, panel, nfpty" "$HOVER" >/dev/null 2>&1 || wrap=0; }
 for a in "$@"; do
   case "$a" in -p|--print|-v|--version|-h|--help) wrap=0 ;; esac
 done

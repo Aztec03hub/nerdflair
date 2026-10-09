@@ -46,7 +46,10 @@ rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$f" ]] && echo "$
 paired() { # file
   local b e
   b=$(grep -cxF "$BEGIN" "$1" || true); e=$(grep -cxF "$END" "$1" || true)
-  [[ "$b" == "$e" && "$b" -le 1 ]]
+  [[ "$b" == "$e" && "$b" -le 1 ]] || return 1
+  # and in the right order: an END above its BEGIN pairs by count but makes
+  # strip delete everything after the BEGIN
+  [[ "$b" == 0 ]] || [[ $(grep -nxF "$BEGIN" "$1" | cut -d: -f1) -lt $(grep -nxF "$END" "$1" | cut -d: -f1) ]]
 }
 
 strip() { # file: print it without our block
