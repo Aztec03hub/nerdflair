@@ -6,16 +6,30 @@
 # The documented repair is SIGUSR1 to the SERVER (not a client), and it fails
 # unless the parent directory exists, so recreate that first.
 #
-# Deliberately small: it only signals a server that is already running. It
-# never starts, restarts or kills one, so it cannot loop and cannot cost a
-# session. Idempotent, and a no-op when a socket is present.
+# Deliberately small: it only signals a tmux server that is listening on a
+# socket path that no longer exists. It never starts, restarts or kills one,
+# so it cannot loop and cannot cost a session. Idempotent, and a no-op when
+# every server's socket is present.
+#
+# The server is found from the kernel's own list of listening sockets
+# (`ss -xlnp`), which still names the deleted path, and the process owning
+# it. Matching on a process name or a tty does not work: the server's name is
+# "tmux: server", with a space, and a client can look the same.
 set -u
 uid=$(id -u)
-# The server is the tmux process with no controlling terminal; clients have one.
-pid=$(ps -u "$uid" -o pid=,tty=,comm= | awk '$3=="tmux" && $2=="?"{print $1; exit}')
-[[ -n "$pid" ]] || exit 0                       # no server: nothing to heal
-for base in "${TMUX_TMPDIR:-/tmp}" /tmp "${XDG_RUNTIME_DIR:-/run/user/$uid}"; do
-  [[ -S "$base/tmux-$uid/default" ]] && exit 0  # a socket exists: healthy
+command -v ss >/dev/null 2>&1 || exit 0
+
+ss -xlnp 2>/dev/null | while read -r _ _ _ _ path _ _ _ proc; do
+  [[ "$path" == */tmux-"$uid"/* ]] || continue
+  [[ -S "$path" ]] && continue                    # present: healthy
+  pid=$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<<"$proc")
+  [[ -n "$pid" ]] || continue
+  # comm, not cmdline: the server keeps the argv it was started with, and
+  # only its comm reads "tmux: server".
+  [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "tmux: server" ]] || continue
+  [[ "$(stat -c %u "/proc/$pid" 2>/dev/null)" == "$uid" ]] || continue
+  dir=${path%/*}
+  mkdir -m 700 -p "$dir" && kill -USR1 "$pid" \
+    && echo "nf-tmux-heal: socket recreated at $path" >&2
 done
-dir="${TMUX_TMPDIR:-/tmp}/tmux-$uid"
-mkdir -m 700 -p "$dir" && kill -USR1 "$pid" && echo "nf-tmux-heal: socket recreated at $dir/default" >&2
+exit 0
