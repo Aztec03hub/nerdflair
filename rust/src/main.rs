@@ -1376,7 +1376,10 @@ fn render_inner(input: &str) -> Result<String, String> {
                 let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
                 block_segment = if !covered {
                     String::new()
-                } else if spent > 0.0 {
+                } else if fmtx::f2(spent) != "0.00" && spent > 0.0 {
+                    // The ROUNDED figure decides: a total under half a cent
+                    // prints as $0.00, which reads as money and is really
+                    // nothing.
                     format!("{}{} ${}{}", pal.mauve, BLOCK_ICON, fmtx::f2(spent), RESET)
                 } else {
                     format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET)

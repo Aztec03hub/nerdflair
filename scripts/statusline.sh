@@ -1795,7 +1795,9 @@ if [[ -z "$block_segment" && -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
       (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
       if (( _kcov == 1 )); then
         _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>/dev/null)
-        if [[ -n "$_kfmt" ]]; then
+        # The ROUNDED figure decides: under half a cent prints as 0.00, which
+        # reads as money and is really nothing.
+        if [[ -n "$_kfmt" && "$_kfmt" != "0.00" ]]; then
           block_segment="${MAUVE}${block_icon} \$${_kfmt}${RESET}"
         else
           block_segment="${DIM}${block_icon} idle${RESET}"

@@ -271,6 +271,23 @@ else
   printf '  PASS  %-34s %s\n' "regression guard" "no \$35.00 and no \$64.95/h"
 fi
 
+# ── Case 9: a total too small to round to a cent is nothing ──────────────────
+#   0.004 of spend prints as $0.00, which reads as money. The test is on the
+#   ROUNDED figure, so the block says idle.
+L9="$RUN/c9.tsv"
+{
+  printf '%s\tA\trepo\t1.000\n' $((NOW-2000))
+  printf '%s\tA\trepo\t1.004\n' $((NOW-60))
+} > "$L9"
+out9=$(render "$L9" $((NOW+9000)))
+printf '\n[%s] case 9: spend under half a cent\n' "$LABEL"
+check "block says idle" 'idle' "$out9" "0.004 of spend is not \$0.00"
+if [[ "$out9" =~ \$0\.00 ]]; then
+  printf '  FAIL  %-34s printed a zero-dollar figure: %s\n' "no \$0.00" "$out9"; fail=1
+else
+  printf '  PASS  %-34s %s\n' "no \$0.00" "absent"
+fi
+
 printf '\n'
 (( fail )) && { printf 'burn-block-golden (%s): FAIL\n' "$LABEL"; exit 1; }
 printf 'burn-block-golden (%s): PASS\n' "$LABEL"
