@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/uio.h>   // writev: the host batches its frames through it
 
 #define NF_MAX_LINES 8
 #define NF_MAX_W 100
@@ -128,6 +129,10 @@ void nf_overlay_hide(void) { nf_clear(); }
 __attribute__((constructor)) static void nf_init(void) {
     const char *spec = getenv("NF_PANEL");
     if (!spec || !*spec) return;
+    /* Same gate as the write path, and it matters more here: the constructor
+       runs in every child too, and painting from one corrupts its output
+       before the first write() is ever interposed. */
+    if (!isatty(STDOUT_FILENO)) return;
     if (!real_write) real_write = dlsym(RTLD_NEXT, "write");
 
     char buf[1024];
@@ -151,9 +156,38 @@ __attribute__((constructor)) static void nf_init(void) {
 
 /* Every host frame is followed by our panel, because the host repaints
    whatever it likes and knows nothing about our cells. */
+/* Only the process that OWNS THE TERMINAL may paint.
+   LD_PRELOAD is inherited by every child, so without this gate each hook
+   Claude Code spawns gets the panel appended to its stdout. Measured: the
+   session's SessionStart hooks failed with
+     bell.sh: line 24: cd: $'\E[s\E[?25l\E[10;30H...'
+   because a hook's output IS data to its caller, and we had written a panel
+   into it. A hook's stdout is a pipe and the TUI's is a tty, so isatty
+   separates them exactly. Cached, since isatty is a syscall and this is the
+   hot path. */
+static int nf_may_paint(void) {
+    static int cached = -1;
+    if (cached < 0) cached = isatty(STDOUT_FILENO) ? 1 : 0;
+    return cached;
+}
+
 ssize_t write(int fd, const void *buf, size_t n) {
     if (!real_write) real_write = dlsym(RTLD_NEXT, "write");
     ssize_t r = real_write(fd, buf, n);
-    if (fd == STDOUT_FILENO && panel.active && !in_paint) nf_paint();
+    if (fd == STDOUT_FILENO && panel.active && !in_paint && nf_may_paint())
+        nf_paint();
+    return r;
+}
+
+/* writev as well, and this is not belt-and-braces: with only write() hooked
+   the panel appeared once from the constructor, the host cleared the screen
+   at startup, and it never came back. The host batches its frames, so the
+   frames arrive here, not in write(). */
+ssize_t writev(int fd, const struct iovec *iov, int cnt) {
+    static ssize_t (*real_writev)(int, const struct iovec *, int);
+    if (!real_writev) real_writev = dlsym(RTLD_NEXT, "writev");
+    ssize_t r = real_writev(fd, iov, cnt);
+    if (fd == STDOUT_FILENO && panel.active && !in_paint && nf_may_paint())
+        nf_paint();
     return r;
 }
