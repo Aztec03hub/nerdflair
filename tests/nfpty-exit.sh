@@ -71,8 +71,13 @@ p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "trap '' TERM; echo rea
                      env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
 # Signal only once the child has installed its trap: under load a signal sent
 # earlier kills bash normally and the test would blame the SIGKILL path.
-while b"ready" not in p.stdout.readline():
-    pass
+line = p.stdout.readline()
+while b"ready" not in line:
+    if not line:                       # EOF: nfpty or the child died first
+        p.kill()
+        print(1, 99)                   # fails both checks instead of hanging
+        sys.exit(0)
+    line = p.stdout.readline()
 t = time.time()
 p.send_signal(signal.SIGTERM)
 try:

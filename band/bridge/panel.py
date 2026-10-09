@@ -324,6 +324,15 @@ def demo():
     r.show("c", "C", ["body"], (7, 8, 9), 10, 40)
     assert len(writes) == 1, len(writes)
 
+    # With keeps on, the erase is marked so a write queue can never drop it,
+    # and ordinary paints are not.
+    flags = []
+    k = Panel(lambda s, keep=False: flags.append(keep), rows=50, cols=200, keeps=True)
+    k.show("k", "K", ["one"], (1, 2, 3), 10, 40)
+    k.paint()
+    k.erase()
+    assert flags[0] is False and flags[1] is False and flags[-1] is True, flags
+
     # A card wider than the terminal is clipped to it, and one anchored on the
     # last rows stays on screen.
     nb = []

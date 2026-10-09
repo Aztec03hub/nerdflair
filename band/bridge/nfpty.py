@@ -669,6 +669,10 @@ def main():
         except OSError:
             pass
 
+    # The loop is over: a late TERM/HUP must not reach a pid we are about to
+    # (or already did) reap, so the handlers go back to their defaults.
+    for sg in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sg, signal.SIG_DFL)
     status = status_box[0]
     if status is None:
         # The terminal went away (stdin EOF) or we are being shut down: give
@@ -678,6 +682,7 @@ def main():
             done, st = os.waitpid(pid, os.WNOHANG)
             if done:
                 status = st
+                status_box[0] = st
             else:
                 time.sleep(0.05)
         if status is None:
@@ -686,6 +691,7 @@ def main():
             except OSError:
                 pass
             _, status = os.waitpid(pid, 0)
+            status_box[0] = status
     code = os.waitstatus_to_exitcode(status)
     sys.exit(128 - code if code < 0 else code)     # shell convention: 128 + signal
 
