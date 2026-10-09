@@ -49,7 +49,14 @@ Scope: attack the instruments (`tests/validate-burn-block.sh` and the argument b
 ### 6. High - "ccusage --no-offline is right" is unproven and circular
 - Evidence: only offline was shown wrong (86 -> 213); 213 is vouched for by the 12% agreement, which is vouched for by 213.
 - Fix: recompute one 5 h transcript window by hand from published prices, then compare with both numbers.
-- **Status 2026-10-09: OPEN.** Nothing recomputes a window by hand from published prices. It matters more now: the live comparison is 35% off, and B5 needs this recount to say which side is wrong.
+- **Status 2026-10-09: FIXED (recounted, and ccusage is the one that is wrong).** Two sessions that ran entirely on `claude-sonnet-5-5` were priced by hand from the published rates ($2 in, $10 out, $0.20 cache read, $4 for a 1 h cache write per MTok) and compared with the ledger and with `ccusage session --no-offline`:
+
+  | session | tokens (out / cache write / cache read) | by hand | ledger | ccusage |
+  |---|---|---|---|---|
+  | `24f3b1b2` | 58,447 / 204,331 / 12,474,761 | $3.90 | $3.90 | $2.65 |
+  | `29f0dce2` | 103,439 / 328,606 / 27,545,531 | $7.86 | $7.86 | $5.10 |
+
+  The ledger, which is Claude Code's own `total_cost_usd`, matches the published price to the cent. ccusage reproduces its own figure only with cache reads at $0.10 per MTok, half the published $0.20, so it undercounts every cache-heavy session on the newest models. That is the whole 35% gap in the live comparison (sessions that began inside the window come out 1.5 to 1.8 times ccusage's figure), not a ledger or window defect. ccusage stays a smoke test for window and aggregation bugs and cannot be the price authority.
 
 ### 7. High - tolerance and sample size cannot detect meaningful defects
 - Where: `:31` (`TOLERANCE_PCT=25`), single run.

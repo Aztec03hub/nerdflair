@@ -30,6 +30,14 @@
 # undercount. Comparing against the offline figure would "validate" us against
 # a number that is simply wrong.
 #
+# KNOWN, MEASURED 2026-10-09: ccusage prices cache reads for claude-sonnet-5-5
+# (and the other newest models) at $0.10 per MTok where the published rate is
+# $0.20, so on a cache-heavy day it reports about 1.5x LESS than Claude Code's
+# own cost figure, which matches the published price to the cent (see finding 6
+# in reports/REVIEW-verification-methodology-2026-10-08.md). A FAIL here with
+# ours well above ccusage is therefore expected until ccusage's table is
+# fixed, and says nothing about the ledger; a gap that moves with block age,
+# or ours BELOW ccusage, is the signal to investigate.
 # Windows are matched explicitly. ccusage reports its block's remaining time,
 # so elapsed = 5h - remaining, and our ledger is summed over that same span.
 #
