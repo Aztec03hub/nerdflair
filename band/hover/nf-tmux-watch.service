@@ -1,0 +1,18 @@
+[Unit]
+Description=nerdflair: notice and repair a deleted tmux socket
+# Bounded on purpose: five starts in ten minutes and systemd stops trying,
+# so a failing watcher can never become a restart loop.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.nerdflair/bin/nf-tmux-watch
+Restart=on-failure
+RestartSec=30
+Nice=10
+MemoryMax=64M
+TasksMax=16
+
+[Install]
+WantedBy=default.target

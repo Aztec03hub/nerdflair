@@ -45,6 +45,7 @@ How it stays out of the way:
 - The shim at `~/.nerdflair/bin/claude` finds the real `claude` on `PATH` at every start. It wraps only a real terminal inside tmux, and runs plain `claude` for pipes, `-p`, `--version` and subcommands such as `mcp` or `plugin`. `NERDFLAIR_HOVER=0` turns it off for one run.
 - Where a card sits is read from the screen on each hover, so it follows the status line when a figure changes width.
 - If tmux's socket has been deleted (the server keeps running but every `tmux` command fails), `nf-tmux-heal` recreates it by signalling the running server. It never starts or kills one.
+- `nf-tmux-watch` (a small user service the installer starts) notices the moment a tmux socket is deleted, logs every process that was running to `~/.local/state/nerdflair/tmux-watch.log`, and repairs it within a second. Five restarts in ten minutes and systemd stops trying, so it cannot loop.
 - `mklayout.py --cards-check` runs the real renderer over the test payloads and fails if any readout has no card.
 
 The band also ships as a Claude Code plugin, `nerdflair-band`, which adds the Remote Control indicator. `band/sync-local-plugin.sh` installs it for every session.

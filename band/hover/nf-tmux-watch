@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""nf-tmux-watch - notice the instant a tmux server's socket is deleted, say
+who was running, and bring the socket back.
+
+WHY THIS EXISTS. On 2026-10-09 a running tmux server (and every session in it)
+became unreachable because something deleted /tmp/tmux-1000. Nothing recorded
+what. The cause could not be reconstructed afterwards: systemd-tmpfiles ran
+once that day, 14 minutes in, and cannot have removed a 15-minute-old socket
+(its age test includes ctime, which cannot be backdated; checked empirically),
+and nothing in the hopback sweep that was running deletes it. So this watches,
+and the next occurrence names its own culprit.
+
+WHAT IT DOES. It finds every tmux server of this user from the kernel's socket
+table, puts an inotify watch on each socket's directory and on that
+directory's parent, and on any delete or move of the socket or its directory:
+
+  1. records the time, what was deleted, and every process that is running now
+     or started in the last 20 seconds, to the log;
+  2. runs nf-tmux-heal, which recreates the directory and signals the server
+     (SIGUSR1) so it recreates the socket. The server and its sessions were
+     never down, only unreachable, so nothing is lost.
+
+It never starts, restarts or kills a tmux server. Heals are rate limited (at
+most 6 an hour) so a loop elsewhere cannot make this one.
+
+Pure standard library: inotify through ctypes.
+"""
+import ctypes
+import ctypes.util
+import os
+import re
+import select
+import struct
+import subprocess
+import sys
+import time
+
+IN_MOVED_FROM = 0x00000040
+IN_DELETE = 0x00000200
+IN_DELETE_SELF = 0x00000400
+IN_MOVE_SELF = 0x00000800
+MASK = IN_MOVED_FROM | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF
+
+UID = os.getuid()
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOG = os.environ.get("NF_TMUX_WATCH_LOG") or os.path.expanduser("~/.local/state/nerdflair/tmux-watch.log")
+HEAL = os.environ.get("NF_TMUX_HEAL") or os.path.join(HERE, "nf-tmux-heal")
+RESCAN = float(os.environ.get("NF_TMUX_WATCH_RESCAN", "30"))
+HEALS_PER_HOUR = 6
+
+libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def log(msg):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+
+
+def socket_paths():
+    """Paths of every listening tmux server socket of this user, from the
+    kernel, which still names a path whose directory has been deleted."""
+    try:
+        out = subprocess.run(["ss", "-xlnp"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    paths = []
+    for line in out.splitlines():
+        m = re.match(r"^\S+\s+\S+\s+\d+\s+\d+\s+(\S.*?)\s+\d+\s+\*\s+\d+\s+users:\(\(\"tmux: server\"", line)
+        if m and f"/tmux-{UID}/" in m.group(1):
+            paths.append(m.group(1))
+    return paths
+
+
+def suspects():
+    """Processes that are running now or started in the last 20 s. Whatever
+    deleted the socket is usually gone by the time we read this, but its
+    parent, its siblings and whatever launched it often are not."""
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,etimes=,user=,args="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ["(ps failed)"]
+    keep = []
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        pid, ppid, age, user, args = parts
+        if (age.isdigit() and int(age) <= 20) or re.search(r"\b(rm|rmdir|find|tmpfiles|tmpreaper|mv)\b", args):
+            if "nf-tmux-watch" in args or args.startswith("ps "):
+                continue
+            keep.append(f"    pid={pid} ppid={ppid} age={age}s user={user} {args[:200]}")
+    return keep[:60]
+
+
+class Watcher:
+    def __init__(self):
+        self.fd = libc.inotify_init1(os.O_NONBLOCK)
+        if self.fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1")
+        self.wd = {}            # watch descriptor -> directory
+        self.heals = []
+
+    def add(self, d):
+        if d in self.wd.values() or not os.path.isdir(d):
+            return
+        wd = libc.inotify_add_watch(self.fd, d.encode(), MASK)
+        if wd >= 0:
+            self.wd[wd] = d
+
+    def rescan(self):
+        for p in socket_paths():
+            d = os.path.dirname(p)
+            self.add(d)
+            self.add(os.path.dirname(d))
+
+    def heal(self, why):
+        now = time.time()
+        self.heals = [t for t in self.heals if now - t < 3600]
+        log(f"DELETED: {why}")
+        for line in suspects():
+            log(line)
+        if len(self.heals) >= HEALS_PER_HOUR:
+            log(f"not healing: already {HEALS_PER_HOUR} heals in the last hour (something keeps deleting it)")
+            return
+        self.heals.append(now)
+        time.sleep(0.2)          # let whatever is deleting finish before recreating
+        r = subprocess.run([HEAL], capture_output=True, text=True)
+        log(f"healed rc={r.returncode} {r.stderr.strip()}")
+
+    def run(self):
+        self.rescan()
+        log(f"watching {sorted(set(self.wd.values()))}")
+        next_scan = time.time() + RESCAN
+        while True:
+            ready, _, _ = select.select([self.fd], [], [], max(0.1, next_scan - time.time()))
+            if ready:
+                try:
+                    buf = os.read(self.fd, 65536)
+                except BlockingIOError:
+                    buf = b""
+                i = 0
+                hit = None
+                while i < len(buf):
+                    wd, mask, _cookie, ln = struct.unpack_from("iIII", buf, i)
+                    name = buf[i + 16:i + 16 + ln].rstrip(b"\0").decode(errors="replace")
+                    i += 16 + ln
+                    d = self.wd.get(wd, "?")
+                    # Only what concerns a tmux socket directory or its socket.
+                    if mask & (IN_DELETE_SELF | IN_MOVE_SELF) and f"/tmux-{UID}" in d:
+                        hit = f"directory {d} itself"
+                    elif mask & (IN_DELETE | IN_MOVED_FROM) and (name.startswith(f"tmux-{UID}") or (f"/tmux-{UID}" in d and name == "default")):
+                        hit = f"{os.path.join(d, name)}"
+                    if mask & (IN_DELETE_SELF | IN_MOVE_SELF):
+                        self.wd.pop(wd, None)      # the kernel drops the watch with its target
+                if hit:
+                    self.heal(hit)
+                    self.rescan()
+            if time.time() >= next_scan:
+                self.rescan()
+                next_scan = time.time() + RESCAN
+
+
+def main():
+    if "--once" in sys.argv:           # for tests: print what would be watched
+        print("\n".join(socket_paths()))
+        return
+    Watcher().run()
+
+
+if __name__ == "__main__":
+    main()

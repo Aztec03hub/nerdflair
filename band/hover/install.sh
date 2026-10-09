@@ -66,6 +66,16 @@ case "${1:-install}" in
     ln -sfn "$BRIDGE" "$NF/hover"
     install -m 755 "$HERE/claude-shim" "$NF/bin/claude"
     install -m 755 "$HERE/nf-tmux-heal" "$NF/bin/nf-tmux-heal"
+    install -m 755 "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch"
+    # A user service that notices a deleted tmux socket the moment it happens,
+    # logs what was running, and repairs it. Skipped quietly where there is no
+    # systemd user manager; everything else works without it.
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      mkdir -p "$HOME/.config/systemd/user"
+      install -m 644 "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service"
+      systemctl --user daemon-reload
+      systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
+    fi
     for f in $(rcfiles); do
       paired "$f"; rc=$?
       if (( rc == 1 )); then echo "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there" >&2; fi
@@ -85,7 +95,12 @@ case "${1:-install}" in
       (( rc == 0 )) || continue
       tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
     done
-    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/hover"
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      systemctl --user disable --now nf-tmux-watch.service >/dev/null 2>&1 || true
+      rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
+      systemctl --user daemon-reload
+    fi
+    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
     rmdir "$NF/bin" 2>/dev/null || true
     echo "hover removed"
     ;;
