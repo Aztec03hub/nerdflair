@@ -37,7 +37,6 @@ exactly the event stream it asked for and behaves identically.
 import array
 import errno
 import fcntl
-import json
 import os
 import pty
 import re
@@ -51,6 +50,7 @@ import time
 import tty
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mklayout  # noqa: E402
 from panel import FRAME, Panel  # noqa: E402
 
 ESC = "\033"
@@ -65,8 +65,6 @@ HOVER_BTN = 35
 # terminal already reports plain motion and nothing in the output stream needs
 # rewriting. The modes are logged rather than changed, because if that ever
 # stops being true a silent hover would otherwise be unexplainable.
-
-LAYOUT = os.path.expanduser("~/.claude/nerdflair-band-layout.json")
 
 # How long the pointer must stay off a readout before the panel comes down.
 # Long enough to cross the gap between two readouts without the panel
@@ -144,32 +142,35 @@ class Backdrop:
 
 
 class Layout:
-    """Where each readout sits, as published on disk.
+    """Where each readout sits, recomputed as it moves.
 
-    The renderer is the only thing that truly knows this, so the file is the
-    seam: re-read when its mtime moves, which is on a layout change rather
-    than per hover.
+    Not published once and cached: the columns shift whenever a figure
+    changes width, so a token count gaining a digit moves everything after
+    it, and a layout fixed at startup would open the wrong card within
+    seconds.
+
+    Two things keep the cost down. It is rebuilt at most once a second, and
+    only while hover is actually happening, so an idle session spends
+    nothing. And it is NEVER rebuilt while a panel is up, because the panel
+    is drawn on the screen we would be reading: it would parse its own border
+    as readouts.
     """
 
-    def __init__(self, path):
-        self.path = path
-        self.mtime = 0.0
+    MIN_INTERVAL = 1.0
+
+    def __init__(self, pane):
+        self.pane = pane
+        self.at = 0.0
         self.segs = []
 
-    def refresh(self):
-        try:
-            m = os.stat(self.path).st_mtime
-        except OSError:
+    def refresh(self, blocked=False):
+        now = time.monotonic()
+        if blocked or not self.pane or now - self.at < self.MIN_INTERVAL:
             return
-        if m == self.mtime:
-            return
-        self.mtime = m
-        try:
-            with open(self.path) as f:
-                d = json.load(f)
-        except (OSError, ValueError):
-            return
-        self.segs = d.get("segs", [])
+        self.at = now
+        segs = mklayout.build(self.pane)
+        if segs:
+            self.segs = segs      # keep the last good one on a failed read
 
     def hit(self, col, row):
         """The readout under the pointer, if the pointer is on one.
@@ -296,10 +297,9 @@ def main():
     if os.environ.get("NFPTY_LOG"):
         dbg = open(os.environ["NFPTY_LOG"], "a", buffering=1)
 
-    panel = Panel(write, rows, cols,
-                  backdrop=Backdrop(os.environ.get("TMUX_PANE")))
-    layout = Layout(LAYOUT)
-    layout.refresh()
+    pane = os.environ.get("TMUX_PANE")
+    panel = Panel(write, rows, cols, backdrop=Backdrop(pane))
+    layout = Layout(pane)
 
     old = None
     try:
@@ -369,7 +369,10 @@ def main():
                 if fwd:
                     os.write(master, fwd)
                 if hovers:
-                    layout.refresh()
+                    # Never while a panel is up: the panel is drawn on the
+                    # screen this reads, and it would parse its own border
+                    # as readouts.
+                    layout.refresh(blocked=bool(panel.rect))
                     col, row = hovers[-1]      # only the latest position
                     hit = layout.hit(col, row)
                     if dbg:

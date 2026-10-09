@@ -180,19 +180,22 @@ def selfcheck():
     print("mklayout ok")
 
 
-def main():
-    if sys.argv[1:2] == ["--selfcheck"]:
-        selfcheck()
-        return
-    target = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser(
-        "~/.claude/nerdflair-band-layout.json")
+def build(target):
+    """Every readout on the status line of `target`, or [] if there is none.
 
-    raw = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
-                         capture_output=True, text=True).stdout.split("\n")
+    Imported by the bridge, which calls it directly rather than reading a
+    file: the columns move whenever a figure changes width (a token count
+    gaining a digit shifts everything after it), so a layout published once
+    is wrong within seconds. Calling this is one `capture-pane`.
+    """
+    try:
+        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
+                           capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    raw = r.stdout.split("\n")
 
     segs = []
-    seen_rows = []
     # Only the last handful of rows: the status line lives at the bottom, and
     # a transcript line with a bullet in it is not a readout.
     for i in range(max(0, len(raw) - 8), len(raw)):
@@ -200,7 +203,6 @@ def main():
         if SEP not in clean or not NERD.search(clean):
             continue
         row = i + 1                       # capture-pane rows are 0-based
-        seen_rows.append(row)
         for col, w, text in pieces(clean):
             sid, title, rgb, body = classify(text)
             segs.append({
@@ -215,13 +217,23 @@ def main():
                 "rgb": list(rgb),
             })
 
+    return segs
+
+
+def main():
+    """The CLI, which exists to SEE what the bridge computes."""
+    if sys.argv[1:2] == ["--selfcheck"]:
+        selfcheck()
+        return
+    segs = build(sys.argv[1])
     if not segs:
         print("no status-line rows found", file=sys.stderr)
         sys.exit(1)
-
-    with open(out, "w") as f:
-        json.dump({"segs": segs}, f, indent=1)
-    print(f"{len(segs)} readouts on rows {seen_rows} -> {out}")
+    if len(sys.argv) > 2:
+        with open(sys.argv[2], "w") as f:
+            json.dump({"segs": segs}, f, indent=1)
+    rows = sorted({s["row"] for s in segs})
+    print(f"{len(segs)} readouts on rows {rows}")
     for s in segs:
         print(f"  row {s['row']} col {s['x']:>4}..{s['x']+s['w']-1:<4} "
               f"{s['title']}")

@@ -42,6 +42,19 @@ passes through us on the way in and every output byte on the way out. Nothing
 inside Claude Code is patched, injected or read off the screen, so an update
 cannot break it.
 
-`../nfbridge.ts`, `../install-tee.ts` and `../nfband` are the inspector-based
-bridge those findings retired. They are superseded, not deleted: each one is
-the evidence for a different closed door.
+`../nfbridge.ts` and `../install-tee.ts` are the inspector-based bridge those
+findings retired. They are superseded, not deleted: each is the evidence for
+a different closed door. Neither opens a port by itself.
+
+## The launcher was deleted, and should stay deleted
+
+`../nfband` set `BUN_INSPECT` and started Claude Code with it. That opens an
+unauthenticated debugger on a loopback port, and `Runtime.evaluate` over it
+is arbitrary code execution inside a process holding the user's credentials
+and working tree. Any local process could use it; the scripts here are proof
+that it is trivial. It was removed rather than fixed, because the route it
+served is closed anyway.
+
+If you ever arm the inspector again to investigate something, do it by hand,
+for one session, and close it afterwards. Never from a launcher that makes it
+the normal way to start Claude Code.

@@ -1,65 +1,27 @@
 #!/usr/bin/env bash
-# nfband - start Claude Code with the hover bridge attached.
+# nfband - start Claude Code with hover panels on the status line.
 #
-# Everything this does is reversible and leaves no trace on disk: one env var
-# arms the inspector, one evaluate installs the tee, and the painter writes to
-# the pane's tty from outside. Nothing is patched, so a Claude Code update
-# changes nothing here.
+#   nfband [anything you would pass to claude]
 #
-#   nfband [args passed through to claude]
+# Everything is in the one wrapper: it holds the pty, reads the pointer out of
+# the input stream, works out where each readout sits, and paints the panels.
+# Nothing is installed, patched or injected, and nothing is left behind when
+# it exits, so a Claude Code update changes nothing here.
 #
-# The bridge dies with the session.
+# NOTE FOR ANYONE READING THE HISTORY. An earlier nfband armed Claude Code's
+# Bun inspector with BUN_INSPECT. Do not bring that back: it opens an
+# unauthenticated debugger on a loopback port, and code execution over that
+# port is code execution inside a process holding your credentials. It also
+# never worked for this purpose; see inspector-lab/README.md.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUN="${BUN:-$HOME/.bun/bin/bun}"
-CLAUDE="${CLAUDE_BIN:-$(command -v claude)}"
-PORT="${NFBAND_PORT:-$((39000 + RANDOM % 900))}"
-TEE_PORT="${NFBAND_TEE_PORT:-$((PORT + 1))}"
-LAYOUT="${NFBAND_LAYOUT:-$HOME/.claude/nerdflair-band-layout.json}"
 
-[[ -x "$BUN" ]] || { echo "nfband: bun not found at $BUN" >&2; exit 1; }
-[[ -n "$CLAUDE" ]] || { echo "nfband: claude not on PATH" >&2; exit 1; }
-
-cleanup() {
-  [[ -n "${BRIDGE_PID:-}" ]] && kill "$BRIDGE_PID" 2>/dev/null
-  [[ -n "${ATTACH_PID:-}" ]] && kill "$ATTACH_PID" 2>/dev/null
-}
-trap cleanup EXIT INT TERM
-
-# The engine must come up first: the inspector only listens once it is
-# running, and the tty we paint on does not exist until then either.
-BUN_INSPECT="ws://127.0.0.1:${PORT}/claude" "$CLAUDE" "$@" &
-CLAUDE_PID=$!
-
-# Wait for the inspector rather than sleeping a guessed interval: startup
-# time varies with how many MCP servers are configured.
-for _ in $(seq 1 100); do
-  if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -q ":${PORT}\b"; then
-    break
-  fi
-  sleep 0.2
-  kill -0 "$CLAUDE_PID" 2>/dev/null || { echo "nfband: claude exited during startup" >&2; exit 1; }
-done
-
-TTY=$(readlink "/proc/$CLAUDE_PID/fd/1" 2>/dev/null)
-if [[ -z "$TTY" || "$TTY" != /dev/* ]]; then
-  echo "nfband: could not resolve the pane tty; hover overlay disabled" >&2
-  wait "$CLAUDE_PID"; exit $?
+if [[ -z "${TMUX:-}" ]]; then
+  # The panels can still be painted, but without tmux there is no way to read
+  # back what a panel covers, so hiding one would leave a hole. Say so rather
+  # than let it look broken.
+  echo "nfband: not inside tmux; hover panels need it to restore what they cover" >&2
 fi
 
-ROWS=$(tput lines 2>/dev/null || echo 50)
-COLS=$(tput cols 2>/dev/null || echo 200)
-
-"$BUN" "$HERE/nfbridge.ts" --tty "$TTY" --layout "$LAYOUT" --port "$TEE_PORT" \
-  --rows "$ROWS" --cols "$COLS" --pid "$CLAUDE_PID" >"${TMPDIR:-/tmp}/nfbridge.log" 2>&1 &
-BRIDGE_PID=$!
-sleep 0.6   # the bridge must own the port before the engine dials it
-
-# Install the tee inside the engine. Separate from the bridge so a failure
-# here is visible in its own log rather than taking the painter down with it.
-"$BUN" "$HERE/install-tee.ts" "ws://127.0.0.1:${PORT}/claude" "$TEE_PORT" \
-  >"${TMPDIR:-/tmp}/nftee.log" 2>&1 &
-ATTACH_PID=$!
-
-wait "$CLAUDE_PID"
+exec python3 "$HERE/nfpty.py" "$@"
