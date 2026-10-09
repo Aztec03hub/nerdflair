@@ -192,35 +192,34 @@ function plain(s: string): string {
 // carries the whole value, so clipping loses nothing.
 const BAND_MAX = 120
 const SEG_MIN = 6
-// Card width. Wide enough for the longest explanation line without wrapping,
-// narrow enough that revealing one does not displace the whole row.
-const CARD_W = 68
 
-// The card FLOATS DOWNWARD, over the prompt, and reserves nothing.
+// WHY THERE IS NO FLOATING CARD, recorded so nobody tries a fourth time.
 //
-// Read out of the engine itself (2.1.295) rather than guessed, because two
-// guesses had already been wrong. The renderer does this to every absolutely
-// positioned node:
+// Three overlay designs were built and each died on a different engine rule,
+// two of them read out of the 2.1.295 binary rather than guessed:
 //
-//     if (P < 0 && n.style.position === "absolute") P = 0
+//  1. Absolute, above the row. The renderer does
+//         if (P < 0 && n.style.position === "absolute") P = 0
+//     to every absolute node, and again in the absolute-descendant pass. It
+//     is a CLAMP, not a clip: the card was not cut off, it was slammed onto
+//     row 0 of the live frame, which is the band's own row, and painted its
+//     border over the segment text. It has to work that way, because rows
+//     above the live frame are terminal scrollback the engine does not own.
+//     That is also why tmux can paint over your history and a plugin cannot:
+//     tmux owns the screen.
 //
-// It is a CLAMP, not a clip, and it is why the first version drew a bordered
-// box with no body: a card placed above the row did not vanish, it was
-// slammed onto row 0 of the live frame, which is the band's own row, and
-// painted its border over the segment text. The same clamp appears again in
-// the absolute-descendant pass, so it is deliberate. It has to be: rows above
-// the live frame are terminal scrollback the engine does not own, which is
-// also why tmux can paint over your history and a plugin cannot.
+//  2. Absolute, below the row. Never clamped, and clipping is opt-in (`gC`
+//     returns a clip rect only where overflow is "hidden" or "scroll"), so
+//     it draws. It is then painted over by the prompt, which is a later
+//     sibling: absolute paints over "those before it", not those after.
 //
-// Downward is not clamped. Below the band is the prompt, which the engine
-// DOES own and repaint every frame. And clipping is opt-in: `gC` returns a
-// clip rect only where `overflow` is "hidden" or "scroll", so unless an
-// ancestor sets one, nothing cuts the card off.
+//  3. In flow. Renders perfectly and shoves the entire screen down, which is
+//     the one outcome Phil ruled out by name.
 //
-// So: absolute, one row down, painting over the prompt. No reserved rows, no
-// reflow, nothing moves.
-const CARD_LINES = 3
-const CARD_H = CARD_LINES + 3
+// What works is the engine's own documented pattern: a hover GROUP, whose
+// members light together "in any site on the surface", swapping an entry into
+// a fixed row of the band. The detail then does not need to live inside the
+// hovered element, which is the constraint every design above was fighting.
 
 function budget(texts: string[], sep: number, fixed = 0): string[] {
   const out = [...texts]
@@ -243,18 +242,6 @@ function budget(texts: string[], sep: number, fixed = 0): string[] {
     out[i] = cur.slice(0, cur.length - 1)
   }
   return out.map((t, i) => (t.length < (texts[i]?.length ?? 0) ? t.slice(0, -1) + '…' : t))
-}
-
-// A card's body: the full value first when the row clipped it, then as much
-// explanation as the reserved rows hold. Capped, never grown, because the card
-// is a fixed height and overflow would spill outside the box.
-function body(
-  card: { lines: string[] },
-  full: string,
-  drawn: string,
-): string[] {
-  const lead = drawn !== full ? [full] : []
-  return [...lead, ...card.lines].slice(0, CARD_LINES)
 }
 
 function ago(ms: number): string {
@@ -439,85 +426,75 @@ export const register: Register = on => {
     const rcText = `${rc.glyph} RC ${rc.label}`
     const shown = budget(segs.map(s => plain(s.text)), SEP.length, rcText.length + SEP.length)
 
+    // Every readout and its detail share a hover GROUP, named by its id. A
+    // group "lights while any is hovered, in any site on the surface", so the
+    // detail does not have to live inside the thing being hovered, which is
+    // what every previous attempt required and what made them all fail.
+    const group = (id: string) => `nfb-${id}`
+
     return (
       <Box flexDirection="column">
         <Box>
-          <Box key="seg-rc">
-            <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
-              {rcText}
-            </Text>
-            <Box
-              position="absolute"
-              top={1}
-              left={0}
-              display="none"
-              hover={{ display: 'flex' }}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={rc.color}
-              paddingX={1}
-              width={CARD_W}
-              height={CARD_H}
-            >
-              <Text color={rc.color} bold>
-                Remote Control
-              </Text>
-              {/* Capped to the reserved rows, same as every other card. */}
-              {rcCard.slice(0, CARD_LINES).map((l, j) => (
-                <Text key={`rc${j}`} color={DIM}>
-                  {l}
-                </Text>
-              ))}
-            </Box>
-          </Box>
+          <Text
+            color={rc.color}
+            hover={{ bold: true, backgroundColor: LIT, scope: group('rc') }}
+          >
+            {rcText}
+          </Text>
           <Text color={DIM}>{SEP}</Text>
           {segs.map((s, i) => {
-            const card = CARDS[s.id]
-            const color = card?.color ?? DIM
-            // A keyed Box scopes the hover: the card is a DESCENDANT of the
-            // box being hovered, which is what makes a declarative
-            // `hover={{display:'flex'}}` fire on it at all. It cannot be
-            // hovered itself while hidden, and no hover event reaches the
-            // plugin, so this nesting is the only mechanism available.
-            //
-            // Absolute, into the reserved rows above: out of the flow, so it
-            // takes no room among its siblings and paints over what is
-            // already there. Revealing it moves NOTHING, which is the point.
+            const color = CARDS[s.id]?.color ?? DIM
             return (
               <Box key={`seg-${s.id}`}>
                 {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
-                <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
+                <Text
+                  color={color}
+                  hover={{ bold: true, backgroundColor: LIT, scope: group(s.id) }}
+                >
                   {shown[i]}
                 </Text>
-                {card ? (
-                  <Box
-                    position="absolute"
-                    top={1}
-                    left={0}
-                    display="none"
-                    hover={{ display: 'flex' }}
-                    flexDirection="column"
-                    borderStyle="round"
-                    borderColor={color}
-                    paddingX={1}
-                    width={CARD_W}
-                    height={CARD_H}
-                  >
-                    <Text color={color} bold>
-                      {card.title}
-                    </Text>
-                    {/* The full value leads whenever the row had to cut it,
-                        or hover would explain a number you cannot read. The
-                        body is then capped to the reserved rows: the card has
-                        a FIXED height now, so anything longer would spill out
-                        of the box rather than enlarge it. */}
-                    {body(card, plain(s.text), shown[i] ?? '').map((l, j) => (
-                      <Text key={`l${j}`} color={j === 0 && l === plain(s.text) ? color : DIM}>
-                        {l}
-                      </Text>
-                    ))}
-                  </Box>
+              </Box>
+            )
+          })}
+        </Box>
+        {/* The detail row.
+            One row, always present, showing whichever readout the pointer is
+            on. This is the engine's own documented pattern ("a pointer on a
+            glyph can swap an entry into a fixed row of the band"), and it is
+            the only one that works here. The three overlay attempts before it
+            each died on a different rule: a card above the row is CLAMPED to
+            row 0 and paints over the band, a card below it is painted over by
+            the prompt, which is drawn later, and an in-flow card shoves the
+            whole screen down.
+            The leading space is load-bearing. It keeps the row one line tall
+            when nothing is hovered, so the band never changes height and
+            nothing below it ever moves. */}
+        <Box>
+          <Text> </Text>
+          <Box
+            display="none"
+            hover={{ display: 'flex', scope: group('rc') }}
+          >
+            <Text color={rc.color} bold>Remote Control </Text>
+            <Text color={DIM}>{rcCard.join(' · ')}</Text>
+          </Box>
+          {segs.map((s, i) => {
+            const card = CARDS[s.id]
+            if (!card) return null
+            const full = plain(s.text)
+            return (
+              <Box
+                key={`det-${s.id}`}
+                display="none"
+                hover={{ display: 'flex', scope: group(s.id) }}
+              >
+                <Text color={card.color} bold>{card.title} </Text>
+                {/* The full value whenever the row had to clip it, or the
+                    detail would explain a number you cannot read. */}
+                {shown[i] !== full ? (
+                  <Text color={card.color}>{full} </Text>
                 ) : null}
+                <Text color={DIM}>{card.lines.join(' · ')}</Text>
               </Box>
             )
           })}
