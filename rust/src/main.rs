@@ -605,8 +605,15 @@ fn render_inner(input: &str) -> Result<String, String> {
             let list = mcp_sorted.join(", ");
             mcp_segment_expanded = format!("{}{} {}{}", pal.mcp_color, MCP_ICON, list, RESET);
             let n = mcp_sorted.len();
+            // The number of names shown is a CAP, not whatever the row has room
+            // for. Fitting to the free width made the list as long as 9 names
+            // on a fresh session (row 2 still empty) and shrink to 3 as the
+            // other readouts arrived: the row jumped, and every hover region
+            // after it moved. A fixed cap means the same text in every state;
+            // width then only ever shortens it further, never lengthens it.
+            let cap = env_int("NERDFLAIR_MCP_NAMES", 3).clamp(1, 64) as usize;
             if n > 1 {
-                for i in (1..n).rev() {
+                for i in (1..n.min(cap + 1)).rev() {
                     let partial = mcp_sorted[..i].join(", ");
                     mcp_segments_truncated.push(format!(
                         "{}{} {}, {} more{}",
@@ -616,6 +623,11 @@ fn render_inner(input: &str) -> Result<String, String> {
                         n - i,
                         RESET
                     ));
+                }
+                if n > cap {
+                    // Over the cap, the longest form allowed IS the first
+                    // variant; the full list is never offered.
+                    mcp_segment_expanded = mcp_segments_truncated.remove(0);
                 }
             }
         }

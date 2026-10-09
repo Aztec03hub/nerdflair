@@ -625,8 +625,18 @@ if (( mcp_enabled > 0 )); then
     # Build truncated variants showing first N names + ", X more"
     _mcp_count=${#mcp_names_sorted[@]}
     mcp_segments_truncated=()
+    # A CAP on names shown, not whatever the row has room for. Fitting to the
+    # free width listed 9 names on a fresh session (row 2 still empty) and 3
+    # once the other readouts arrived: the row jumped and every hover region
+    # after it moved. Same text in every state; width only ever shortens it.
+    _mcp_cap=${NERDFLAIR_MCP_NAMES:-3}
+    [[ "$_mcp_cap" =~ ^-?[0-9]+$ ]] || _mcp_cap=3
+    (( _mcp_cap < 1 )) && _mcp_cap=1
+    (( _mcp_cap > 64 )) && _mcp_cap=64
     if (( _mcp_count > 1 )); then
-      for (( _i = _mcp_count - 1; _i >= 1; _i-- )); do
+      _mcp_top=$(( _mcp_count - 1 ))
+      (( _mcp_count > _mcp_cap )) && _mcp_top=$_mcp_cap
+      for (( _i = _mcp_top; _i >= 1; _i-- )); do
         _partial=""
         for (( _j = 0; _j < _i; _j++ )); do
           [[ -n "$_partial" ]] && _partial+=", "
@@ -636,6 +646,11 @@ if (( mcp_enabled > 0 )); then
         _partial+=", ${_remaining} more"
         mcp_segments_truncated+=("${MCP_COLOR}${mcp_icon} ${_partial}${RESET}")
       done
+      if (( _mcp_count > _mcp_cap )); then
+        # Over the cap the longest form allowed IS the first variant.
+        mcp_segment_expanded="${mcp_segments_truncated[0]}"
+        mcp_segments_truncated=("${mcp_segments_truncated[@]:1}")
+      fi
     fi
   fi
 fi
