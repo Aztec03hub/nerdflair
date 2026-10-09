@@ -195,6 +195,8 @@ class Layout:
         return None
 
 
+# Backdrop.restore() output carries this, so overflow handling can tell it apart.
+RESTORE_MARK = "\x1b[2K"
 CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
@@ -246,6 +248,14 @@ def split_hovers(buf):
 
 
 def incomplete_tail(data):
+    """How many bytes at the end of `data` are unfinished: the larger of an
+    unfinished UTF-8 character and an unfinished escape sequence. They are
+    computed independently because a partial character can sit inside an
+    unfinished sequence (a window title with a glyph in it)."""
+    return max(_utf8_tail(data), _escape_tail(data))
+
+
+def _utf8_tail(data):
     """How many bytes at the end of `data` are an unfinished escape sequence
     or UTF-8 character; 0 if it ends on a boundary."""
     # UTF-8: a lead byte whose continuation bytes have not all arrived.
@@ -260,6 +270,10 @@ def incomplete_tail(data):
             if k < need:
                 return k
         break
+    return 0
+
+
+def _escape_tail(data):
     i = data.rfind(b"\x1b")
     if i < 0:
         return 0
@@ -293,6 +307,9 @@ class Stream:
         buf = self.carry + data
         n = incomplete_tail(buf)
         # A tail this long is not a sequence; do not hold the panel hostage.
+        # A sequence longer than 4096 bytes is not one a terminal emits in
+        # practice; past that we call the stream clean rather than hold every
+        # paint behind an escape that may never end.
         self.carry = buf[-n:] if 0 < n <= 4096 else b""
         return n == 0 or n > 4096
 
@@ -343,6 +360,11 @@ def selfcheck():
     assert st.feed(b";1;2") is False, "the middle chunk has no ESC and is still inside the sequence"
     assert st.feed(b"mok") is True
     assert Stream().feed(b"plain") is True
+    # A glyph inside an OSC title, split mid-character, is still inside the OSC.
+    st = Stream()
+    assert st.feed(b"\x1b]0;" + "\U000f024b".encode()[:2]) is False
+    assert st.feed("\U000f024b".encode()[2:] + b" title") is False, "still inside the OSC after the glyph completes"
+    assert st.feed(b"\x07") is True
     # A "mouse report" fragment that is too long to be one is not held back.
     junk = b"\x1b[<" + b"1" * 40
     assert split_hovers(junk) == (junk, [], b""), "an overlong fragment must pass through"
@@ -459,8 +481,9 @@ def main():
     quit_at = [0.0]
 
     def on_term(sig, _frame):
+        if quit_sig[0] is None:           # the FIRST signal starts the clock
+            quit_at[0] = time.monotonic()
         quit_sig[0] = sig
-        quit_at[0] = time.monotonic()
         try:
             os.kill(pid, sig)            # the child decides how to die
         except OSError:
@@ -583,7 +606,10 @@ def main():
                 unclean_since[0] = 0.0
                 flush_pending()
             if len(pending) > 64:
-                del pending[:-64]
+                # Drop old frames, never the writes that put rows back: an
+                # erase lost here leaves a ghost the panel thinks is gone.
+                keep = [w for w in pending if RESTORE_MARK in w]
+                pending[:] = keep + [w for w in pending if RESTORE_MARK not in w][-32:]
 
             # A forwarded signal the child ignores must not trap us here.
             if quit_sig[0] is not None and status_box[0] is None and now - quit_at[0] > 2.0:
@@ -608,9 +634,9 @@ def main():
     finally:
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.
-        clean[0] = True
-        flush_pending()
         try:
+            clean[0] = True
+            flush_pending()
             out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
             out.flush()
         except (OSError, ValueError):
@@ -624,7 +650,21 @@ def main():
 
     status = status_box[0]
     if status is None:
-        _, status = os.waitpid(pid, 0)
+        # The terminal went away (stdin EOF) or we are being shut down: give
+        # the child a moment, then stop waiting for one that ignores SIGHUP.
+        deadline = time.monotonic() + 2.0
+        while status is None and time.monotonic() < deadline:
+            done, st = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = st
+            else:
+                time.sleep(0.05)
+        if status is None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            _, status = os.waitpid(pid, 0)
     code = os.waitstatus_to_exitcode(status)
     sys.exit(128 - code if code < 0 else code)     # shell convention: 128 + signal
 

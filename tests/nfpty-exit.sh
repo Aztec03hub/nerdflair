@@ -42,17 +42,23 @@ read -r rc _ < <(run 'exit 0'); check "plain exit 0" 0 "$rc"
 
 # The child's last words must survive its exit (finding M1 of round 2).
 out=$(python3 - "$NFPTY" <<'PY'
-import os, subprocess, sys
-p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "printf LASTWORDS; exit 0"],
-                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                     env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
-# Read stdout directly: communicate() would close stdin, which nfpty rightly
-# takes for a terminal hangup.
-import threading
-threading.Timer(10, p.kill).start()
-data = p.stdout.read()
-p.wait()
-print("yes" if b"LASTWORDS" in data else "no")
+import os, subprocess, sys, threading
+# The race is a window of microseconds, so one run proves little: every one of
+# 60 runs must keep the output.
+lost = 0
+for _ in range(60):
+    p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "printf LASTWORDS; exit 0"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
+    timer = threading.Timer(10, p.kill)
+    timer.start()
+    # Read stdout directly: communicate() would close stdin, which nfpty
+    # rightly takes for a terminal hangup.
+    data = p.stdout.read()
+    p.wait()
+    timer.cancel()
+    lost += b"LASTWORDS" not in data
+print("yes" if lost == 0 else f"lost {lost} of 60")
 PY
 )
 check "output written just before exit is not lost" yes "$out"
@@ -73,8 +79,11 @@ except subprocess.TimeoutExpired:
 print(rc, int(time.time() - t))
 PY
 )
-if (( rc != 124 )); then r=exited; else r=hung; fi
-check "SIGTERM to nfpty with a child that ignores it: nfpty still exits" exited "$r"
+# The child is `sleep 6` and the harness waits 8 s, so exiting at all proves
+# nothing: it must be the SIGKILL escalation (137) and within about 4 s.
+check "ignored SIGTERM: the child is killed (137)" 137 "$rc"
+if (( secs <= 4 )); then r=quick; else r=slow; fi
+check "ignored SIGTERM: within about 2 s of the signal" quick "$r"
 
 printf '\n'
 if (( fail )); then echo "nfpty-exit: FAIL"; exit 1; fi
