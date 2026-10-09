@@ -17,6 +17,9 @@ import type { Register } from 'claude-code'
 // so the payload is reconstructed from it.
 
 const BIN = `${process_env_home()}/.local/bin/nerdflair-statusline`
+// The popup helper, beside this file in the repo. tmux draws it, because the
+// engine cannot float anything here; see the note above the width budget.
+const POPUP = `${process_env_home()}/nerdflair/band/popup.sh`
 
 function process_env_home(): string {
   // No `process` in this environment; the home path is stable for this mod.
@@ -356,7 +359,7 @@ export const register: Register = on => {
       rcSince = 0
     }
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     if (!cache || cache.segs.length === 0) {
       if (!lastError) return next(e)
       return (
@@ -426,75 +429,76 @@ export const register: Register = on => {
     const rcText = `${rc.glyph} RC ${rc.label}`
     const shown = budget(segs.map(s => plain(s.text)), SEP.length, rcText.length + SEP.length)
 
-    // Every readout and its detail share a hover GROUP, named by its id. A
-    // group "lights while any is hovered, in any site on the surface", so the
-    // detail does not have to live inside the thing being hovered, which is
-    // what every previous attempt required and what made them all fail.
-    const group = (id: string) => `nfb-${id}`
+    // A CLICK opens a real floating popup, drawn by tmux.
+    //
+    // This is the way out of the whole overlay problem. The engine cannot
+    // float anything here (see the note above the budget), but tmux can,
+    // because tmux owns the screen: its own menus are drawn exactly this way.
+    // Verified before wiring, by attaching a throwaway client to a scratch
+    // session and finding the popup's title and 105 border cells in the
+    // client's pty stream.
+    //
+    // It has to be a click rather than a hover, and that is not a preference.
+    // No hover event ever crosses to a plugin: the engine puts the terminal
+    // in mouse mode 1003 and consumes motion itself, so neither this code nor
+    // tmux ever learns the pointer moved. `ui.press` IS delivered, so a press
+    // is the only moment we can act on.
+    //
+    // `plain` draws "the label alone", no [ brackets ], so the band looks
+    // exactly as it did and the pointer still lights the label.
+    const popup = (title: string, bodyText: string, x: number) => {
+      void $.process.run(['bash', POPUP, String(x), title, bodyText], {
+        timeoutMs: 60000,
+      })
+    }
+    // Where each readout starts, so the popup opens under the thing clicked
+    // instead of in the corner. The press event carries no coordinates, but
+    // the widths are already known here: they are what the budget produced.
+    let col = 0
+    const colOf: number[] = []
+    for (const t of shown) {
+      colOf.push(col)
+      col += t.length + SEP.length
+    }
+
+    const rcChipWidth = rcText.length + SEP.length
 
     return (
       <Box flexDirection="column">
         <Box>
-          <Text
-            color={rc.color}
-            hover={{ bold: true, backgroundColor: LIT, scope: group('rc') }}
+          <Button
+            plain
+            key="rc"
+            onPress={() => popup('Remote Control', rcCard.join(' · '), 0)}
           >
-            {rcText}
-          </Text>
+            <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
+              {rcText}
+            </Text>
+          </Button>
           <Text color={DIM}>{SEP}</Text>
           {segs.map((s, i) => {
-            const color = CARDS[s.id]?.color ?? DIM
+            const card = CARDS[s.id]
+            const color = card?.color ?? DIM
+            const full = plain(s.text)
+            // The full value leads whenever the row had to clip it, or the
+            // popup would explain a number you cannot read.
+            const detail = card
+              ? (shown[i] !== full ? `${full}  —  ` : '') + card.lines.join(' · ')
+              : full
             return (
               <Box key={`seg-${s.id}`}>
                 {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
-                <Text
-                  color={color}
-                  hover={{ bold: true, backgroundColor: LIT, scope: group(s.id) }}
+                <Button
+                  plain
+                  key={s.id}
+                  onPress={() =>
+                    popup(card?.title ?? s.id, detail, rcChipWidth + (colOf[i] ?? 0))
+                  }
                 >
-                  {shown[i]}
-                </Text>
-              </Box>
-            )
-          })}
-        </Box>
-        {/* The detail row.
-            One row, always present, showing whichever readout the pointer is
-            on. This is the engine's own documented pattern ("a pointer on a
-            glyph can swap an entry into a fixed row of the band"), and it is
-            the only one that works here. The three overlay attempts before it
-            each died on a different rule: a card above the row is CLAMPED to
-            row 0 and paints over the band, a card below it is painted over by
-            the prompt, which is drawn later, and an in-flow card shoves the
-            whole screen down.
-            The leading space is load-bearing. It keeps the row one line tall
-            when nothing is hovered, so the band never changes height and
-            nothing below it ever moves. */}
-        <Box>
-          <Text> </Text>
-          <Box
-            display="none"
-            hover={{ display: 'flex', scope: group('rc') }}
-          >
-            <Text color={rc.color} bold>Remote Control </Text>
-            <Text color={DIM}>{rcCard.join(' · ')}</Text>
-          </Box>
-          {segs.map((s, i) => {
-            const card = CARDS[s.id]
-            if (!card) return null
-            const full = plain(s.text)
-            return (
-              <Box
-                key={`det-${s.id}`}
-                display="none"
-                hover={{ display: 'flex', scope: group(s.id) }}
-              >
-                <Text color={card.color} bold>{card.title} </Text>
-                {/* The full value whenever the row had to clip it, or the
-                    detail would explain a number you cannot read. */}
-                {shown[i] !== full ? (
-                  <Text color={card.color}>{full} </Text>
-                ) : null}
-                <Text color={DIM}>{card.lines.join(' · ')}</Text>
+                  <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
+                    {shown[i]}
+                  </Text>
+                </Button>
               </Box>
             )
           })}
