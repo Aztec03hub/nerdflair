@@ -34,6 +34,18 @@ check "after heal: reachable again" 0 "$(tmux ls >/dev/null 2>&1; echo $?)"
 check "after heal: socket exists" yes "$([[ -S "$sock" ]] && echo yes || echo no)"
 check "after heal: the session survived" heal-test "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | head -1)"
 
+# A symlink planted where the socket directory belongs must be left alone, not
+# followed: heal may only act on a private directory of ours.
+mv "$ROOT/tmux-$(id -u)" "$ROOT/removed2"
+mkdir "$ROOT/elsewhere"
+ln -s "$ROOT/elsewhere" "$ROOT/tmux-$(id -u)"
+"$HEAL" 2>/dev/null
+check "a planted symlink is not followed or healed" 1 "$(tmux ls >/dev/null 2>&1; echo $?)"
+check "nothing was created behind the symlink" 0 "$(find "$ROOT/elsewhere" -mindepth 1 | wc -l)"
+rm "$ROOT/tmux-$(id -u)"
+mv "$ROOT/removed2" "$ROOT/tmux-$(id -u)"
+"$HEAL" 2>/dev/null
+
 # kill-server needs a reachable socket, so a failed run would leave the
 # scratch server behind; take it down by the pid the kernel reports for it.
 tmux kill-server 2>/dev/null

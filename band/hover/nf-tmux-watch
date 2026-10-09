@@ -51,8 +51,16 @@ HEALS_PER_HOUR = 6
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
 
+LOG_MAX = 1_000_000
+
+
 def log(msg):
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    try:
+        if os.path.getsize(LOG) > LOG_MAX:      # one generation is enough: this is a diagnostic
+            os.replace(LOG, LOG + ".1")
+    except OSError:
+        pass
     with open(LOG, "a") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
 
@@ -101,6 +109,7 @@ class Watcher:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.wd = {}            # watch descriptor -> directory
         self.heals = []
+        self.last_limit_note = 0.0
 
     def add(self, d):
         if d in self.wd.values() or not os.path.isdir(d):
@@ -118,12 +127,16 @@ class Watcher:
     def heal(self, why):
         now = time.time()
         self.heals = [t for t in self.heals if now - t < 3600]
+        if len(self.heals) >= HEALS_PER_HOUR:
+            # Past the limit say so once an hour, not once per event, so a
+            # storm cannot fill the disk through this log either.
+            if now - self.last_limit_note > 3600:
+                self.last_limit_note = now
+                log(f"not healing or recording: already {HEALS_PER_HOUR} heals in the last hour (something keeps deleting it): {why}")
+            return
         log(f"DELETED: {why}")
         for line in suspects():
             log(line)
-        if len(self.heals) >= HEALS_PER_HOUR:
-            log(f"not healing: already {HEALS_PER_HOUR} heals in the last hour (something keeps deleting it)")
-            return
         self.heals.append(now)
         time.sleep(0.2)          # let whatever is deleting finish before recreating
         r = subprocess.run([HEAL], capture_output=True, text=True)
@@ -150,7 +163,10 @@ class Watcher:
                     # Only what concerns a tmux socket directory or its socket.
                     if mask & (IN_DELETE_SELF | IN_MOVE_SELF) and f"/tmux-{UID}" in d:
                         hit = f"directory {d} itself"
-                    elif mask & (IN_DELETE | IN_MOVED_FROM) and (name.startswith(f"tmux-{UID}") or (f"/tmux-{UID}" in d and name == "default")):
+                    elif mask & (IN_DELETE | IN_MOVED_FROM) and (name == f"tmux-{UID}" or (d.endswith(f"/tmux-{UID}") and name == "default")):
+                        # EXACT names. A prefix match let any other user create
+                        # and delete /tmp/tmux-1000-x in a loop and make this
+                        # service log, scan processes and heal for ever.
                         hit = f"{os.path.join(d, name)}"
                     if mask & (IN_DELETE_SELF | IN_MOVE_SELF):
                         self.wd.pop(wd, None)      # the kernel drops the watch with its target

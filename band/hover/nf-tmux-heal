@@ -29,7 +29,14 @@ ss -xlnp 2>/dev/null | while read -r _ _ _ _ path _ _ _ proc; do
   [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "tmux: server" ]] || continue
   [[ "$(stat -c %u "/proc/$pid" 2>/dev/null)" == "$uid" ]] || continue
   dir=${path%/*}
-  mkdir -m 700 -p "$dir" && kill -USR1 "$pid" \
-    && echo "nf-tmux-heal: socket recreated at $path" >&2
+  mkdir -m 700 -p "$dir" || continue
+  # Only signal if what is there is really ours: a real directory (not a
+  # symlink someone planted in /tmp), owned by us, mode 700. tmux itself
+  # refuses an unsafe socket directory, but we should not even ask it to.
+  if [[ -L "$dir" || ! -d "$dir" || "$(stat -c %u "$dir")" != "$uid" || "$(stat -c %a "$dir")" != "700" ]]; then
+    echo "nf-tmux-heal: $dir exists but is not a private directory of ours; leaving it" >&2
+    continue
+  fi
+  kill -USR1 "$pid" && echo "nf-tmux-heal: socket recreated at $path" >&2
 done
 exit 0

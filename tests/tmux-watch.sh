@@ -52,6 +52,14 @@ check "the log says what was deleted" yes "$(grep -q "DELETED:.*tmux-$uid" "$ROO
 check "the log lists running processes" yes "$(grep -q 'pid=' "$ROOT/log" && echo yes || echo no)"
 check "the log records the heal" yes "$(grep -q 'healed rc=0' "$ROOT/log" && echo yes || echo no)"
 
+# Names that merely START with the socket directory's name are not it: another
+# user could otherwise create and delete one in a loop and make the service
+# log and heal for ever.
+before=$(grep -c 'DELETED:' "$ROOT/log")
+mkdir "$ROOT/tmux-$uid-decoy" && rmdir "$ROOT/tmux-$uid-decoy"
+sleep 1.5
+check "a decoy named tmux-UID-x is ignored" "$before" "$(grep -c 'DELETED:' "$ROOT/log")"
+
 kill "$wpid" 2>/dev/null
 stop_scratch
 printf '\n'
