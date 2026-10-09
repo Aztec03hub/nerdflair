@@ -171,8 +171,12 @@ class Layout:
             return
         self.at = now
         fresh = mklayout.build(self.pane, skip=covered)
-        if fresh:                 # keep the last good one on a failed read
-            self.segs = [s for s in self.segs if s["row"] in covered] + fresh
+        # An EMPTY read is an answer, not a failure to keep the old layout
+        # through: it means something (a permission prompt, a dialog) is
+        # drawn over the status line. Keeping the last good layout there made
+        # invisible regions open cards over the dialog. Only the rows a panel
+        # of ours is covering are carried over, since they show the panel.
+        self.segs = [s for s in self.segs if s["row"] in covered] + fresh
 
     def hit(self, col, row):
         """The readout under the pointer, if the pointer is on one.
@@ -280,6 +284,11 @@ def selfcheck():
         assert lay.hit(31, 3) is None and lay.hit(37, 3)["id"] == "b", \
             "a moved readout must be found at its new column, not the old"
         assert lay.hit(6, 4)["id"] == "c", "a covered row keeps its old readouts"
+        # Something drawn over the whole status line: no region may survive.
+        shots.append([])
+        lay.refresh()
+        assert lay.segs == [] and lay.hit(37, 3) is None, \
+            "a covered status line must leave no hoverable regions"
     finally:
         mklayout.build = real
     print("nfpty ok")
