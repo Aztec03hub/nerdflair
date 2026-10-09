@@ -301,6 +301,7 @@ export const register: Register = on => {
           // this session twice. With the true id the append is idempotent:
           // same key, same value, and a shared 60s stamp rate-limits it.
           const sid = await $.session.id()
+          const model = await $.session.model()
           const five = u.rateLimits?.find(r => r.kind === 'five_hour')
           const seven = u.rateLimits?.find(r => r.kind === 'seven_day')
           // resetsAt is an ISO string here; the renderer reads an epoch,
@@ -311,7 +312,9 @@ export const register: Register = on => {
             session_id: sid,
             transcript_path: '/nonexistent/band.jsonl',
             workspace: { current_dir: cwd, project_dir: cwd },
-            model: { display_name: 'Opus 5', id: 'claude-opus-5' },
+            // The real model, as /model shows it; this used to say "Opus 5"
+            // whatever was running.
+            model: { display_name: model, id: model },
             context_window: {
               context_window_size: u.context?.window ?? 200000,
               total_input_tokens: u.context?.tokens ?? 0,
