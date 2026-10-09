@@ -35,7 +35,7 @@ class Panel:
     program underneath never learns it happened and never reflows.
     """
 
-    def __init__(self, write, rows, cols, backdrop=None):
+    def __init__(self, write, rows, cols, backdrop=None, keeps=False):
         self.write = write
         # What the program underneath had drawn where the panel goes, so it
         # can be put back. Taking the panel down without this leaves a hole:
@@ -46,6 +46,9 @@ class Panel:
         # the bug where whichever readout you were not hovering sat there as
         # a black rectangle.
         self.backdrop = backdrop
+        # keeps: `write` accepts keep=True, which marks a write (an erase) that
+        # a queue must never drop. Off by default so a plain callable works.
+        self.keeps = keeps
         self.rows = rows
         self.cols = cols
         # Whether the engine currently shows its cursor. Our paints hide it
@@ -171,7 +174,11 @@ class Panel:
             # not the design.
             under = "".join(f"{ESC}[{r};{x}H{' ' * w}"
                             for r in range(y, y + h))
-        self.write(f"{ESC}[s{ESC}[?25l" + under + self._show_cursor() + f"{ESC}[u")
+        text = f"{ESC}[s{ESC}[?25l" + under + self._show_cursor() + f"{ESC}[u"
+        if self.keeps:
+            self.write(text, keep=True)
+        else:
+            self.write(text)
         self.rect = None
         self.paths = []
         self.shown = None

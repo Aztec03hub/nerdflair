@@ -46,7 +46,9 @@ rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$f" ]] && echo "$
 paired() { # file
   local b e
   # CRLF markers would count as zero and make every install append another block.
-  if grep -q $'\r' "$1"; then return 1; fi
+  if grep -qE "^(${BEGIN}|${END})"$'\r' "$1"; then
+    echo "install: $1 has CRLF line endings on a nerdflair marker; convert it first" >&2; return 1
+  fi
   b=$(grep -cxF "$BEGIN" "$1" || true); e=$(grep -cxF "$END" "$1" || true)
   [[ "$b" == "$e" && "$b" -le 1 ]] || return 1
   # and in the right order: an END above its BEGIN pairs by count but makes

@@ -66,10 +66,13 @@ check "output written just before exit is not lost" yes "$out"
 # SIGTERM to nfpty is forwarded, and a child that ignores it is killed.
 read -r rc secs < <(python3 - "$NFPTY" <<'PY'
 import os, signal, subprocess, sys, time
-p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "trap '' TERM; sleep 6"],
-                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "trap '' TERM; echo ready; sleep 6"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                      env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
-time.sleep(1.0)
+# Signal only once the child has installed its trap: under load a signal sent
+# earlier kills bash normally and the test would blame the SIGKILL path.
+while b"ready" not in p.stdout.readline():
+    pass
 t = time.time()
 p.send_signal(signal.SIGTERM)
 try:

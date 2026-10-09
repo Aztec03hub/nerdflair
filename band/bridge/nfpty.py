@@ -195,8 +195,6 @@ class Layout:
         return None
 
 
-# Backdrop.restore() output carries this, so overflow handling can tell it apart.
-RESTORE_MARK = "\x1b[2K"
 CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
@@ -294,6 +292,18 @@ def _escape_tail(data):
     return 0 if done else len(data) - i
 
 
+def trim_pending(pending, limit=64):
+    """Cut a backed-up write queue to `limit`, in place and in order: the
+    oldest droppable frames go first, writes marked keep (the erases) never
+    do, and what remains still runs in the sequence it was queued."""
+    i = 0
+    while len(pending) > limit and i < len(pending):
+        if pending[i][1]:
+            i += 1
+        else:
+            del pending[i]
+
+
 class Stream:
     """Tracks whether the engine's output is on a sequence boundary, across
     chunks: a sequence split over three reads is still unfinished after the
@@ -354,6 +364,13 @@ def selfcheck():
     assert not ends_clean("é".encode()[:1]) and ends_clean("é".encode())
     assert not ends_clean(b"\x1b]0;title") and ends_clean(b"\x1b]0;title\x07")
     assert not ends_clean(b"\x1b(") and ends_clean(b"\x1b(B") and not ends_clean(b"\x1bP1$r")
+    # Overflow keeps erases and the ORDER of what remains: a redraw queued
+    # before an erase must still run before it, or the card stays as a ghost.
+    q = [("redraw", False)] + [("frame", False)] * 70 + [("erase", True), ("late", False)]
+    trim_pending(q, limit=5)
+    names = [w for w, _k in q]
+    assert "erase" in names and names.index("erase") < names.index("late"), names
+    assert len(q) == 5 and names.count("frame") == 3, names     # trimmed to the limit, oldest frames first
     # A sequence split over THREE reads is unfinished until the last one.
     st = Stream()
     assert st.feed(b"x\x1b[38;2") is False
@@ -442,13 +459,13 @@ def main():
 
     def flush_pending():
         if pending and clean[0]:
-            out.write("".join(pending).encode())
+            out.write("".join(w for w, _keep in pending).encode())
             out.flush()
             pending.clear()
 
-    def write(s):
+    def write(s, keep=False):
         painted[0] += len(s)
-        pending.append(s)
+        pending.append((s, keep))
         flush_pending()
 
     dbg = None
@@ -456,7 +473,7 @@ def main():
         dbg = open(os.environ["NFPTY_LOG"], "a", buffering=1)
 
     pane = os.environ.get("TMUX_PANE")
-    panel = Panel(write, rows, cols, backdrop=Backdrop(pane))
+    panel = Panel(write, rows, cols, backdrop=Backdrop(pane), keeps=True)
     layout = Layout(pane)
 
     old = None
@@ -481,6 +498,8 @@ def main():
     quit_at = [0.0]
 
     def on_term(sig, _frame):
+        if status_box[0] is not None:
+            return                    # already reaped: the pid may be reused
         if quit_sig[0] is None:           # the FIRST signal starts the clock
             quit_at[0] = time.monotonic()
         quit_sig[0] = sig
@@ -608,8 +627,7 @@ def main():
             if len(pending) > 64:
                 # Drop old frames, never the writes that put rows back: an
                 # erase lost here leaves a ghost the panel thinks is gone.
-                keep = [w for w in pending if RESTORE_MARK in w]
-                pending[:] = keep + [w for w in pending if RESTORE_MARK not in w][-32:]
+                trim_pending(pending)
 
             # A forwarded signal the child ignores must not trap us here.
             if quit_sig[0] is not None and status_box[0] is None and now - quit_at[0] > 2.0:
@@ -642,7 +660,10 @@ def main():
         except (OSError, ValueError):
             pass
         if old is not None:
-            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
+            try:
+                termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
+            except (termios.error, OSError):
+                pass                  # the terminal is gone; the reap below still must run
         try:
             os.close(master)
         except OSError:

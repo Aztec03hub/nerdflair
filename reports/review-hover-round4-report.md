@@ -53,3 +53,9 @@ band/bridge/nfpty.py:655-667. On terminal close the child gets SIGHUP from `os.c
 - waitpid/SIGKILL versus a normal reap: the loop SIGKILL (:615-619) and the final one (:662-667) fire only while the child is unreaped, so a zombie absorbs the signal and no pid is reused. `waitpid(pid, 0)` after SIGKILL cannot hang. Exit code 137 results (`128 - (-9)`).
 - First-signal clock (:484-485) is correct; a second signal no longer slides the deadline.
 - Exit-reset write is now inside the try (:637-643); a dead terminal no longer skips the reap by that route (see M3 for the remaining route).
+
+## Disposition 2026-10-09 (author)
+
+Fixed: M1 (the overflow trim is now `trim_pending`, in place and in order; a selfcheck proves an erase still runs before a later write), M2 (erases are tagged by the panel with `keep=True` instead of sniffing bytes, so the blank-fill erase is protected too), M3 (`tcsetattr` is guarded so the reap and SIGKILL block always run), L1 (only a CR on a marker line is refused, with its own message), L3 (the test waits for the child's `ready` before signalling), L4 (the handler returns once the child is reaped).
+Not changed: L2 (the last-words case cannot be made deterministic without controlling the select wakeup; kept as a regression smoke test and described as such), L5 (2 s before SIGKILL is a judgement call; kept).
+
