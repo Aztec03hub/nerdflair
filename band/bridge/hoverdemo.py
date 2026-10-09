@@ -58,6 +58,8 @@ SEP = " · "
 # carry comfortably over a pty without the paint becoming the bottleneck.
 TRAIL = 14
 FPS = 28
+# Frames the panel rests, lit but still, between sweeps.
+REST = 26
 FRAME = 1.0 / FPS
 
 
@@ -77,7 +79,7 @@ class Screen:
         self.layout = []          # (id, x, w, idx)
         self.shown = None         # index of the panel on screen
         self.panel_rect = None    # (x, y, w, h) so we can erase exactly
-        self.path = []            # border cells, clockwise: (row, col, char)
+        self.paths = []           # two runs of border cells: (row, col, char)
         self.accent = (255, 255, 255)
         self.head = 0
 
@@ -141,27 +143,34 @@ class Screen:
                 out.append(f"{ESC}[{r};{px}H{' ' * pw}")
         self.w("".join(out))
         self.panel_rect = None
-        self.path = []
+        self.paths = []
 
-    def _build_path(self, x, y, w, h, title):
-        """Every border cell, clockwise from the top-left corner.
+    def _build_paths(self, x, y, w, h, title):
+        """TWO runs, both starting at the top-left corner and ending at the
+        bottom-right, so the glints diverge and meet.
 
-        The title sits IN the top rule, so its characters are part of the
-        path: the shine passes over the lettering instead of stopping dead at
-        it, which is the whole point of running the highlight round an
-        outline rather than drawing a moving dash."""
+          A: along the top edge, then down the right edge.
+          B: down the left edge, then along the bottom edge.
+
+        Each is a LINE, not a loop: the head runs off the end at the far
+        corner and the panel settles until the next pass. A single circling
+        highlight reads as a marquee; two meeting at a corner reads as light
+        catching an edge.
+
+        The title sits IN the top rule, so its characters are part of run A
+        and the glint passes over the lettering instead of stopping dead at
+        it."""
         top = "╭─ " + title + " " + "─" * (w - len(title) - 5) + "╮"
         bottom = "╰" + "─" * (w - 2) + "╯"
-        path = []
-        for i, ch in enumerate(top):                 # left to right
-            path.append((y, x + i, ch))
-        for r in range(1, h - 1):                    # right side, downward
-            path.append((y + r, x + w - 1, "│"))
-        for i, ch in enumerate(reversed(bottom)):    # right to left
-            path.append((y + h - 1, x + w - 1 - i, ch))
-        for r in range(h - 2, 0, -1):                # left side, upward
-            path.append((y + r, x, "│"))
-        return path
+
+        a = [(y, x + i, ch) for i, ch in enumerate(top)]
+        a += [(y + r, x + w - 1, "│") for r in range(1, h - 1)]
+        a.append((y + h - 1, x + w - 1, "╯"))
+
+        b = [(y, x, "╭")]
+        b += [(y + r, x, "│") for r in range(1, h - 1)]
+        b += [(y + h - 1, x + i, ch) for i, ch in enumerate(bottom)]
+        return [a, b]
 
     def show_panel(self, idx, col):
         _sid, _label, accent, title, body = SEGMENTS[idx]
@@ -184,7 +193,7 @@ class Screen:
         self.w("".join(out))
 
         self.accent = accent
-        self.path = self._build_path(x, y, w, h, title)
+        self.paths = self._build_paths(x, y, w, h, title)
         self.head = 0
         self.panel_rect = (x, y, w, h)
         self.shown = idx
@@ -192,39 +201,54 @@ class Screen:
         self.w(f"{ESC}[?25h{ESC}[u")
 
     def paint_border(self, full=False):
-        """One frame of the shine.
+        """One frame of the two shines.
 
-        Only the cells whose brightness CHANGED are rewritten: the comet
-        window plus the two cells it has just left. Repainting the whole
-        outline every frame is ~140 cells of escapes at 28fps, which is a
-        waste of a pty; this is about a fifth of that."""
-        if not self.path:
+        Only the cells whose brightness CHANGED are rewritten: each comet
+        window plus the two cells it has just left. Repainting both outlines
+        every frame is ~140 cells of escapes at 28fps, which is a waste of a
+        pty for about a fifth of the benefit."""
+        if not self.paths:
             return
-        n = len(self.path)
         white = (255, 255, 255)
-        idxs = range(n) if full else [
-            (self.head - k) % n for k in range(-2, TRAIL + 1)
-        ]
         out = [f"{ESC}[s", f"{ESC}[?25l"]
-        for i in idxs:
-            row, col, ch = self.path[i]
-            d = (self.head - i) % n
-            if d < TRAIL:
-                # Squared falloff: a tight bright head and a long soft tail,
-                # which reads as a glint rather than a moving blob.
-                t = (1.0 - d / TRAIL) ** 2
-                colour = lerp(self.accent, white, min(1.0, t * 1.15))
-                bold = f"{ESC}[1m" if t > 0.72 else ""
+        for path in self.paths:
+            n = len(path)
+            if full:
+                idxs = range(n)
             else:
-                colour, bold = self.accent, ""
-            out.append(f"{ESC}[{row};{col}H{bold}{rgb(colour)}{ch}{RESET}")
+                # Clamped, not wrapped: these runs are lines, so there is no
+                # cell "behind" the start and none past the end.
+                lo = max(0, self.head - TRAIL - 2)
+                hi = min(n - 1, self.head)
+                idxs = range(lo, hi + 1)
+            for i in idxs:
+                row, col, ch = path[i]
+                d = self.head - i
+                if 0 <= d < TRAIL:
+                    # Squared falloff: a tight bright head and a long soft
+                    # tail, which reads as a glint rather than a moving blob.
+                    t = (1.0 - d / TRAIL) ** 2
+                    colour = lerp(self.accent, white, min(1.0, t * 1.15))
+                    bold = f"{ESC}[1m" if t > 0.72 else ""
+                else:
+                    colour, bold = self.accent, ""
+                out.append(f"{ESC}[{row};{col}H{bold}{rgb(colour)}{ch}{RESET}")
         out += [f"{ESC}[?25h", f"{ESC}[u"]
         self.w("".join(out))
 
     def tick(self):
-        if not self.path:
+        """Advance both heads together. They start at the same corner, so one
+        counter drives both; the shorter run simply finishes first."""
+        if not self.paths:
             return
-        self.head = (self.head + 1) % len(self.path)
+        longest = max(len(p) for p in self.paths)
+        # Run until the tail of the longest has cleared its last cell, hold
+        # the panel quiet for REST frames, then sweep again.
+        if self.head > longest + TRAIL + REST:
+            self.head = 0
+            self.paint_border(full=True)
+            return
+        self.head += 1
         self.paint_border()
 
     def highlight(self, idx):
