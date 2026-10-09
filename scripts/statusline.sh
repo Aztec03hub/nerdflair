@@ -678,7 +678,30 @@ else
     if (( _tbytes > _tcap )); then
       if [[ "$_ttail" == *$'\n'* ]]; then _ttail="${_ttail#*$'\n'}"; else _ttail=""; fi
     fi
-    last_usage=$(printf '%s\n' "$_ttail" | grep '"usage"' 2>/dev/null | tail -1 | jq -r '.message.usage // empty' 2>/dev/null)
+    # Unless the cap lands INSIDE the last line. A single assistant message
+    # carrying a large tool result can exceed a megabyte on its own; the
+    # partial first line is then dropped and the tail holds no usage object
+    # at all, so the gauge reads 0% on a session that is nearly full. Widen
+    # once rather than creep, and only in the case that would be wrong.
+    if (( _tbytes > _tcap )) && [[ "$_ttail" != *'"usage"'* ]]; then
+      _twide=$(( _tcap * 16 ))
+      (( _twide > 67108864 )) && _twide=67108864
+      _ttail=$(tail -c "$_twide" "$transcript" 2>/dev/null || true)
+      if (( _tbytes > _twide )); then
+        if [[ "$_ttail" == *$'\n'* ]]; then _ttail="${_ttail#*$'\n'}"; else _ttail=""; fi
+      fi
+    fi
+    # The NEWEST usage line that parses AND carries a usage object, not
+    # simply the newest. The file is being appended to while we read it, so
+    # the final line is routinely a fragment, and taking it blind made a live
+    # session flicker to 0% whenever the read landed mid-write. Bounded at
+    # five, so a corrupt tail cannot turn this into a scan of every line.
+    last_usage=""
+    while IFS= read -r _uline; do
+      last_usage=$(printf '%s' "$_uline" | jq -r '.message.usage // empty' 2>/dev/null)
+      [[ -n "$last_usage" && "$last_usage" != "null" ]] && break
+      last_usage=""
+    done < <(printf '%s\n' "$_ttail" | grep '"usage"' 2>/dev/null | tail -5 | tac)
     if [[ -n "$last_usage" && "$last_usage" != "null" ]]; then
       u_input=$(echo "$last_usage" | jq -r '.input_tokens // 0')
       u_cache_create=$(echo "$last_usage" | jq -r '.cache_creation_input_tokens // 0')
@@ -1615,11 +1638,14 @@ fi
 # swapped pair is dropped. Compaction cannot reorder anything, keeping at most
 # one pre-cutoff row per session. The measured 22s of jitter is BETWEEN
 # sessions, which does not matter here.
-_window_spend() {  # $1=since $2=now -> "<spent> <span>"
+_window_spend() {  # $1=since $2=now -> "<spent> <span> <oldest> <newest>"
   printf '%s\n' "$_ledger" | awk -F'\t' \
     -v since="$1" -v now="$2" -v maxcost="$_LEDGER_MAXCOST" '
     NF == 4 {
-      t = $1 + 0; v = $4 + 0
+      # int() to match the Rust build, which truncates before comparing.
+      # The ledger writes integer epochs, so this is unreachable in practice
+      # and is here so the two cannot drift if that ever changes.
+      t = int($1 + 0); v = $4 + 0
       if (t < 1600000000 || t > 4000000000) next
       if (v <= 0 || v >= maxcost) next
       if (t < since || t > now) next
@@ -1635,8 +1661,22 @@ _window_spend() {  # $1=since $2=now -> "<spent> <span>"
       lt[s] = t
     }
     END {
+      # The first in-window row of a session is its BASELINE, so spend before
+      # it is not counted and the total is a lower bound. Counting it instead
+      # was tried and reverted: a session resuming after an idle hour has no
+      # earlier row either, and its first row carries its whole cumulative
+      # cost, so waking up would add the entire session to the hourly burn.
+      # See the note on window_spend in main.rs.
       total = 0; lo = ""; hi = ""
-      for (s in pv) {
+      # Sorted, so the float summation order matches the Rust build and does
+      # not depend on the hash order of either.
+      n = 0
+      for (s in pv) ids[++n] = s
+      for (i = 1; i < n; i++)
+        for (j = i + 1; j <= n; j++)
+          if (ids[j] < ids[i]) { tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp }
+      for (i = 1; i <= n; i++) {
+        s = ids[i]
         total += gain[s]
         if (lo == "" || ft[s] < lo) lo = ft[s]
         if (hi == "" || lt[s] > hi) hi = lt[s]

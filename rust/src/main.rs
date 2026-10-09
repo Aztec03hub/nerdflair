@@ -665,10 +665,43 @@ fn render_inner(input: &str) -> Result<String, String> {
             let tcap = clamp_cap(env_int("NERDFLAIR_TRANSCRIPT_TAIL_BYTES", 1_048_576));
             // Truncation is harmless here: we want the LAST usage line, and
             // cutting the head only removes older ones.
-            let (text, _cut) = ledger_tail(Path::new(&transcript), tcap);
+            let (mut text, cut) = ledger_tail(Path::new(&transcript), tcap);
+            // Unless the cap lands INSIDE the last line. A single assistant
+            // message carrying a large tool result can exceed a megabyte on
+            // its own; the partial first line is then dropped and the tail
+            // holds no usage object at all, so the gauge reads 0% on a
+            // session that is nearly full. Widen once rather than creep: the
+            // clamp bounds it, and the cost is paid only in the case that
+            // would otherwise be wrong.
+            if cut && !text.contains("\"usage\"") {
+                let wider = clamp_cap((tcap as i64).saturating_mul(16));
+                if wider > tcap {
+                    text = ledger_tail(Path::new(&transcript), wider).0;
+                }
+            }
             {
-                if let Some(line) = text.lines().filter(|l| l.contains("\"usage\"")).next_back() {
-                    if let Ok(v) = serde_json::from_str::<Value>(line) {
+                // The NEWEST usage line that parses, not simply the newest.
+                // The file is being appended to while we read it, so the
+                // final line is routinely a fragment, and taking it blind
+                // made a live session flicker to 0% whenever the read landed
+                // mid-write. Bounded, so a corrupt tail cannot turn this into
+                // a scan of every line.
+                if let Some(v) = text
+                    .lines()
+                    .filter(|l| l.contains("\"usage\""))
+                    .rev()
+                    .take(USAGE_SCAN)
+                    .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                    // Parsing is not enough: a line can carry the word while
+                    // holding no usage object, and stopping at the first one
+                    // that merely parses would skip the real figure below it.
+                    .find(|v| {
+                        jqx::path(v, &["message", "usage"])
+                            .map(|u| !u.is_null())
+                            .unwrap_or(false)
+                    })
+                {
+                    {
                         if let Ok(u) = jqx::path(&v, &["message", "usage"]) {
                             if !u.is_null() {
                                 let g = |k: &str| -> i64 {
@@ -2683,6 +2716,12 @@ fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
 /// machine down on 2026-10-08, and the same mistake is available here.
 /// A byte cap that cannot be turned into "no cap". `env_int` yields i64, and
 /// casting a negative straight to u64 wraps to u64::MAX.
+/// How far back to look for a usage line that parses. One covers the common
+/// case (the newest line is a fragment because the file is being appended to
+/// as we read); the rest is slack for a torn write, bounded so a corrupt tail
+/// cannot turn the render path into a scan.
+const USAGE_SCAN: usize = 5;
+
 fn clamp_cap(v: i64) -> u64 {
     v.clamp(4096, 64 * 1024 * 1024) as u64
 }
@@ -2763,9 +2802,21 @@ fn ledger_tail(path: &Path, cap: u64) -> (String, bool) {
 /// not matter here.
 ///
 /// A session whose first sample falls inside the window contributes only from
-/// that sample onward, so spend before it (at most one sampling interval,
-/// ~60s) is not counted. The span is returned so a caller can refuse to divide
-/// by a window it has barely any samples for.
+/// that sample onward, so spend before it is not counted. The figure is a
+/// LOWER BOUND, deliberately.
+///
+/// Counting that first value instead was tried and reverted. The rule would
+/// have to be "a session with no row before the window began inside it", and
+/// that is false for the common case of a session resuming after an idle
+/// hour: it has no row in the window either, and its first row carries its
+/// whole cumulative cost, so a $200 session would add $200 to the hourly
+/// burn the moment it woke up. tests/burn-block-golden.sh case 8 catches it,
+/// because the inflated total collides exactly with the figure its
+/// regression guard already forbids. Undercounting by at most one sampling
+/// interval is the right trade against overstating by a whole session.
+///
+/// The span is returned so a caller can refuse to divide by a window it has
+/// barely any samples for.
 /// Returns (spend, span, oldest sample, newest sample). The last two let a
 /// caller tell a window it actually COVERS from one it merely sampled the
 /// recent end of, and a live rate from a stale one.
@@ -2812,7 +2863,12 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64, i6
     let mut total = 0.0;
     let mut lo = i64::MAX;
     let mut hi = i64::MIN;
-    for (gained, _prev, ft, lt) in m.values() {
+    // Sorted, so the float summation order does not depend on HashMap
+    // iteration order and cannot differ between runs or from awk's.
+    let mut sids: Vec<&&str> = m.keys().collect();
+    sids.sort_unstable();
+    for sid in sids {
+        let (gained, _prev, ft, lt) = &m[*sid];
         total += gained;
         if *ft < lo {
             lo = *ft;

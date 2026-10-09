@@ -34,26 +34,31 @@ Line refs: main.rs = rust/src/main.rs, sh = scripts/statusline.sh.
 - Where: main.rs:662-665, sh:664-670.
 - 5a. A last assistant line longer than the cap: the seek lands inside it, the first-line drop removes the rest, no "usage" line remains, context gauge shows 0%. Fix: if no match and the read started past byte 0, retry at 4x the cap up to a hard ceiling (16 MB), or scan backwards in chunks.
 - 5b. The last line may be mid-append and unterminated; both fail JSON parse and show 0%. Fix: drop the final segment when the text does not end in `\n`, or keep the last line that parses.
+- **Status 2026-10-09: FIXED in both.** 5a widens the read 16x once (clamped at 64 MiB) when the tail was cut and holds no `"usage"`. 5b takes the newest line that parses AND carries a usage object, bounded at five lines back. Covered by `tests/transcript-tail.sh`, which asserts VALUES rather than parity: the difftest corpus contains neither shape, and both implementations agreed on 0% because both were wrong the same way. That test was run against the pre-fix build and fails exactly these two cases there.
 
 ### F6. Low: negative tail-byte env var reads whole file in Rust
 - Where: main.rs:1206, 662. `env_int(...) as u64` turns -1 into u64::MAX, start = 0, whole file streamed (the unbounded read this change removes). Bash `tail -c -1` differs.
 - Fix: clamp to 1..=64 MiB in both.
+- **Status: ALREADY FIXED** (verified 2026-10-09). `clamp_cap` wraps both tail reads.
 
 ### F7. Low: newline-only ledger, Rust and bash disagree
 - Where: main.rs:1283 vs sh:1600. Bash `$(...)` strips trailing newlines so segment skipped; Rust keeps "\n" and renders idle.
 - Fix: test `!ledger.trim_end_matches('\n').is_empty()` in Rust.
+- **Status: ALREADY FIXED** (verified 2026-10-09), at main.rs:1240 and 1311.
 
 ### F8. Low: new session opening spend undercounted
 - Where: main.rs:2522, sh:1521. First in-window row is the baseline; v <= 0 rows dropped.
 - Fix (optional): if the tail provably reaches before `since`, treat a session with no earlier row as starting at 0. Otherwise document as a lower bound.
+- **Status 2026-10-09: the optional fix was IMPLEMENTED, then REVERTED as unsafe; documented as a lower bound instead.** The rule "no row before the window means the session began inside it" is false for the common case of a session resuming after an idle hour: it has no row in the window either, and its first row carries its whole cumulative cost, so waking a $200 session would add $200 to the hourly burn. `tests/burn-block-golden.sh` case 8 caught it, because the inflated total collided exactly with the figure its own regression guard forbids. Undercounting by at most one sampling interval is the right trade against overstating by a whole session, and `window_spend` now says so in both files.
 
 ### F9. Low: BURN_MIN_SPAN <= 0, Rust and bash disagree
 - Where: main.rs:1226-1229, sh:1555. Span 0 with spent > 0: Rust divides by 0.0 and prints garbage; bash awk errors and falls to lifetime average.
 - Fix: require span > 0 in both.
+- **Status: ALREADY FIXED** (verified 2026-10-09), main.rs:1253 and sh:1678.
 
 ### Nits
-- Fractional epochs: Rust truncates before compare, awk compares as float. Ledger writes integers, so unreachable in practice. Fix: truncate in awk too (`int($1)`).
-- Float summation order differs (HashMap vs awk for-in). Fix: sort by session id before summing in both.
+- Fractional epochs: Rust truncates before compare, awk compares as float. Ledger writes integers, so unreachable in practice. Fix: truncate in awk too (`int($1)`). **FIXED 2026-10-09.**
+- Float summation order differs (HashMap vs awk for-in). Fix: sort by session id before summing in both. **FIXED 2026-10-09**, in `window_spend` in both files, so the total cannot depend on hash order.
 - Tiny positive total prints $0.00 instead of idle (both agree). Fix: test the rounded value.
 
 ## Categories with no finding
