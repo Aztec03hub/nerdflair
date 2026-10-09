@@ -165,11 +165,16 @@ census_global() {
 # Only zombies this test is responsible for. Other tooling on this machine
 # leaves its own behind, and failing on those would make the result depend on
 # whatever else is running.
+# Prints the PIDs, not a count, because identity is the whole point. A count
+# cannot tell "one child nobody reaped" from "a different transient each time",
+# and the workers fork a pipeline continuously, so transients are constant and
+# land in consecutive samples by chance alone. Counting them made this check
+# fail on healthy runs while still being unable to prove the thing it claims.
 our_zombies() {
   local ours
   ours=$(printf '%s|' "${WORKER_PIDS[@]}"); ours="${ours%|}"
-  ps -eo stat,ppid --no-headers 2>/dev/null \
-    | awk -v re="^(${ours})$" '$1 ~ /^Z/ && $2 ~ re {n++} END {print n+0}'
+  ps -eo stat,ppid,pid --no-headers 2>/dev/null \
+    | awk -v re="^(${ours})$" '$1 ~ /^Z/ && $2 ~ re { print $3 }'
 }
 
 max_n=0; max_rss_mb=0; max_zomb=0; samples=0; zomb_run=0; zomb_run_max=0

@@ -196,9 +196,33 @@ const SEG_MIN = 6
 // narrow enough that revealing one does not displace the whole row.
 const CARD_W = 68
 
-function budget(texts: string[], sep: number): string[] {
+// Card height, and the number of rows the band RESERVES above its segments so
+// a card has somewhere to paint.
+//
+// This is the whole trick, and it is forced by how the engine clips. An
+// absolutely positioned Box is "clipped, pointer and paint, by the region its
+// site is in (viewport, pane, band)". The band is our site, so a card placed
+// above the segment row is cut away unless the band itself is that tall: that
+// is why the first attempt drew a bordered box with no body. Growing the card
+// in flow fixed the clipping and bought a shift of the whole screen instead,
+// which is worse.
+//
+// Reserving the rows gives an absolute card room INSIDE the region, and
+// absolute means "no room among its siblings, painted over those before it",
+// so revealing one moves nothing at all. The cost is CARD_H quiet rows above
+// the band, always. That is the trade, and it is the only one available: a
+// true overlay across the transcript is not, since Pane docks or sits inline
+// rather than floating.
+//
+// Keep CARD_H and the lines a card draws in step: 2 border rows plus the
+// title plus CARD_LINES of body.
+const CARD_LINES = 3
+const CARD_H = CARD_LINES + 3
+
+function budget(texts: string[], sep: number, fixed = 0): string[] {
   const out = [...texts]
-  const width = () => out.reduce((n, t) => n + t.length, 0) + sep * Math.max(0, out.length - 1)
+  const width = () =>
+    fixed + out.reduce((n, t) => n + t.length, 0) + sep * Math.max(0, out.length - 1)
   // Each pass shortens only the current longest, so the result does not depend
   // on segment order and no segment is cut while a longer one is left alone.
   while (width() > BAND_MAX) {
@@ -216,6 +240,18 @@ function budget(texts: string[], sep: number): string[] {
     out[i] = cur.slice(0, cur.length - 1)
   }
   return out.map((t, i) => (t.length < (texts[i]?.length ?? 0) ? t.slice(0, -1) + '…' : t))
+}
+
+// A card's body: the full value first when the row clipped it, then as much
+// explanation as the reserved rows hold. Capped, never grown, because the card
+// is a fixed height and overflow would spill outside the box.
+function body(
+  card: { lines: string[] },
+  full: string,
+  drawn: string,
+): string[] {
+  const lead = drawn !== full ? [full] : []
+  return [...lead, ...card.lines].slice(0, CARD_LINES)
 }
 
 function ago(ms: number): string {
@@ -392,20 +428,32 @@ export const register: Register = on => {
     // ordinary segment. One list from here on, so the chip and the segments
     // cannot disagree about who is charged against the width budget.
     const segs = cache.segs.filter(s => s.id !== 'remote_control')
+    // The chip is NOT in the budget. It was, and the budget duly clipped it to
+    // "RC …", which throws away the one thing it exists to say. A state
+    // indicator that can be shortened into ambiguity is worse than no
+    // indicator, so it is charged against the budget as a fixed cost and the
+    // other segments share what is left.
     const rcText = `${rc.glyph} RC ${rc.label}`
-    const shown = budget([rcText, ...segs.map(s => plain(s.text))], SEP.length)
+    const shown = budget(segs.map(s => plain(s.text)), SEP.length, rcText.length + SEP.length)
 
     return (
       <Box flexDirection="column">
+        {/* The reserved overlay space: always present, and the reason a card
+            can paint above the row without moving it. Each row holds a space
+            rather than being an empty Box, because a Box with a height and no
+            content collapses and the reservation silently does nothing. */}
+        {Array.from({ length: CARD_H }, (_, j) => (
+          <Text key={`pad${j}`}> </Text>
+        ))}
         <Box>
-          <Box key="seg-rc" flexDirection="column">
+          <Box key="seg-rc">
             <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
-              {shown[0]}
+              {rcText}
             </Text>
-            {/* Grows downward, for the reason spelled out on the segment
-                cards below: the absolute negative-top version laid its body
-                outside the renderable region and drew an empty border. */}
             <Box
+              position="absolute"
+              top={-CARD_H}
+              left={0}
               display="none"
               hover={{ display: 'flex' }}
               flexDirection="column"
@@ -413,11 +461,13 @@ export const register: Register = on => {
               borderColor={rc.color}
               paddingX={1}
               width={CARD_W}
+              height={CARD_H}
             >
               <Text color={rc.color} bold>
                 Remote Control
               </Text>
-              {rcCard.map((l, j) => (
+              {/* Capped to the reserved rows, same as every other card. */}
+              {rcCard.slice(0, CARD_LINES).map((l, j) => (
                 <Text key={`rc${j}`} color={DIM}>
                   {l}
                 </Text>
@@ -434,51 +484,39 @@ export const register: Register = on => {
             // hovered itself while hidden, and no hover event reaches the
             // plugin, so this nesting is the only mechanism available.
             //
-            // It is NOT absolutely positioned with a negative `top` any more.
-            // That was an attempt to paint the card over the rows above
-            // without reflow, and measured on 2026-10-08 it put the card's
-            // body above the renderable region: the text was clipped away
-            // entirely and only the border edges that happened to land on the
-            // band row survived, painting over the segment's own text. A
-            // bordered box with nothing in it, which is exactly what the
-            // screenshots showed on every wide segment.
-            //
-            // So the card grows the band DOWNWARD instead. Reflow is the
-            // price, and it is the right trade: a card that pushes the line
-            // down is readable, and one painted off-screen is not.
+            // Absolute, into the reserved rows above: out of the flow, so it
+            // takes no room among its siblings and paints over what is
+            // already there. Revealing it moves NOTHING, which is the point.
             return (
-              <Box key={`seg-${s.id}`} flexDirection="column">
-                <Box>
-                  {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
-                  <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
-                    {shown[i + 1]}
-                  </Text>
-                </Box>
+              <Box key={`seg-${s.id}`}>
+                {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
+                <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
+                  {shown[i]}
+                </Text>
                 {card ? (
                   <Box
+                    position="absolute"
+                    top={-CARD_H}
+                    left={0}
                     display="none"
                     hover={{ display: 'flex' }}
                     flexDirection="column"
                     borderStyle="round"
                     borderColor={color}
                     paddingX={1}
-                    // Fixed width, because an in-flow card widens its
-                    // segment's box and shoves every segment to its right.
-                    // Bounded and identical for every card, so the shove is
-                    // predictable instead of varying with the longest line.
                     width={CARD_W}
+                    height={CARD_H}
                   >
                     <Text color={color} bold>
                       {card.title}
                     </Text>
-                    {/* The full value first, whenever the row had to cut it.
-                        Without this the clipped text would be unrecoverable,
-                        and hover would explain a number you cannot read. */}
-                    {shown[i + 1] !== plain(s.text) ? (
-                      <Text color={color}>{plain(s.text)}</Text>
-                    ) : null}
-                    {card.lines.map((l, j) => (
-                      <Text key={`l${j}`} color={DIM}>
+                    {/* The full value leads whenever the row had to cut it,
+                        or hover would explain a number you cannot read. The
+                        body is then capped to the reserved rows: the card has
+                        a FIXED height now, so anything longer would spill out
+                        of the box rather than enlarge it. */}
+                    {body(card, plain(s.text), shown[i] ?? '').map((l, j) => (
+                      <Text key={`l${j}`} color={j === 0 && l === plain(s.text) ? color : DIM}>
                         {l}
                       </Text>
                     ))}
