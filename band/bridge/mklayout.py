@@ -274,7 +274,7 @@ def cards_check():
     import glob
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
-    env = dict(os.environ, NERDFLAIR_CCUSAGE="0", COLUMNS="250", TMUX="x,1,0")
+    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0")
     seen, misses, rows = set(), {}, 0
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:

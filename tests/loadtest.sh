@@ -16,7 +16,6 @@
 #   ./loadtest.sh                       20 workers, 600s
 #   ./loadtest.sh --workers 30 --secs 120
 #   ./loadtest.sh --bin /path/to/nerdflair-statusline
-#   ./loadtest.sh --ccusage             re-enable the bridge (expected to FAIL)
 #
 # Pass criteria. Each is written to catch the 2026-10-08 failure specifically,
 # and NOT to catch the harness working as intended:
@@ -62,7 +61,6 @@ BIN="$REPO_ROOT/rust/target/release/nerdflair-statusline"
 WORKERS=20
 SECS=600
 RSS_CAP_MB=1500
-WITH_CCUSAGE=0
 WITH_MCP=0
 ORPHAN_GRACE=10
 PROVE_ZOMBIE=0
@@ -79,7 +77,6 @@ while (( $# )); do
     --rss-cap-mb) RSS_CAP_MB="$2"; shift 2 ;;
     --hammer) PACE=0; shift ;;
     --pace) PACE="$2"; shift 2 ;;
-    --ccusage) WITH_CCUSAGE=1; shift ;;
     --mcp) WITH_MCP=1; shift ;;
     # Plant an unreaped child, so the zombie criterion must FAIL. The way to
     # find out whether that check still works.
@@ -112,7 +109,6 @@ mk_payload() {
 JSON
 }
 
-export NERDFLAIR_CCUSAGE=$WITH_CCUSAGE
 # Off by default: the probe shells out to `claude mcp list`, which starts
 # every configured MCP server. A load test must not drive the real ones, and
 # leaving it unset meant it silently did. --mcp exercises that path on
@@ -123,8 +119,8 @@ export NERDFLAIR_MCP_HEALTH=${WITH_MCP:-0}
 export NERDFLAIR_REPO_COST_FILE="$RUN_DIR/usage.tsv"
 
 printf 'loadtest: %s\n' "$BIN"
-printf '  workers=%s secs=%s pace=%ss ccusage=%s rss_cap=%sMB\n' \
-  "$WORKERS" "$SECS" "$PACE" "$WITH_CCUSAGE" "$RSS_CAP_MB"
+printf '  workers=%s secs=%s pace=%ss rss_cap=%sMB\n' \
+  "$WORKERS" "$SECS" "$PACE" "$RSS_CAP_MB"
 printf '  run dir: %s\n\n' "$RUN_DIR"
 
 load_start=$(awk '{print $1}' /proc/loadavg)
@@ -328,7 +324,7 @@ chk "peak helper RSS (MB)" "$max_rss_mb" "$RSS_CAP_MB" "$(( max_rss_mb <= RSS_CA
 chk "samples one zombie survived" "$max_zomb_run" 1 "$(( max_zomb_run <= 1 ))"
 (( max_zomb_run > 1 )) && printf '        unreaped pids:%s\n' "$stuck_pids"
 chk "orphans after workers killed" "$orphans" 0 "$(( orphans == 0 ))"
-chk "young ccusage runs left alive" "$(census_global "$SECS")" 0 "$(( $(census_global "$SECS") == 0 ))"
+chk "no ccusage run is ever started (it is gone)" "$(census_global "$SECS")" 0 "$(( $(census_global "$SECS") == 0 ))"
 # Reported, not judged: see the header on why a trend is the wrong statistic
 # for a bimodal instantaneous count.
 third=$(( samples / 3 ))

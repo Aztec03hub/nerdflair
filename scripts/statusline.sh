@@ -1129,88 +1129,14 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
   _justified_row "$ROW_WIDTH" "$row1_left" "$row1_right"
 fi
 
-# ── ccusage bridge (stale-while-revalidate) ──────────────────────
-# MEASURED on this machine, not assumed:
-#   npm `ccusage` shim (Node spawns a Rust binary)  ~354ms  -- pure node startup
-#   native binary, internal cache MISS             ~1550ms  -- scans ~/.claude/projects
-#   native binary, internal cache HIT                ~1-2ms
-# A 1.5s call cannot sit in the hot path: Claude Code aborts an in-flight
-# statusline when the next trigger fires, so a slow script renders NOTHING.
-# So ccusage is never called synchronously. We print whatever is cached and,
-# when stale, fork a detached refresh whose result lands for a later render.
-# A cold cache simply shows nothing, consistent with nerdflair hiding absent data.
-#
-# Opt out with NERDFLAIR_CCUSAGE=0. Override the binary with NERDFLAIR_CCUSAGE_BIN.
-_CCUSAGE_TTL=${NERDFLAIR_CCUSAGE_TTL:-60}
-_ccusage_line=""
-
-# Prefer ccusage's per-platform Rust binary over the npm shim: the shim's only
-# job is to spawn it, and that costs a whole `node` startup we can skip.
-_CCUSAGE_BIN=""
-if [[ -n "${NERDFLAIR_CCUSAGE_BIN:-}" && -x "${NERDFLAIR_CCUSAGE_BIN}" ]]; then
-  _CCUSAGE_BIN="$NERDFLAIR_CCUSAGE_BIN"
-elif command -v ccusage &>/dev/null; then
-  _cu_root="$(dirname "$(readlink -f "$(command -v ccusage)")")/.."
-  for _cu_plat in linux-x64 linux-arm64 darwin-arm64 darwin-x64; do
-    _cu_try="$_cu_root/node_modules/@ccusage/ccusage-$_cu_plat/bin/ccusage"
-    [[ -x "$_cu_try" ]] && { _CCUSAGE_BIN="$_cu_try"; break; }
-  done
-  [[ -z "$_CCUSAGE_BIN" ]] && _CCUSAGE_BIN="$(command -v ccusage)"
-fi
-
-# DEFAULT OFF since 2026-10-08. This bridge took down the machine: 22
-# concurrent ccusage runs, ~46 GB RSS, load ~240, WSL out of memory and swap.
-#
-# The design below assumed the "1.5s ccusage" named in the comment further
-# down, which is what it measured when it was written. It is not a 1.5s job
-# any more: ccusage re-walks every transcript under ~/.claude/projects on
-# EVERY invocation, and that corpus has grown to 9.6 GB across 8,910 .jsonl
-# files (largest 617 MB). Measured 2026-10-08: 12.5s wall and 290 MB RSS per
-# run, warm or cold, because ccusage's own --cache does not prevent the walk.
-#
-# That turned the stale-lock breaker into an amplifier. A run slower than the
-# 120s breaker gets a second runner spawned on top of it; two runners are
-# slower still, so a third follows, and the pile grows without bound. It is
-# bistable: fine until the machine is busy, unrecoverable after.
-#
-# Set NERDFLAIR_CCUSAGE=1 to re-enable. It is now bounded even then: a hard
-# timeout shorter than the breaker, so a wedged run dies before it is doubled.
-if [[ "${NERDFLAIR_CCUSAGE:-0}" == "1" && -n "$_CCUSAGE_BIN" ]]; then
-  _CU_KILL=${NERDFLAIR_CCUSAGE_TIMEOUT:-45}
-  _cu_cache="/tmp/nerdflair-ccusage-${UID}"
-  _cu_lock="${_cu_cache}.lock"
-  _cu_fresh=false
-  if [[ -f "$_cu_cache" ]]; then
-    _cu_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_cu_cache" 2>/dev/null || stat -f %m "$_cu_cache" 2>/dev/null || echo 0) ))
-    (( _cu_age < _CCUSAGE_TTL )) && _cu_fresh=true
-    _ccusage_line=$(cat "$_cu_cache" 2>/dev/null || true)
-  fi
-  # A leftover DIRECTORY from the previous mkdir-lock scheme would make the
-  # job's `9>>` redirect fail forever. rmdir only succeeds on an empty one.
-  [[ -d "$_cu_lock" ]] && rmdir "$_cu_lock" 2>/dev/null || true
-  # flock held by the JOB, not a mkdir lock with a stale-breaker. A breaker
-  # shorter than the job it guards does not recover the lock, it ADDS a runner
-  # every time it fires, which is exactly what took the machine down on
-  # 2026-10-08. The kernel releases a flock when its holder dies, so there is
-  # no stale state and no breaker to get wrong. The hard timeout stays: it
-  # bounds a job that merely runs long rather than dying.
-  #
-  # The lock is taken INSIDE the subshell, which outlives this render. A flock
-  # belongs to the open file description, so one taken out here would be
-  # released microseconds later when the render exits, protecting nothing.
-  if [[ "$_cu_fresh" == "false" ]]; then
-    (
-      exec 9>>"$_cu_lock" 2>/dev/null || exit 0
-      flock -n 9 || exit 0
-      printf '%s' "$input" | timeout -k 5 "$_CU_KILL" "$_CCUSAGE_BIN" statusline --refresh-interval "$_CCUSAGE_TTL" \
-        > "${_cu_cache}.tmp" 2>/dev/null && mv -f "${_cu_cache}.tmp" "$_cu_cache"
-    ) &>/dev/null &
-    disown 2>/dev/null || true
-  fi
-fi
+# ccusage is gone. Burn rate and billing block come from our own ledger below;
+# the cross-check that used to need it is tests/validate-ledger.sh, which prices
+# the transcripts by hand. (An opt-in ccusage bridge took the machine down on
+# 2026-10-08, 22 runners and ~46 GB, and was kept off by default until it
+# could be deleted; it has been.)
 
 # ── Cost per repo across sessions ────────────────────────────────
-# The one thing ccusage genuinely cannot answer: "what has THIS repo cost me,
+# What has THIS repo cost me,
 # across every session I have ever run in it". Deliberately a TSV, not SQLite:
 # 19 concurrent claude processes against one SQLite file measured a worst case
 # of 850ms, against a render budget of ~50ms. An append is atomic under
@@ -1392,7 +1318,7 @@ fi
 
 # ── MCP health (stale-while-revalidate) ──────────────────────────
 # `claude mcp list` actually probes every server, measured at ~1937 ms here, so
-# it can never be synchronous. Same contract as the ccusage bridge: render the
+# it can never be synchronous. Same contract as the other background jobs: render the
 # cached verdict, fork a detached refresh when stale. TTL is long because MCP
 # connectivity changes on the timescale of an auth expiring, not a render.
 #
@@ -1714,10 +1640,7 @@ _window_spend() {  # $1=since $2=now -> "<spent> <span> <oldest> <newest>"
 printf -v burn_icon '\xf3\xb0\x88\xb8'   # U+F0238 md-fire
 burn_segment=""
 _burn_val=""
-if [[ -n "$_ccusage_line" ]]; then
-  [[ "$_ccusage_line" =~ \$([0-9]+\.[0-9]+)/hr ]] && _burn_val="${BASH_REMATCH[1]}"
-fi
-if [[ -z "$_burn_val" && -n "$_ledger" ]]; then
+if [[ -n "$_ledger" ]]; then
   _bw=${NERDFLAIR_BURN_WINDOW:-3600}
   _bmin=${NERDFLAIR_BURN_MIN_SPAN:-600}
   # Two sampling intervals. Past that the newest sample is not evidence of
@@ -1746,37 +1669,15 @@ if [[ -n "$_burn_val" && "$_burn_val" != 0 && "$_burn_val" != 0.00 ]]; then
   burn_segment="${_burn_color}${burn_icon} \$${_burn_val}/h${RESET}"
 fi
 
-# ── ccusage billing block: cost + time left in the 5-hour window ─
+# ── Billing block: spend in the 5-hour rate-limit window ─────────
 printf -v block_icon '\xef\x82\x94'       # U+F094 moon-o / block marker
 block_segment=""
-if [[ -n "$_ccusage_line" ]]; then
-  _blk_cost=""; _blk_left=""
-  # ccusage renders "$55.75 block (4h 3m left)", but the cost can be a bare
-  # integer, the remaining time can be minutes-only or seconds-only, and when
-  # the 5-hour window has lapsed it says "No active block" with no figures at
-  # all. The old pattern demanded a decimal cost AND an "Xm left" clause, so
-  # any of those shapes silently hid the whole segment.
-  if [[ "$_ccusage_line" =~ (\$[0-9]+(\.[0-9]+)?)[[:space:]]+block ]]; then
-    _blk_cost="${BASH_REMATCH[1]}"
-  fi
-  if [[ "$_ccusage_line" =~ \(([0-9]+h[[:space:]]*)?([0-9]+m[[:space:]]*)?([0-9]+s[[:space:]]*)?left\) ]]; then
-    _blk_left="${BASH_REMATCH[1]// /}${BASH_REMATCH[2]// /}${BASH_REMATCH[3]// /}"
-  fi
-  if [[ -n "$_blk_cost" ]]; then
-    block_segment="${MAUVE}${block_icon} ${_blk_cost}${RESET}"
-    [[ -n "$_blk_left" ]] && block_segment+="${DIM} ${_blk_left}${RESET}"
-  elif [[ "$_ccusage_line" == *"No active block"* ]]; then
-    # Say so rather than vanishing: an absent segment is indistinguishable from
-    # a broken one, and "no block open" is a real, useful state.
-    block_segment="${DIM}${block_icon} idle${RESET}"
-  fi
-fi
 # Spend inside the CURRENT five-hour rate-limit window, from our own ledger.
 # The window is the payload's own rate_limits.five_hour.resets_at less five
 # hours, so this is pinned to the block Anthropic is actually metering rather
 # than to a guess of our own. Without that field there is no block to report,
 # and a made-up window would be worse than none.
-if [[ -z "$block_segment" && -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
+if [[ -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
   if (( rl_5h_reset > 0 )) 2>/dev/null; then
     _blk_start=$(( rl_5h_reset - 18000 ))
     # EPOCHSECONDS >= rl_5h_reset means the window in the payload has already

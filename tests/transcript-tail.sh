@@ -51,9 +51,9 @@ run() { # label transcript expected_pct [env assignments...]
   local label=$1 tr=$2 want=$3; shift 3
   local p a b
   p=$(payload "$tr")
-  a=$(printf '%s' "$p" | env "$@" NERDFLAIR_CCUSAGE=0 NERDFLAIR_MCP_HEALTH=0 \
+  a=$(printf '%s' "$p" | env "$@" NERDFLAIR_MCP_HEALTH=0 \
         NERDFLAIR_REPO_COST_FILE="$WORK/usage.tsv" bash "$SH" 2>/dev/null)
-  b=$(printf '%s' "$p" | env "$@" NERDFLAIR_CCUSAGE=0 NERDFLAIR_MCP_HEALTH=0 \
+  b=$(printf '%s' "$p" | env "$@" NERDFLAIR_MCP_HEALTH=0 \
         NERDFLAIR_REPO_COST_FILE="$WORK/usage.tsv" "$BIN" 2>/dev/null)
   local got
   got=$(printf '%s' "$a" | sed 's/\x1b\[[0-9;]*m//g' | grep -o '[0-9]\+%' | head -1)

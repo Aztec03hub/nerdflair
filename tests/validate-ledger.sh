@@ -28,7 +28,7 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUST="$REPO/rust/target/release/nerdflair-statusline"
-SH="$REPO/scripts/statusline.sh"
+SH="${NF_VALIDATE_SH:-$REPO/scripts/statusline.sh}"
 LEDGER="${NERDFLAIR_REPO_COST_FILE:-$HOME/.claude/nerdflair-usage.tsv}"
 ABOVE=${ABOVE_PCT:-2}
 BELOW=${BELOW_PCT:-10}
@@ -36,11 +36,16 @@ BELOW=${BELOW_PCT:-10}
 [[ -x "$RUST" && -f "$LEDGER" ]] || { echo "validate-ledger: SKIP: need the built binary and a ledger" >&2; exit 77; }
 python3 "$REPO/tests/price-recount.py" --selfcheck >/dev/null || { echo "validate-ledger: the recount's own selfcheck failed" >&2; exit 1; }
 
+# Live sessions append to the ledger while this runs; bash and Rust must read
+# the same bytes or a 0.1 difference is drift, not a defect. Snapshot once.
+SNAP=$(mktemp "${TMPDIR:-/tmp}/nf-validate-ledger-XXXXXX")
+trap 'rm -f "$SNAP"' EXIT
+cp "$LEDGER" "$SNAP"; LEDGER="$SNAP"
 LCAP=$(( $(stat -c %s "$LEDGER") + 1048576 ))
 fail=0
 
 block_of() { # impl-cmd... ; reads payload on stdin
-  NERDFLAIR_REPO_COST_FILE="$LEDGER" NERDFLAIR_REPO_COST=0 NERDFLAIR_CCUSAGE=0 \
+  NERDFLAIR_REPO_COST_FILE="$LEDGER" NERDFLAIR_REPO_COST=0 \
     NERDFLAIR_LEDGER_TAIL_BYTES="$LCAP" COLUMNS=400 timeout 60 "$@" 2>/dev/null \
     | sed 's/\x1b\[[0-9;]*m//g' | grep -oE $'\xef\x82\x94 \\$[0-9]+\\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | tail -1
 }

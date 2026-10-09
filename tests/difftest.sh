@@ -357,9 +357,8 @@ run_side() {
       printf '%s\tprior-session-b\t%s\t1.10\n' "$((b+120))" "${pdir##*/}"; } >> "$rc_file"
   fi
 
-  # ── PATH stubs: PATH never reaches the real claude/ccusage/tmux ─────────
+  # ── PATH stubs: PATH never reaches the real claude/tmux ─────────
   printf '#!/bin/sh\nexit 0\n' > "$sbox/bin/claude";  chmod +x "$sbox/bin/claude"
-  printf '#!/bin/sh\nexit 0\n' > "$sbox/bin/ccusage"; chmod +x "$sbox/bin/ccusage"
   printf '#!/bin/sh\nprintf %%s "%s"\n' "${CASE_SEED_TMUX:-difftest-session}" > "$sbox/bin/tmux"
   chmod +x "$sbox/bin/tmux"
 
@@ -376,11 +375,8 @@ run_side() {
   # ── seed the async caches this case asks for ────────────────────────────
   local -a extra_env=()
   if [[ -n "${CASE_SEED_CCUSAGE:-}" ]]; then
+    # ccusage is gone; a stray cache file must be ignored (regression guard).
     printf '%s' "$CASE_SEED_CCUSAGE" > "/tmp/nerdflair-ccusage-${UID}"
-    extra_env+=("NERDFLAIR_CCUSAGE=1" "NERDFLAIR_CCUSAGE_TTL=999999999"
-                "NERDFLAIR_CCUSAGE_BIN=$sbox/bin/ccusage")
-  else
-    extra_env+=("NERDFLAIR_CCUSAGE=0")
   fi
   if [[ -n "${CASE_SEED_MCPHEALTH:-}" ]]; then
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"

@@ -21,7 +21,6 @@ json.dump(d,open(p,"w"),indent=2)
 PY
 
 mkdir -p "$FIX/bin"
-printf '#!/bin/sh\nexit 0\n' > "$FIX/bin/ccusage"; chmod +x "$FIX/bin/ccusage"
 UIDN=$(id -u)
 # Frozen async caches: fresh forever, so neither renderer forks a refresh.
 printf '%s' 'Claude Code: $12.34 block (2h 15m left) | $8.50/hr' > "/tmp/nerdflair-ccusage-${UIDN}"
@@ -106,7 +105,6 @@ for pj in "$PDIR"/*.json; do
     "HOME=$FIX/home"
     "PATH=$FIX/bin:$PATH"
     "COLUMNS=120"
-    "NERDFLAIR_CCUSAGE_TTL=999999"
     "NERDFLAIR_MCP_HEALTH_TTL=999999"
     "NERDFLAIR_REPO_COST_FILE=$FIX/usage.live.tsv"
     "TERM=xterm-256color"

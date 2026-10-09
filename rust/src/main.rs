@@ -1106,72 +1106,11 @@ fn render_inner(input: &str) -> Result<String, String> {
         out.push_str(&justified_row(row_width, &row1_left, &row1_right));
     }
 
-    // ── ccusage bridge ───────────────────────────────────────────
-    let ccusage_ttl: i64 = env_int("NERDFLAIR_CCUSAGE_TTL", 60);
-    let mut ccusage_line = String::new();
-    let ccusage_bin = resolve_ccusage_bin();
-    // DEFAULT OFF since 2026-10-08. This bridge took down the machine: 22
-    // concurrent ccusage runs, ~46 GB RSS, load ~240, WSL out of memory and
-    // swap.
-    //
-    // The design assumed the "1.5s ccusage" the bash comment names, which is
-    // what it measured when it was written. It is not a 1.5s job any more:
-    // ccusage re-walks every transcript under ~/.claude/projects on EVERY
-    // invocation, and that corpus has grown to 9.6 GB across 8,910 .jsonl
-    // files (largest 617 MB). Measured 2026-10-08: 12.5s wall and 290 MB RSS
-    // per run, warm or cold, because ccusage's own --cache does not prevent
-    // the walk.
-    //
-    // That turned the stale-lock breaker into an amplifier. A run slower than
-    // the 120s breaker gets a second runner spawned on top of it; two runners
-    // are slower still, so a third follows, and the pile grows without bound.
-    // It is bistable: fine until the machine is busy, unrecoverable after.
-    //
-    // Set NERDFLAIR_CCUSAGE=1 to re-enable. It is bounded even then: a hard
-    // timeout shorter than the breaker, so a wedged run dies before doubling.
-    let cu_kill = env_int("NERDFLAIR_CCUSAGE_TIMEOUT", 45);
-    if std::env::var("NERDFLAIR_CCUSAGE").unwrap_or_else(|_| "0".into()) == "1" {
-        if let Some(binp) = &ccusage_bin {
-            let cache = PathBuf::from(format!("/tmp/nerdflair-ccusage-{}", uid));
-            let lock = PathBuf::from(format!("{}.lock", cache.display()));
-            let mut fresh = false;
-            if cache.is_file() {
-                if file_age(&cache) < ccusage_ttl {
-                    fresh = true;
-                }
-                ccusage_line = std::fs::read_to_string(&cache).unwrap_or_default();
-            }
-            // A leftover DIRECTORY from the previous mkdir-lock scheme would
-            // make the job's `9>>` redirect fail forever.
-            if lock.is_dir() {
-                let _ = std::fs::remove_dir(&lock);
-            }
-            // flock held by the JOB, not a mkdir lock with a stale-breaker. A
-            // breaker shorter than the job it guards does not recover the
-            // lock, it ADDS a runner every time it fires, which is exactly
-            // what took the machine down on 2026-10-08. The kernel releases a
-            // flock when its holder dies, so there is no stale state and no
-            // breaker to get wrong. The hard timeout stays: it bounds a job
-            // that merely runs long rather than dying.
-            //
-            // Taken inside the spawned job, which outlives this render: a
-            // flock belongs to the open file description, so one taken here
-            // would be released microseconds later and protect nothing.
-            if !fresh {
-                let script = format!(
-                    "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-                     timeout -k 5 {kill} {bin} statusline --refresh-interval {ttl} > {cache}.tmp 2>/dev/null \
-                     && mv -f {cache}.tmp {cache}",
-                    lock = shq(&lock.to_string_lossy()),
-                    kill = cu_kill,
-                    bin = shq(&binp.to_string_lossy()),
-                    ttl = ccusage_ttl,
-                    cache = shq_bare(&cache.to_string_lossy()),
-                );
-                proc::spawn_detached(&script, Some(input));
-            }
-        }
-    }
+    // ccusage is gone. Burn rate and billing block come from our own ledger
+    // below; the cross-check that used to need it is tests/validate-ledger.sh,
+    // which prices the transcripts by hand. (An opt-in ccusage bridge took the
+    // machine down on 2026-10-08, 22 runners and ~46 GB, and was kept off by
+    // default until it could be deleted; it has been.)
 
     // ── Cost per repo ────────────────────────────────────────────
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
@@ -1274,15 +1213,10 @@ fn render_inner(input: &str) -> Result<String, String> {
 
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
-    if !ccusage_line.is_empty() {
-        if let Some(v) = scan_burn(&ccusage_line) {
-            burn_val = v;
-        }
-    }
     // A rolling rate over the last hour, which is what "burn rate" should
     // mean. Needs MIN_SPAN of samples before dividing: over a couple of
     // minutes the quotient swings wildly and reads as noise.
-    if burn_val.is_empty() && !ledger.trim_end_matches('\n').is_empty() {
+    if !ledger.trim_end_matches('\n').is_empty() {
         let win = env_int("NERDFLAIR_BURN_WINDOW", 3600);
         let min_span = env_int("NERDFLAIR_BURN_MIN_SPAN", 600);
         // Two sampling intervals. Past that the newest sample is not evidence
@@ -1334,26 +1268,12 @@ fn render_inner(input: &str) -> Result<String, String> {
     // guess of our own. Without that field there is no block to report, and a
     // made-up window would be worse than none.
     let mut block_segment = String::new();
-    if !ccusage_line.is_empty() {
-        if let Some(blk_cost) = scan_block_cost(&ccusage_line) {
-            block_segment = format!("{}{} {}{}", pal.mauve, BLOCK_ICON, blk_cost, RESET);
-            if let Some(left) = scan_block_left(&ccusage_line) {
-                block_segment.push_str(&format!("{} {}{}", pal.dim, left, RESET));
-            }
-        } else if ccusage_line.contains("No active block") {
-            // Say so rather than vanishing: an absent segment is
-            // indistinguishable from a broken one, and "no block open" is a
-            // real state worth showing.
-            block_segment = format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET);
-        }
-    }
     // An absent `resets_at` arrives as "", which integer arithmetic reads as
     // 0; that would put the block start in 1969 and total the whole ledger.
     // No field means no block.
     // trim_end: bash's $(...) strips trailing newlines, so a ledger of
     // nothing but newlines is empty there and must be here too.
-    if block_segment.is_empty()
-        && !ledger.trim_end_matches('\n').is_empty()
+    if !ledger.trim_end_matches('\n').is_empty()
         && !f.rl_5h_reset.is_empty()
     {
         if let Some(reset) = bash_int(&f.rl_5h_reset).filter(|r| *r > 0) {
@@ -2174,7 +2094,7 @@ fn fit_multi_branches(list: &str, target: i64) -> String {
         .join(MULTI_SEP)
 }
 
-// ── ccusage / mcp health / repo cost ─────────────────────────────
+// ── mcp health / repo cost ─────────────────────────────
 fn env_int(k: &str, default: i64) -> i64 {
     std::env::var(k)
         .ok()
@@ -2186,28 +2106,10 @@ fn env_int(k: &str, default: i64) -> i64 {
 fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
-// The bash builds `"${_cu_cache}.tmp"` by concatenation, so quoting must not
-// swallow the suffix; keep the bare form for those interpolations.
+// The bash builds paths like "${cache}.tmp" by concatenation, so quoting must
+// not swallow the suffix; keep the bare form for those interpolations.
 fn shq_bare(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn resolve_ccusage_bin() -> Option<PathBuf> {
-    if let Ok(b) = std::env::var("NERDFLAIR_CCUSAGE_BIN") {
-        if !b.is_empty() && proc::is_exec(Path::new(&b)) {
-            return Some(PathBuf::from(b));
-        }
-    }
-    let cc = proc::which("ccusage")?;
-    let real = std::fs::canonicalize(&cc).unwrap_or(cc.clone());
-    let root = real.parent()?.parent()?.to_path_buf();
-    for plat in ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"] {
-        let cand = root.join(format!("node_modules/@ccusage/ccusage-{}/bin/ccusage", plat));
-        if proc::is_exec(&cand) {
-            return Some(cand);
-        }
-    }
-    Some(cc)
 }
 
 fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
@@ -2898,78 +2800,3 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64, i6
     (total, if hi > lo { hi - lo } else { 0 }, lo, hi)
 }
 
-// ── ccusage line scanners (bash =~ equivalents) ──────────────────
-fn scan_burn(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    for i in 0..b.len() {
-        if b[i] != b'$' {
-            continue;
-        }
-        let mut j = i + 1;
-        while j < b.len() && b[j].is_ascii_digit() {
-            j += 1;
-        }
-        if j == i + 1 || j >= b.len() || b[j] != b'.' {
-            continue;
-        }
-        let mut k = j + 1;
-        while k < b.len() && b[k].is_ascii_digit() {
-            k += 1;
-        }
-        if k == j + 1 {
-            continue;
-        }
-        if s[k..].starts_with("/hr") {
-            return Some(s[i + 1..k].to_string());
-        }
-    }
-    None
-}
-
-/// `$<digits>[.<digits>] block` -- the cost can arrive as a bare integer.
-fn scan_block_cost(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    for i in 0..b.len() {
-        if b[i] != b'$' { continue; }
-        let mut j = i + 1;
-        while j < b.len() && b[j].is_ascii_digit() { j += 1; }
-        if j == i + 1 { continue; }              // "$" with no digits
-        let mut k = j;
-        if k < b.len() && b[k] == b'.' {         // optional fractional part
-            let mut m = k + 1;
-            while m < b.len() && b[m].is_ascii_digit() { m += 1; }
-            if m > k + 1 { k = m; }
-        }
-        // tolerate any run of spaces before "block"
-        let rest = &s[k..];
-        if rest.trim_start().starts_with("block") && rest.starts_with(' ') {
-            return Some(s[i..k].to_string());
-        }
-    }
-    None
-}
-
-/// `(<Xh> <Ym> <Zs> left)` -- every component optional, so "1h left",
-/// "12m left" and "45s left" all parse. The strict "Xh Ym" shape silently hid
-/// the whole segment whenever the window was under a minute or on the hour.
-fn scan_block_left(s: &str) -> Option<String> {
-    let open = s.find('(')?;
-    let close = s[open..].find(')')? + open;
-    let inner = &s[open + 1..close];
-    if !inner.trim_end().ends_with("left") { return None; }
-    let body = inner.trim_end().trim_end_matches("left").trim_end();
-    let mut outp = String::new();
-    let mut num = String::new();
-    for c in body.chars() {
-        if c.is_ascii_digit() {
-            num.push(c);
-        } else if matches!(c, 'h' | 'm' | 's') && !num.is_empty() {
-            outp.push_str(&num);
-            outp.push(c);
-            num.clear();
-        } else {
-            num.clear();
-        }
-    }
-    if outp.is_empty() { None } else { Some(outp) }
-}

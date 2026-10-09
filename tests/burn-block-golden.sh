@@ -3,7 +3,7 @@
 # burn-block-golden.sh — prove the burn-rate and billing-block ARITHMETIC
 # against hand-computed answers, with no second estimate involved.
 #
-# tests/validate-burn-block.sh cross-checks us against ccusage, but agreement
+# tests/validate-ledger.sh cross-checks us against a hand-priced recount, but agreement
 # between two estimates is corroboration, not proof: both could be wrong the
 # same way, and the tolerance there is wide enough to hide a real defect. This
 # file is the other half. It feeds a ledger whose correct answer is known by

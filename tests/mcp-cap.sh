@@ -29,7 +29,7 @@ payload='{"session_id":"mcpcap","model":{"display_name":"Opus 5","id":"claude-op
 
 render() { # impl cols [env...]
   local impl=$1 cols=$2; shift 2
-  printf '%s' "$payload" | env "$@" NERDFLAIR_CCUSAGE=0 NERDFLAIR_REPO_COST=0 \
+  printf '%s' "$payload" | env "$@" NERDFLAIR_REPO_COST=0 \
     NERDFLAIR_MCP_CACHE="$WORK/cache" COLUMNS="$cols" $impl 2>/dev/null \
     | sed 's/\x1b\[[0-9;]*m//g' | rg -F "$(printf '\xef\x87\xa6')" | head -1 | sed 's/^ *//; s/   *.*//'
 }

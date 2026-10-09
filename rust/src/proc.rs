@@ -60,28 +60,3 @@ pub fn is_exec(p: &Path) -> bool {
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
-
-/// Fork a detached background job, exactly as `( ... ) &; disown` does.
-/// Never waited on: the render must not block on it.
-pub fn spawn_detached(script: &str, stdin_data: Option<&str>) {
-    let mut c = Command::new("sh");
-    c.arg("-c")
-        .arg(script)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    match stdin_data {
-        Some(_) => {
-            c.stdin(Stdio::piped());
-        }
-        None => {
-            c.stdin(Stdio::null());
-        }
-    }
-    if let Ok(mut child) = c.spawn() {
-        if let (Some(data), Some(mut si)) = (stdin_data, child.stdin.take()) {
-            use std::io::Write;
-            let _ = si.write_all(data.as_bytes());
-        }
-        // Deliberately not waited on; the child is reparented at exit.
-    }
-}

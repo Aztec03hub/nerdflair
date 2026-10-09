@@ -46,7 +46,6 @@ for i in range(n):
     if v!="default": open(f"{out}/{name}.state","w").write(v)
     envs=[]
     if random.random()<0.6: envs.append(f"COLUMNS={random.choice([40,50,51,60,72,80,97,120,150,200])}")
-    if random.random()<0.15: envs.append("NERDFLAIR_CCUSAGE=0")
     if random.random()<0.15: envs.append("NERDFLAIR_MCP_HEALTH=0")
     if random.random()<0.15: envs.append("NERDFLAIR_REPO_COST=0")
     if random.random()<0.1: envs.append("NF_TMUX=1")
