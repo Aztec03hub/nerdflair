@@ -193,3 +193,11 @@ Checked against the source and fixed where the claim held. Findings are named as
 - **M15** the band's payload fakes the model name and API timings: it only affects what the renderer prints on the band row. OPEN, low.
 - **Low findings:** not individually triaged here; they are in the report body above.
 - **Tests that are not run:** the selfchecks are now exercised by the new e2e and exit tests, but there is still no single runner. OPEN.
+
+### Update 2026-10-09 (later)
+
+- **M6, M7 fixed:** a card is clipped to the terminal width and kept on screen vertically (`panel.py` `show`; selfcheck case).
+- **M12 fixed:** a resize calls `reset()`, which forgets the rect and saved rows without painting.
+- **M15 fixed:** the band's payload uses the real model from `$.session.model()`. The API timings are still placeholders because the plugin API does not expose them; they only affect the session-average burn fallback, which the band row does not show.
+- **M9, M10 ACCEPTED as a limitation, not fixed.** Restoring the saved rows can show a status-line value that changed while the card was up, until the engine's next repaint (it repaints on any change, so within about a second). Fixing it needs a model of the screen under the card, which is the terminal emulator this design deliberately does not write. It is stated here so it is a known edge, not a surprise.
+
