@@ -196,7 +196,13 @@ function plain(s: string): string {
 const BAND_MAX = 120
 const SEG_MIN = 6
 
-// WHY THERE IS NO FLOATING CARD, recorded so nobody tries a fourth time.
+// WHY THERE IS NO FLOATING CARD *FROM IN HERE*.
+//
+// There IS one now, and it floats over the status line with no reserved row:
+// band/bridge/nfpty.py runs Claude Code behind a pty it owns, so it sees the
+// pointer in the input stream and paints panels into the output stream. What
+// follows is why it had to be done from OUTSIDE the engine rather than here,
+// and it is all still true of a plugin.
 //
 // Three overlay designs were built and each died on a different engine rule,
 // two of them read out of the 2.1.295 binary rather than guessed:
@@ -219,10 +225,12 @@ const SEG_MIN = 6
 //  3. In flow. Renders perfectly and shoves the entire screen down, which is
 //     the one outcome Phil ruled out by name.
 //
-// What works is the engine's own documented pattern: a hover GROUP, whose
-// members light together "in any site on the surface", swapping an entry into
-// a fixed row of the band. The detail then does not need to live inside the
-// hovered element, which is the constraint every design above was fighting.
+// What works INSIDE the engine is its own documented pattern: a hover GROUP,
+// whose members light together "in any site on the surface", swapping an
+// entry into a fixed row of the band. The detail then does not need to live
+// inside the hovered element, which is the constraint every design above was
+// fighting. It costs a permanently reserved row, which is why the real
+// floating panel ended up outside the engine instead.
 
 function budget(texts: string[], sep: number, fixed = 0): string[] {
   const out = [...texts]
@@ -438,11 +446,18 @@ export const register: Register = on => {
     // session and finding the popup's title and 105 border cells in the
     // client's pty stream.
     //
-    // It has to be a click rather than a hover, and that is not a preference.
-    // No hover event ever crosses to a plugin: the engine puts the terminal
-    // in mouse mode 1003 and consumes motion itself, so neither this code nor
-    // tmux ever learns the pointer moved. `ui.press` IS delivered, so a press
-    // is the only moment we can act on.
+    // It has to be a click rather than a hover IN HERE, and that is not a
+    // preference. No hover event ever crosses to a plugin: the engine puts
+    // the terminal in mouse mode 1003 and consumes motion itself, so this
+    // code never learns the pointer moved. `ui.press` IS delivered, so a
+    // press is the only moment a plugin can act on.
+    //
+    // The pointer CAN be had from outside the process, and the hover panels
+    // in band/bridge/nfpty.py do exactly that: it holds the pty, so motion
+    // reaches it before the engine, and it forwards every byte unchanged so
+    // the engine's own highlighting is untouched. Routes that look easier
+    // and are not, each closed by a measurement rather than a guess, are in
+    // band/bridge/inspector-lab/README.md.
     //
     // `plain` draws "the label alone", no [ brackets ], so the band looks
     // exactly as it did and the pointer still lights the label.

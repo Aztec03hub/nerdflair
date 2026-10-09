@@ -33,8 +33,21 @@
 #   - no orphans: once the workers are killed, every helper is gone within
 #     ORPHAN_GRACE seconds. This is the direct test for the detached spawn that
 #     outlived its parent and could not be reaped by anything.
-#   - no zombies PARENTED TO THIS TEST. System-wide zombie counts are not ours
-#     to pass or fail on; other tooling on this box leaves some.
+#   - no zombies PARENTED TO THIS TEST, tracked BY PID across samples: the
+#     criterion is "the same child is still unreaped", which a count cannot
+#     express. `--prove-zombie-check` plants one deliberately and the run must
+#     then FAIL; a PASS means the check is blind. Written in Python, because
+#     bash reaps its own background children and the obvious one-liner plants
+#     nothing while looking like it works.
+#   - the run actually applied load. Workers must be alive at the end, and the
+#     invocation counter must be non-zero. Both exist because this harness
+#     spent a while passing every check on a machine where nothing ran.
+#
+# WHY "peak helpers" READS ZERO ON A HEALTHY RUN. A render lives about 2ms and
+# the sampler fires every 5s, so it is caught roughly 6 times in 100
+# (measured). Zero is the normal reading and is NOT evidence the workers are
+# idle; the invocation counter is what answers that. The criterion is aimed at
+# the meltdown shape, where the runaway processes persist and cannot be missed.
 #
 # Load average is reported but deliberately NOT a criterion in --hammer mode:
 # spinning WORKERS tight loops pegs the CPU by construction, which measures the
@@ -52,6 +65,7 @@ RSS_CAP_MB=1500
 WITH_CCUSAGE=0
 WITH_MCP=0
 ORPHAN_GRACE=10
+PROVE_ZOMBIE=0
 # Claude Code debounces the status line to ~300ms and refreshes on a 30s timer.
 # 0.2s per worker is already far faster than it can ever be driven for real;
 # --hammer removes the pacing entirely for the pathological case.
@@ -67,6 +81,9 @@ while (( $# )); do
     --pace) PACE="$2"; shift 2 ;;
     --ccusage) WITH_CCUSAGE=1; shift ;;
     --mcp) WITH_MCP=1; shift ;;
+    # Plant an unreaped child, so the zombie criterion must FAIL. The way to
+    # find out whether that check still works.
+    --prove-zombie-check) PROVE_ZOMBIE=1; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'loadtest: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -118,12 +135,56 @@ for i in $(seq 1 "$WORKERS"); do
     payload=$(mk_payload "$i")
     while :; do
       printf '%s' "$payload" | "$BIN" >/dev/null 2>&1
+      # One byte per invocation, so the run can prove it applied load. The
+      # sampler cannot: a healthy render lives about 2ms and is caught in ps
+      # roughly 6 times in 100 (measured), so "peak helpers 0" is the normal
+      # reading on a working machine and says nothing about whether the
+      # workers ran at all. Appends this small are atomic between processes.
+      printf '.' >> "$RUN_DIR/iters"
       [[ "$PACE" != "0" ]] && read -r -t "$PACE" _ < /dev/zero 2>/dev/null
       :
     done
   ) &
   WORKER_PIDS+=($!)
 done
+
+# A worker that dies at once makes every census below read zero, and every
+# check then PASSES on a test that measured nothing. That is worse than a
+# failure, because it is indistinguishable from a healthy run, and it is
+# exactly what this harness was doing: six workers were started and one
+# survived, so "peak helpers 0, limit 6" was certifying an empty machine.
+sleep 1
+alive=0
+for p in "${WORKER_PIDS[@]}"; do kill -0 "$p" 2>/dev/null && alive=$((alive+1)); done
+printf '  workers alive after start: %s of %s\n' "$alive" "$WORKERS"
+if (( alive < WORKERS )); then
+  printf 'loadtest: workers died at startup; the run would measure nothing\n' >&2
+  exit 2
+fi
+
+# ── positive control ─────────────────────────────────────────────────────────
+# A green zombie check from a run that never had a zombie proves nothing: the
+# criterion has to be shown capable of failing. This plants ONE child that
+# exits and is deliberately never reaped, parented to a process in
+# WORKER_PIDS so it is ours. With it, the run MUST report FAIL on the zombie
+# line; a PASS means the check is blind and everything it has ever certified
+# is worthless.
+#
+# NOT written in bash. `( exit 0 ) &` leaves nothing behind: bash reaps its
+# own background children asynchronously so it can report their status, so
+# the obvious one-liner plants no zombie and the control passes, which looks
+# exactly like a working check. Python's parent never calls waitpid unless
+# told to, so the child really does sit in Z.
+if (( PROVE_ZOMBIE )); then
+  python3 -c '
+import os, sys, time
+if os.fork() == 0:
+    os._exit(0)          # dies at once, and nobody will wait for it
+time.sleep(float(sys.argv[1]))
+' "$(( SECS + 30 ))" &
+  WORKER_PIDS+=($!)
+  printf '  positive control: one unreaped child planted; the zombie check MUST fail\n'
+fi
 
 # ── sample ───────────────────────────────────────────────────────────────────
 # Scope every measurement to THIS TEST's process group. On a machine that is
@@ -177,26 +238,44 @@ our_zombies() {
     | awk -v re="^(${ours})$" '$1 ~ /^Z/ && $2 ~ re { print $3 }'
 }
 
-max_n=0; max_rss_mb=0; max_zomb=0; samples=0; zomb_run=0; zomb_run_max=0
+max_n=0; max_rss_mb=0; max_zomb=0; samples=0
 counts=()
+# Zombies are tracked BY PID across samples, because the criterion is "the
+# same child is still unreaped", which a count cannot express. Keyed by pid,
+# the value is how many consecutive samples that pid has been a zombie for.
+declare -A zomb_runs=()
+stuck_pids=""; max_zomb_run=0
 printf '%-8s %-8s %-10s %-9s %s\n' elapsed procs rss_mb zombies load
 deadline=$(( $(date +%s) + SECS ))
 while (( $(date +%s) < deadline )); do
   read -r n kb < <(census)
   mb=$(( kb / 1024 ))
-  z=$(our_zombies)
+  z_pids=$(our_zombies)
   l=$(awk '{print $1}' /proc/loadavg)
   (( n > max_n )) && max_n=$n
   (( mb > max_rss_mb )) && max_rss_mb=$mb
+  # A single Z between a child's exit and its parent's wait is normal, so the
+  # count is for the operator to read, not a criterion.
+  z=0
+  for p in $z_pids; do z=$((z+1)); done
   (( z > max_zomb )) && max_zomb=$z
-  # A single Z between a child's exit and its parent's wait is normal. Only a
-  # zombie that SURVIVES consecutive samples means nobody is reaping.
-  if (( z > 0 )); then
-    zomb_run=$((zomb_run+1))
-    (( zomb_run > zomb_run_max )) && zomb_run_max=$zomb_run
-  else
-    zomb_run=0
-  fi
+  # The criterion: has any ONE pid stayed a zombie across samples. A pid seen
+  # again carries its run forward; every pid not seen this time is reaped and
+  # drops out. Counting instead of tracking identity made this fail on healthy
+  # runs, because the workers fork a pipeline continuously and a different
+  # transient lands in consecutive samples by chance alone.
+  declare -A seen_now=()
+  for p in $z_pids; do
+    seen_now[$p]=1
+    zomb_runs[$p]=$(( ${zomb_runs[$p]:-0} + 1 ))
+    if (( zomb_runs[$p] > max_zomb_run )); then
+      max_zomb_run=${zomb_runs[$p]}
+      case " $stuck_pids " in *" $p "*) ;; *) stuck_pids="$stuck_pids $p" ;; esac
+    fi
+  done
+  for p in "${!zomb_runs[@]}"; do
+    [[ -n "${seen_now[$p]:-}" ]] || unset 'zomb_runs[$p]'
+  done
   counts+=("$n")
   samples=$((samples+1))
   printf '%-8s %-8s %-10s %-9s %s\n' \
@@ -205,6 +284,11 @@ while (( $(date +%s) < deadline )); do
 done
 
 load_end=$(awk '{print $1}' /proc/loadavg)
+# Workers must still be driving the binary at the END, not just at the start.
+# If they die halfway the later samples measure an idle machine and drag every
+# peak down towards a pass.
+alive_end=0
+for p in "${WORKER_PIDS[@]}"; do kill -0 "$p" 2>/dev/null && alive_end=$((alive_end+1)); done
 kill "${WORKER_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
 
 # ── orphan check: nothing of ours may outlive the workers ────────────────────
@@ -224,9 +308,25 @@ chk() { # label actual limit truth
 }
 printf '\nsamples: %s over %ss\n' "$samples" "$SECS"
 
+# Against the list, not $WORKERS: the positive control appends itself, and
+# counting it as a surplus worker made that run fail for the wrong reason.
+chk "workers alive at end" "$alive_end" "${#WORKER_PIDS[@]}" \
+  "$(( alive_end == ${#WORKER_PIDS[@]} ))"
+# Did the run apply any load at all. Without this the whole verdict can be
+# green on a machine where nothing ever ran, which is the one outcome that
+# looks identical to a perfect result.
+iters=$(wc -c < "$RUN_DIR/iters" 2>/dev/null || echo 0)
+chk "binary invocations" "$iters" 1 "$(( iters >= 1 ))"
+printf '  ----  %s invocations over %ss across %s workers (%s/s)\n' \
+  "$iters" "$SECS" "$WORKERS" "$(( iters / (SECS > 0 ? SECS : 1) ))"
+# Peak concurrent helpers. Expect ZERO on a healthy run: a render lives ~2ms
+# and the sampler fires every 5s, so it catches one about 6 times in 100.
+# This criterion is for the meltdown shape, where runaway processes PERSIST
+# and are therefore impossible to miss.
 chk "peak helpers <= workers" "$max_n" "$WORKERS" "$(( max_n <= WORKERS ))"
 chk "peak helper RSS (MB)" "$max_rss_mb" "$RSS_CAP_MB" "$(( max_rss_mb <= RSS_CAP_MB ))"
-chk "consecutive samples w/ zombie" "$zomb_run_max" 1 "$(( zomb_run_max <= 1 ))"
+chk "samples one zombie survived" "$max_zomb_run" 1 "$(( max_zomb_run <= 1 ))"
+(( max_zomb_run > 1 )) && printf '        unreaped pids:%s\n' "$stuck_pids"
 chk "orphans after workers killed" "$orphans" 0 "$(( orphans == 0 ))"
 chk "young ccusage runs left alive" "$(census_global "$SECS")" 0 "$(( $(census_global "$SECS") == 0 ))"
 # Reported, not judged: see the header on why a trend is the wrong statistic
