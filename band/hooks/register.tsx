@@ -58,8 +58,8 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     title: 'MCP servers',
     color: '#c084fc',
     lines: [
-      'names from the `claude mcp list` probe, not the config files',
-      'the config files list what is CONFIGURED, which is fewer',
+      'names from the `claude mcp list` probe when its cache is warm',
+      'else the config files: what is CONFIGURED, not what connected',
       'cached 300s, refreshed by one locked background job',
     ],
   },
@@ -192,6 +192,9 @@ function plain(s: string): string {
 // carries the whole value, so clipping loses nothing.
 const BAND_MAX = 120
 const SEG_MIN = 6
+// Card width. Wide enough for the longest explanation line without wrapping,
+// narrow enough that revealing one does not displace the whole row.
+const CARD_W = 68
 
 function budget(texts: string[], sep: number): string[] {
   const out = [...texts]
@@ -395,20 +398,21 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box>
-          <Box key="seg-rc">
+          <Box key="seg-rc" flexDirection="column">
             <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
               {shown[0]}
             </Text>
+            {/* Grows downward, for the reason spelled out on the segment
+                cards below: the absolute negative-top version laid its body
+                outside the renderable region and drew an empty border. */}
             <Box
-              position="absolute"
-              top={-(rcCard.length + 3)}
-              left={0}
               display="none"
               hover={{ display: 'flex' }}
               flexDirection="column"
               borderStyle="round"
               borderColor={rc.color}
               paddingX={1}
+              width={CARD_W}
             >
               <Text color={rc.color} bold>
                 Remote Control
@@ -424,26 +428,45 @@ export const register: Register = on => {
           {segs.map((s, i) => {
             const card = CARDS[s.id]
             const color = card?.color ?? DIM
-            // A keyed Box scopes the hover. The card is absolutely positioned
-            // and drawn `display: none`, so revealing it moves nothing and it
-            // paints over the rows above rather than pushing them.
+            // A keyed Box scopes the hover: the card is a DESCENDANT of the
+            // box being hovered, which is what makes a declarative
+            // `hover={{display:'flex'}}` fire on it at all. It cannot be
+            // hovered itself while hidden, and no hover event reaches the
+            // plugin, so this nesting is the only mechanism available.
+            //
+            // It is NOT absolutely positioned with a negative `top` any more.
+            // That was an attempt to paint the card over the rows above
+            // without reflow, and measured on 2026-10-08 it put the card's
+            // body above the renderable region: the text was clipped away
+            // entirely and only the border edges that happened to land on the
+            // band row survived, painting over the segment's own text. A
+            // bordered box with nothing in it, which is exactly what the
+            // screenshots showed on every wide segment.
+            //
+            // So the card grows the band DOWNWARD instead. Reflow is the
+            // price, and it is the right trade: a card that pushes the line
+            // down is readable, and one painted off-screen is not.
             return (
-              <Box key={`seg-${s.id}`}>
-                {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
-                <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
-                  {shown[i + 1]}
-                </Text>
+              <Box key={`seg-${s.id}`} flexDirection="column">
+                <Box>
+                  {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
+                  <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
+                    {shown[i + 1]}
+                  </Text>
+                </Box>
                 {card ? (
                   <Box
-                    position="absolute"
-                    top={-(card.lines.length + 3)}
-                    left={0}
                     display="none"
                     hover={{ display: 'flex' }}
                     flexDirection="column"
                     borderStyle="round"
                     borderColor={color}
                     paddingX={1}
+                    // Fixed width, because an in-flow card widens its
+                    // segment's box and shoves every segment to its right.
+                    // Bounded and identical for every card, so the shove is
+                    // predictable instead of varying with the longest line.
+                    width={CARD_W}
                   >
                     <Text color={color} bold>
                       {card.title}
