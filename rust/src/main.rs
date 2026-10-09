@@ -1606,6 +1606,60 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         row3_right.push_str(&pre);
     }
+    // ── --json: the same segments, addressable ───────────────────
+    // A presentation adapter for the plugin band, which draws the status line
+    // as a tree so it can carry hover highlights and hover cards. The band
+    // must know WHICH segment each piece of text is to attach the right card,
+    // and it cannot learn that from the assembled rows without parsing our own
+    // ANSI and guessing from separators.
+    //
+    // Deliberately not a refactor: it re-emits the segment strings already
+    // built above, paired with stable ids. There is no new computation here,
+    // so there is nothing for the bash reference to disagree about, and the
+    // default text path is byte-for-byte untouched (difftest never passes
+    // --json). Adding a segment means adding one line to this table.
+    if std::env::args().any(|a| a == "--json") {
+        let segs: Vec<(&str, &String)> = vec![
+            ("folder", &folder_segment),
+            ("model", &model_segment),
+            ("dirty", &dirty_segment),
+            ("ahead", &ahead_segment),
+            ("mcp", &mcp_segment_expanded),
+            ("mcp_health", &mcphealth_segment),
+            ("tmux", &tmux_segment),
+            ("limits", &limits_segment),
+            ("compact_eta", &compact_segment),
+            ("throughput", &speed_segment),
+            ("api_time", &time_segment),
+            ("burn", &burn_segment),
+            ("block", &block_segment),
+            ("repo_cost", &repocost_segment),
+            ("session_cost", &cost_segment),
+            ("chime", &chime_segment),
+        ];
+        let mut o = String::from("{\"segments\":[");
+        let mut first = true;
+        for (id, s) in segs {
+            if s.is_empty() {
+                continue;
+            }
+            if !first {
+                o.push(',');
+            }
+            first = false;
+            // `text` is what to draw, `ansi` keeps the colouring the terminal
+            // build already chose, so the band need not re-derive a palette.
+            o.push_str(&format!(
+                "{{\"id\":{},\"text\":{},\"ansi\":{}}}",
+                json_str(id),
+                json_str(strip_ansi(s).trim()),
+                json_str(s)
+            ));
+        }
+        o.push_str("]}");
+        return Ok(o);
+    }
+
     let mut row3_right_len = vis_len(&row3_right) as i64;
 
     let mut mcp_to_use = String::new();

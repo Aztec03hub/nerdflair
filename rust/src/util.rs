@@ -245,6 +245,50 @@ pub fn file_age(path: &Path) -> i64 {
     }
 }
 
+/// A JSON string literal, for `--json`. serde_json could do this, but the
+/// whole emitter is a dozen lines and this keeps it readable beside them.
+pub fn json_str(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            // Control characters must be escaped, and the segment strings are
+            // FULL of them: every colour is an ESC sequence.
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// The visible text of a coloured segment: CSI sequences removed.
+pub fn strip_ansi(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            o.push(c);
+            continue;
+        }
+        if it.peek() == Some(&'[') {
+            it.next();
+            // A CSI sequence runs to its first final byte, in @..~
+            for d in it.by_ref() {
+                if ('\x40'..='\x7e').contains(&d) {
+                    break;
+                }
+            }
+        }
+    }
+    o
+}
+
 pub fn uid() -> u32 {
     // Avoids a libc dependency for one getuid().
     if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
