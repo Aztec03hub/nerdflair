@@ -161,6 +161,60 @@ const RC_OFF = '#4b5563'
 // whole complaint about the indicator that was removed.
 const RC_LINGER_MS = 30000
 
+// The engine REFUSES a whole render whose Text child holds a control
+// character, and draws its own fallback instead. That cost a long debug: the
+// stale binary returned the normal ANSI status line, JSON.parse threw, and
+// Node's parse error embeds the offending input in its message, so a raw ESC
+// byte travelled from the subprocess into lastError and out into a Text. The
+// band then vanished with no error, because the error WAS the thing being
+// refused. Nothing reaches a Text without passing through here.
+function plain(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f\x7f]/g, ' ')
+}
+
+// The band must never wrap. `--json` hands over UNTRUNCATED text (the MCP
+// segment alone can be 17 server names and ~180 columns), and a row of flex
+// children that each wrap on their own turns the band into three ragged lines,
+// which is what it was doing.
+//
+// A per-segment cap does NOT achieve this, which is worth stating because it
+// was the first thing I wrote: ten segments capped at 26 still total ~290
+// columns with separators, so every pane narrower than that still wraps. The
+// budget has to be on the WHOLE row.
+//
+// So: spend a total budget, taking it off the longest segment first. That
+// converges on equal-width segments only when everything is long, and leaves
+// short ones ($1.23, ↑3) untouched, which is what you want, since the long one
+// is almost always the MCP list and the short ones are the numbers.
+//
+// Hover is what makes this free: the row carries the short form, the card
+// carries the whole value, so clipping loses nothing.
+const BAND_MAX = 120
+const SEG_MIN = 6
+
+function budget(texts: string[], sep: number): string[] {
+  const out = [...texts]
+  const width = () => out.reduce((n, t) => n + t.length, 0) + sep * Math.max(0, out.length - 1)
+  // Each pass shortens only the current longest, so the result does not depend
+  // on segment order and no segment is cut while a longer one is left alone.
+  while (width() > BAND_MAX) {
+    let i = 0
+    let best = out[0]?.length ?? 0
+    for (let j = 1; j < out.length; j++) {
+      const n = out[j]?.length ?? 0
+      if (n > best) {
+        best = n
+        i = j
+      }
+    }
+    const cur = out[i]
+    if (cur === undefined || cur.length <= SEG_MIN) break // at the floor: stop rather than spin
+    out[i] = cur.slice(0, cur.length - 1)
+  }
+  return out.map((t, i) => (t.length < (texts[i]?.length ?? 0) ? t.slice(0, -1) + '…' : t))
+}
+
 function ago(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
   if (s < 60) return `${s}s`
@@ -278,7 +332,7 @@ export const register: Register = on => {
       if (!lastError) return next(e)
       return (
         <Box>
-          <Text color="#f87171">nerdflair-band: {lastError}</Text>
+          <Text color="#f87171">nerdflair-band: {plain(lastError)}</Text>
         </Box>
       )
     }
@@ -313,12 +367,22 @@ export const register: Register = on => {
             'Claude Code used to show this in green and no longer does',
           ]
 
+    // Clipped once for the whole row, before anything is drawn: the budget is
+    // a property of the row, so it cannot be decided inside a per-segment map.
+    // The RC chip is charged against the budget too, as it occupies the row
+    // like any other segment.
+    const rcText = `${rc.glyph} RC ${rc.label}`
+    const shown = budget(
+      [rcText, ...cache.segs.map(s => plain(s.text))],
+      SEP.length,
+    )
+
     return (
       <Box flexDirection="column">
         <Box>
           <Box key="seg-rc">
             <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
-              {rc.glyph} RC {rc.label}
+              {shown[0]}
             </Text>
             <Box
               position="absolute"
@@ -352,7 +416,7 @@ export const register: Register = on => {
               <Box key={`seg-${s.id}`}>
                 {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
                 <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
-                  {s.text}
+                  {shown[i + 1]}
                 </Text>
                 {card ? (
                   <Box
@@ -369,6 +433,12 @@ export const register: Register = on => {
                     <Text color={color} bold>
                       {card.title}
                     </Text>
+                    {/* The full value first, whenever the row had to cut it.
+                        Without this the clipped text would be unrecoverable,
+                        and hover would explain a number you cannot read. */}
+                    {shown[i + 1] !== plain(s.text) ? (
+                      <Text color={color}>{plain(s.text)}</Text>
+                    ) : null}
                     {card.lines.map((l, j) => (
                       <Text key={`l${j}`} color={DIM}>
                         {l}

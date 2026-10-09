@@ -36,7 +36,7 @@ _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 _sanitize() { printf '%s' "${1//\\/}"; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
-IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")')
+IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")' 2>/dev/null)
 
 
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
@@ -143,8 +143,14 @@ mcp_total=$mcp_enabled
 # is populated, use its names instead: same source as the health counts, so the
 # two can no longer disagree.
 _mcp_probe_names=""
-if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "/tmp/nerdflair-mcphealth-${UID}" ]]; then
-  IFS=$'\x1f' read -r _ _ _ _mcp_probe_names < "/tmp/nerdflair-mcphealth-${UID}" 2>/dev/null || true
+# ONE definition of the cache path, used by both readers and the writer below.
+# It was spelled out literally in three places, so overriding it in one (to
+# isolate a test) silently left the other two reading the live machine's cache:
+# the health counts came from the override and the NAMES from /tmp, which is
+# exactly the disagreement between the two that the probe exists to prevent.
+_MCP_CACHE="${NERDFLAIR_MCP_CACHE:-/tmp/nerdflair-mcphealth-${UID}}"
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
+  IFS=$'\x1f' read -r _ _ _ _mcp_probe_names < "$_MCP_CACHE" 2>/dev/null || true
 fi
 if [[ -n "${_mcp_probe_names:-}" ]]; then
   IFS=$'\x1e' read -ra _probe_arr <<< "$_mcp_probe_names"
@@ -654,7 +660,12 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   total_used=$(( ctx_total * pct / 100 ))
 else
   # Fall back: parse last usage entry from transcript JSONL
-  transcript=$(echo "$input" | jq -r '.transcript_path // empty')
+  # 2>/dev/null on every parse of the PAYLOAD: it is untrusted input, and a
+  # malformed one made jq print "parse error: Invalid numeric literal" on
+  # stderr. A status line has nowhere useful to write stderr, so it can surface
+  # in the user's terminal, and the Rust build prints nothing there. Found by
+  # tests/difftest.sh, whose stdout was byte-identical while stderr was not.
+  transcript=$(echo "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
   if [[ -n "$transcript" && -f "$transcript" ]]; then
     # Only the LAST usage line is wanted, so read the tail, not the file.
     # Transcripts here reach 617 MB and this is the render path; streaming one
@@ -1351,7 +1362,7 @@ fi
 _MCP_HEALTH_TTL=${NERDFLAIR_MCP_HEALTH_TTL:-300}
 _mcp_ok=""; _mcp_bad=""; _mcp_warn=""
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; then
-  _mh_cache="/tmp/nerdflair-mcphealth-${UID}"
+  _mh_cache="$_MCP_CACHE"
   _mh_lock="${_mh_cache}.lock"
   _mh_fresh=false
   if [[ -f "$_mh_cache" ]]; then
@@ -1549,11 +1560,17 @@ fi
 # window and the read costs a bounded number of bytes however long the machine
 # has been up. Never stream the whole file from here.
 #
-# Append order is time order only to within concurrent-append jitter (measured
-# on the real ledger: 878 inversions, largest backstep 22s), which is far
-# inside the hour and five-hour windows read from it, and _window_spend filters
-# each row by its own timestamp anyway. At the default cap the tail covered 40
-# hours of history.
+# Append order is time order only to within concurrent-append jitter. Measured
+# on the real ledger: 878 inversions with a largest backstep of 22s, but those
+# are BETWEEN sessions, and 0 of 32,007 rows invert WITHIN one session, which is
+# the only ordering _window_spend depends on. It filters each row by its own
+# timestamp regardless, and skips a row that goes backwards within a session.
+#
+# How much history the cap covers is a RATE, not a constant: cap divided by
+# bytes written per hour, which scales with how many sessions are live. Measured
+# 2026-10-08 at about 25 KB/h (roughly 340 rows/h), so the 1 MiB default held
+# about 40 hours; with 14 fully active sessions it is nearer 16. Do not quote a
+# fixed number of hours, and re-measure before relying on one.
 _LEDGER_CAP=${NERDFLAIR_LEDGER_TAIL_BYTES:-1048576}
 _LEDGER_MAXCOST=${NERDFLAIR_REPO_COST_MAX:-100000}
 _LEDGER_FILE=${NERDFLAIR_REPO_COST_FILE:-$HOME/.claude/nerdflair-usage.tsv}
@@ -1584,10 +1601,20 @@ fi
 # reset-proof: a drop contributes nothing and the spend either side still
 # counts.
 #
-# Consecutive means consecutive IN FILE ORDER, which is time order within a
-# session: one session appends its own rows serially, and compaction keeps at
-# most one pre-cutoff row per session so it cannot reorder them. The measured
-# 22s of jitter is BETWEEN sessions, which does not matter here.
+# Consecutive means consecutive IN FILE ORDER, and file order is NOT reliably
+# time order within a session. Two renders of one session can both find the
+# sample stamp expired, both take the SHARED lock (which by design does not
+# exclude them from each other), and append in the order they finish rather than
+# the order they read the clock. 0 of 32,007 live rows invert this way, so it is
+# rare, not impossible.
+#
+# An out-of-order row is SKIPPED rather than taken as the next sample. Feeding
+# it in as one runs the increment chain backwards: the later-but-lower
+# cumulative cost becomes the new baseline, and the real rise above it is then
+# charged against a number that already contained it, so the spend between the
+# swapped pair is dropped. Compaction cannot reorder anything, keeping at most
+# one pre-cutoff row per session. The measured 22s of jitter is BETWEEN
+# sessions, which does not matter here.
 _window_spend() {  # $1=since $2=now -> "<spent> <span>"
   printf '%s\n' "$_ledger" | awk -F'\t' \
     -v since="$1" -v now="$2" -v maxcost="$_LEDGER_MAXCOST" '
@@ -1598,10 +1625,14 @@ _window_spend() {  # $1=since $2=now -> "<spent> <span>"
       if (t < since || t > now) next
       s = $2
       if (!(s in pv)) { gain[s] = 0; pv[s] = v; ft[s] = t; lt[s] = t; next }
+      # lt[s] is the newest epoch accepted for this session, so t < lt[s] is
+      # exactly the inversion above. An equal epoch is kept: two rows can
+      # share a second legitimately.
+      if (t < lt[s]) next
       if (v > pv[s]) gain[s] += v - pv[s]
       pv[s] = v
       if (t < ft[s]) ft[s] = t
-      if (t > lt[s]) lt[s] = t
+      lt[s] = t
     }
     END {
       total = 0; lo = ""; hi = ""

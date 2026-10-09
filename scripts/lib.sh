@@ -187,12 +187,26 @@ _nf_write_state() {
 _nf_update_field() {
   local field="$1" value="$2"
   mkdir -p "$(dirname "$NF_STATE_FILE")"
-  if [[ ! -f "$NF_STATE_FILE" ]]; then
+  # A missing file gets defaults, and so does a CORRUPT one. jq cannot update
+  # what it cannot parse, so a malformed state file used to be both unreadable
+  # and unwritable for good: every reader fell back to defaults, every write
+  # failed, and the only evidence was jq printing a parse error on the status
+  # line's stderr, where it can land in the user's terminal. Rebuilding from
+  # defaults loses the stored preferences once; staying wedged loses them
+  # every render and says nothing.
+  if [[ ! -f "$NF_STATE_FILE" ]] || ! jq -e . "$NF_STATE_FILE" >/dev/null 2>&1; then
     _nf_read_state  # populate NF_CUR_* with defaults
     _nf_write_state
   fi
-  local _tmp="${NF_STATE_FILE}.tmp.$$"
-  jq --arg v "$value" ".$field = \$v" "$NF_STATE_FILE" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"
+  # jq to a variable first, so the temp file is only ever created on the path
+  # that immediately renames it. Writing the temp first and relying on `&&`
+  # left one orphan per PID behind in the state directory on every failure.
+  local _new
+  if _new=$(jq --arg v "$value" ".$field = \$v" "$NF_STATE_FILE" 2>/dev/null) \
+     && [[ -n "$_new" ]]; then
+    local _tmp="${NF_STATE_FILE}.tmp.$$"
+    printf '%s\n' "$_new" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"
+  fi
 }
 
 # ── Play audio file (cross-platform) ──────────────────────────────
@@ -237,10 +251,17 @@ _nf_play_audio() {
 _nf_update_recent_styles() {
   local styles_csv="$1"
   mkdir -p "$(dirname "$NF_STATE_FILE")"
-  if [[ ! -f "$NF_STATE_FILE" ]]; then
+  # Same two reasons as _nf_update_field: a corrupt file is as unwritable as a
+  # missing one, and the temp file is only created on the path that renames it.
+  if [[ ! -f "$NF_STATE_FILE" ]] || ! jq -e . "$NF_STATE_FILE" >/dev/null 2>&1; then
     _nf_read_state
     _nf_write_state
   fi
-  local _tmp="${NF_STATE_FILE}.tmp.$$"
-  jq --arg csv "$styles_csv" '.chime_recent_styles = ($csv | split(","))' "$NF_STATE_FILE" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"
+  local _new
+  if _new=$(jq --arg csv "$styles_csv" \
+              '.chime_recent_styles = ($csv | split(","))' \
+              "$NF_STATE_FILE" 2>/dev/null) && [[ -n "$_new" ]]; then
+    local _tmp="${NF_STATE_FILE}.tmp.$$"
+    printf '%s\n' "$_new" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"
+  fi
 }

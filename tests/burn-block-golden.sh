@@ -22,6 +22,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMPL="$ROOT/rust/target/release/nerdflair-statusline"
 LABEL=rust
 [[ "${1:-}" == "--bash" ]] && { IMPL="$ROOT/scripts/statusline.sh"; LABEL=bash; }
+# golden-mutation.sh points this at a deliberately broken copy and requires
+# this suite to FAIL. A suite that has never been shown to fail is not evidence.
+if [[ -n "${NERDFLAIR_GOLDEN_IMPL:-}" ]]; then
+  IMPL="$NERDFLAIR_GOLDEN_IMPL"; LABEL="${NERDFLAIR_GOLDEN_LABEL:-mutant}"
+fi
 [[ -x "$IMPL" ]] || { printf 'golden: not executable: %s\n' "$IMPL" >&2; exit 2; }
 
 RUN=$(mktemp -d "${TMPDIR:-/tmp}/nerdflair-golden-XXXXXX")
@@ -226,6 +231,44 @@ if [[ -n "$out4" ]] && [[ ! "$out4" =~ (nan|inf|/h) ]]; then
   printf '  PASS  %-34s %s\n' "renders, no rate, no nan/inf" "clean"
 else
   printf '  FAIL  %-34s %s\n' "empty ledger produced" "$out4"; fail=1
+fi
+
+# ── Case 8: a row that goes BACKWARDS in time within one session ─────────────
+#
+# Two renders of one session can both find the sample stamp expired, both take
+# the shared lock (which does not exclude them from each other), and append in
+# the order they finish rather than the order they read the clock. The ledger
+# then holds a row older than the one before it, for the SAME session.
+#
+# Session A, in file order:
+#   T-2000  $10.00   first sample, baseline, contributes nothing
+#   T-1000  $30.00   rise of 20.00
+#   T-1400  $20.00   OLDER than T-1000: out of order, must be SKIPPED whole
+#   T-60    $35.00   rise from 30.00 of 5.00
+#
+#   spent = 20.00 + 5.00 = $25.00
+#   span  = (T-60) - (T-2000) = 1940s   (>= the 600s minimum)
+#   burn  = 25.00 * 3600 / 1940 = $46.39/h
+#
+# Accepting the stale row instead makes $20.00 the new baseline, so the rise to
+# $35.00 is charged as 15.00 against a figure that already contained it:
+# 20.00 + 15.00 = $35.00, and burn 35.00 * 3600 / 1940 = $64.95/h. Both wrong
+# numbers are asserted ABSENT, so this case fails loudly if the skip is removed.
+L8="$RUN/c8.tsv"
+{
+  printf '%s\tA\trepo\t10.00\n' $((NOW-2000))
+  printf '%s\tA\trepo\t30.00\n' $((NOW-1000))
+  printf '%s\tA\trepo\t20.00\n' $((NOW-1400))
+  printf '%s\tA\trepo\t35.00\n' $((NOW-60))
+} > "$L8"
+out8=$(render "$L8" $((NOW+9000)))
+printf '\n[%s] case 8: a backwards row within one session\n' "$LABEL"
+check "block = \$25.00"   '\$25\.00'   "$out8" "hand-computed, stale row skipped"
+check "burn = \$46.39/h"  '\$46\.39/h' "$out8" "hand-computed 25.00 / 0.53889h"
+if [[ "$out8" =~ \$35\.00 ]] || [[ "$out8" =~ \$64\.95/h ]]; then
+  printf '  FAIL  %-34s took the backwards row as a sample: %s\n' "regression guard" "$out8"; fail=1
+else
+  printf '  PASS  %-34s %s\n' "regression guard" "no \$35.00 and no \$64.95/h"
 fi
 
 printf '\n'

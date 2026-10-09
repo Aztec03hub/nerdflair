@@ -363,12 +363,25 @@ test_renderer_zero_cost_not_shown() {
 
 test_renderer_mcp_servers_shown() {
   _setup
-  cat > "$FAKE_HOME/.claude.json" << 'EOF'
-{"mcpServers":{"Slack":{},"Glean":{}}}
-EOF
+  # The names come from the `claude mcp list` PROBE, not from the config files.
+  # This test used to write mcpServers into .claude.json and expect them back,
+  # which was the old contract: the config lists what is CONFIGURED, and the
+  # probe reports what actually CONNECTED, which is the useful set and is
+  # usually smaller. The test kept passing until the probe landed and then
+  # failed for a reason that had nothing to do with a defect.
+  #
+  # So seed the probe cache instead, in this test's own file rather than the
+  # shared /tmp one, which also stops the suite firing a real `claude mcp list`
+  # at every configured server. Format: ok<US>bad<warn><US>names, names
+  # separated by RS. A FRESH cache means no probe is spawned at all.
+  local cache="$FAKE_HOME/mcp-cache"
+  printf '2\x1f0\x1f0\x1fSlack\x1eGlean' > "$cache"
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
   local output
-  output=$(_render "$state" "$(_make_input)" | _strip_ansi)
+  # EXPORTED, in a subshell: _render spawns `bash "$RENDERER"` as a child, and
+  # a bare `VAR=x func` prefix sets the variable for the function without
+  # exporting it, so the child never sees it.
+  output=$(export NERDFLAIR_MCP_CACHE="$cache"; _render "$state" "$(_make_input)" | _strip_ansi)
   assert_contains "MCP servers in output" "$output" "Glean"
   _teardown
 }

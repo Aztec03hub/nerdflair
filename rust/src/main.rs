@@ -414,7 +414,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // why the names segment reported 1 server while the health probe counted 8.
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
-        let mh = PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid));
+        let mh = mcp_cache_path(uid);
         if let Ok(t) = std::fs::read_to_string(&mh) {
             let p = read_ifs_unit(&t, 4);
             let probe: Vec<String> = p[3]
@@ -2151,7 +2151,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     if proc::which("claude").is_none() {
         return (ok, bad, warn, names);
     }
-    let cache = PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid));
+    let cache = mcp_cache_path(uid);
     let lock = PathBuf::from(format!("{}.lock", cache.display()));
     let mut fresh = false;
     if cache.is_file() {
@@ -2321,6 +2321,24 @@ fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
     if med <= 0 { return None; }
     let (q1, q3) = (sl[n / 4], sl[(3 * n) / 4]);
     Some((med, (q3 - q1) * 2 > med))
+}
+
+/// Where the `claude mcp list` probe caches its result.
+///
+/// ONE definition, because it is read for the health counts AND for the server
+/// NAMES. The path was spelled out literally at each site, so overriding it in
+/// one (to isolate a test) left the other reading the live machine's cache:
+/// the counts came from the override and the names from /tmp, which is exactly
+/// the disagreement between the two readouts that the probe exists to prevent.
+///
+/// `NERDFLAIR_MCP_CACHE` exists so a test can own its cache. Without it the
+/// path is a single shared /tmp file that a test run cannot isolate, and
+/// running the suite spawns a real probe against every configured server.
+fn mcp_cache_path(uid: u32) -> PathBuf {
+    match std::env::var("NERDFLAIR_MCP_CACHE") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid)),
+    }
 }
 
 fn repo_cost_segment(
@@ -2703,10 +2721,23 @@ fn ledger_tail(path: &Path, cap: u64) -> (String, bool) {
 /// reset-proof: a drop simply contributes nothing, and the spend on either
 /// side of it still counts.
 ///
-/// Consecutive means consecutive IN FILE ORDER, which is time order within a
-/// session: one session appends its own rows serially, and compaction keeps at
-/// most one pre-cutoff row per session so it cannot reorder them either. The
-/// measured 22s of jitter is BETWEEN sessions, which does not matter here.
+/// Consecutive means consecutive IN FILE ORDER, and file order is NOT reliably
+/// time order within a session. Two renders of the same session can both find
+/// the sample stamp expired, both take the SHARED lock (which by design does
+/// not exclude them from each other), and append in the order they finish
+/// rather than the order they read the clock, since each captured `now` before
+/// asking for the lock. The live ledger has 0 such inversions out of 32,007
+/// rows, so this is rare, not impossible.
+///
+/// An out-of-order row is therefore SKIPPED rather than treated as the next
+/// sample. Feeding it in as one would make the increment chain run backwards:
+/// the later-but-lower cumulative cost becomes the new baseline, and the real
+/// rise above it is then charged against a number that already included it, so
+/// the spend between the swapped pair is dropped. Bounded to cents, but it is
+/// cheaper to be exact than to carry a known error the reviewers will find
+/// again. Compaction cannot reorder anything, keeping at most one pre-cutoff
+/// row per session. The measured 22s of jitter is BETWEEN sessions, which does
+/// not matter here.
 ///
 /// A session whose first sample falls inside the window contributes only from
 /// that sample onward, so spend before it (at most one sampling interval,
@@ -2734,6 +2765,13 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64, i6
                 m.insert(cols[1], (0.0, v, t, t));
             }
             Some(e) => {
+                // Out of order for this session: skip it entirely. e.3 is the
+                // newest epoch accepted so far, so `t < e.3` is exactly the
+                // inversion described above. An equal epoch is kept: two rows
+                // can share a second legitimately.
+                if t < e.3 {
+                    continue;
+                }
                 // Only a RISE is spend. A fall is a counter reset and
                 // contributes nothing, rather than cancelling what came
                 // before it.
@@ -2744,9 +2782,7 @@ fn window_spend(text: &str, maxcost: f64, since: i64, now: i64) -> (f64, i64, i6
                 if t < e.2 {
                     e.2 = t;
                 }
-                if t > e.3 {
-                    e.3 = t;
-                }
+                e.3 = t;
             }
         }
     }
