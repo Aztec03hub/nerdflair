@@ -149,28 +149,30 @@ class Layout:
     it, and a layout fixed at startup would open the wrong card within
     seconds.
 
-    Two things keep the cost down. It is rebuilt at most once a second, and
-    only while hover is actually happening, so an idle session spends
-    nothing. And it is NEVER rebuilt while a panel is up, because the panel
-    is drawn on the screen we would be reading: it would parse its own border
-    as readouts.
+    It is rebuilt only while hover is actually happening, so an idle session
+    spends nothing, and at most every MIN_INTERVAL. It IS rebuilt while a
+    panel is up: the status line keeps changing under a panel, and a layout
+    frozen at the moment the panel opened sent the pointer to the wrong
+    readout the moment the figures shifted. The rows the panel covers show the
+    panel rather than the status line, so those rows alone are skipped and
+    keep what was known about them.
     """
 
-    MIN_INTERVAL = 1.0
+    MIN_INTERVAL = 0.15
 
     def __init__(self, pane):
         self.pane = pane
         self.at = 0.0
         self.segs = []
 
-    def refresh(self, blocked=False):
+    def refresh(self, covered=()):
         now = time.monotonic()
-        if blocked or not self.pane or now - self.at < self.MIN_INTERVAL:
+        if not self.pane or now - self.at < self.MIN_INTERVAL:
             return
         self.at = now
-        segs = mklayout.build(self.pane)
-        if segs:
-            self.segs = segs      # keep the last good one on a failed read
+        fresh = mklayout.build(self.pane, skip=covered)
+        if fresh:                 # keep the last good one on a failed read
+            self.segs = [s for s in self.segs if s["row"] in covered] + fresh
 
     def hit(self, col, row):
         """The readout under the pointer, if the pointer is on one.
@@ -261,6 +263,25 @@ def selfcheck():
     log = io.StringIO()
     assert note_modes(e + b"[?1003h" + e + b"[?1006h", log) is None
     assert log.getvalue() == "mode 1003h\nmode 1006h\n", log.getvalue()
+    # The layout FOLLOWS the status line: a readout that moved is found at its
+    # new column, and the rows a panel covers keep what was known about them.
+    seg = lambda i, row, x: {"id": i, "row": row, "x": x, "w": 5}  # noqa: E731
+    shots = [[seg("a", 3, 10), seg("b", 3, 30), seg("c", 4, 5)],
+             [seg("a", 3, 10), seg("b", 3, 36)],        # b moved; row 4 covered
+             ]
+    real = mklayout.build
+    try:
+        mklayout.build = lambda _pane, skip=(): shots.pop(0)
+        lay = Layout("%0")
+        lay.MIN_INTERVAL = 0
+        lay.refresh()
+        assert lay.hit(31, 3)["id"] == "b"
+        lay.refresh(covered={4})
+        assert lay.hit(31, 3) is None and lay.hit(37, 3)["id"] == "b", \
+            "a moved readout must be found at its new column, not the old"
+        assert lay.hit(6, 4)["id"] == "c", "a covered row keeps its old readouts"
+    finally:
+        mklayout.build = real
     print("nfpty ok")
 
 
@@ -382,10 +403,9 @@ def main():
                 if fwd:
                     os.write(master, fwd)
                 if hovers:
-                    # Never while a panel is up: the panel is drawn on the
-                    # screen this reads, and it would parse its own border
-                    # as readouts.
-                    layout.refresh(blocked=bool(panel.rect))
+                    covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
+                               if panel.rect else set())
+                    layout.refresh(covered)
                     col, row = hovers[-1]      # only the latest position
                     hit = layout.hit(col, row)
                     if dbg:
@@ -413,12 +433,10 @@ def main():
 
             if hide_at[0] is not None and now >= hide_at[0]:
                 hide_at[0] = None
+                # erase() puts back the rows saved from tmux. It does not ask
+                # the engine to repaint: a SIGWINCH with no size change is a
+                # no-op for it, which is why the old version left holes.
                 panel.erase()
-                # Blanking leaves a hole where the engine's own frame was. We
-                # do not know what it had there, so ask IT to repaint rather
-                # than guessing: a resize nudge is the cheapest full redraw a
-                # TUI reliably honours.
-                os.kill(pid, signal.SIGWINCH)
 
             if now - last >= FRAME:
                 last = now

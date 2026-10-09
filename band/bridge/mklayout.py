@@ -45,19 +45,19 @@ NERD = re.compile(r"[-\U000f0000-\U000ffffd]")
 # anchoring was why four of these fell through to the generic card. Where a
 # glyph is the most reliable marker it is matched directly, by codepoint.
 CARDS = [
-    ("folder", "\U000f024b", "Folder", (125, 211, 252), [
+    ("folder", "\U000f024b|\uf1bb", "Folder", (125, 211, 252), [
         "workspace.project_dir, else current_dir",
     ]),
     ("branch", "\U000f062c", "Branch", (125, 211, 252), [
         "branch from `git rev-parse --abbrev-ref HEAD`, cached 5s",
         "a worktree branch in the payload wins over git",
     ]),
-    ("dirty", r"\[\+\d", "Working tree and divergence", (251, 191, 36), [
+    ("dirty", "|" + r"\[\+\d","Working tree and divergence", (251, 191, 36), [
         "changed files, then +added/-removed lines",
         "from `git status --porcelain` and `git diff --numstat`",
         "the arrow is commits ahead of the tracking branch",
     ]),
-    ("limits", r"5h\s+\d", "Plan rate limits", (122, 222, 150), [
+    ("limits", r"\b(5h|7d)\s+\d", "Plan rate limits", (122, 222, 150), [
         "5h and 7d windows from the payload's rate_limits",
         "percentage used, then time until the window resets",
         "Anthropic's own server-side metering, not an estimate",
@@ -74,26 +74,49 @@ CARDS = [
     ("ahead", r"[↑↓]\d", "Divergence from upstream", (251, 191, 36), [
         "commits ahead of and behind the tracking branch",
     ]),
-    ("model", r"(Opus|Sonnet|Haiku)", "Model", (196, 181, 253), [
+    ("model", "|(Opus|Sonnet|Haiku)", "Model", (196, 181, 253), [
         "model.display_name, else model.id",
+    ]),
+    ("remote_control", r"^\W*rc\b", "Remote Control", (74, 222, 128), [
+        "whether another surface is attached to this session",
+        "green while attached, amber just after it left, grey when off",
+    ]),
+    ("tmux", "", "tmux session", (163, 163, 163), [
+        "the tmux session this pane lives in, from $TMUX",
+    ]),
+    ("throughput", "\U000f04c5", "Token throughput", (125, 211, 252), [
+        "output tokens per second over the current turn",
+        "from the transcript's usage and timing, not an estimate",
+    ]),
+    ("api_time", "", "Time in the API", (145, 130, 155), [
+        "total_api_duration_ms: time spent waiting on the model",
+        "less than wall-clock time, which also counts your own thinking",
+    ]),
+    ("repo_cost", "", "Repo spend", (110, 155, 95), [
+        "everything spent in this repo across sessions",
+        "summed from the usage ledger, positive increments only",
+    ]),
+    ("session_cost", "", "Session spend", (90, 120, 82), [
+        "cost.total_cost_usd for THIS session, from Claude Code",
+    ]),
+    ("context", r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
+        "tokens in context over the window size, then percent used",
+        "read from the payload, else the newest usage line in the transcript",
+        "compaction triggers near the top; the ETA reads off the same series",
     ]),
     ("effort", r"\b(minimal|low|medium|high|xhigh|max)\b", "Effort",
      (196, 181, 253), [
         "effort.level, after any silent downgrade",
     ]),
-    ("mcp", r",.*,", "MCP servers", (192, 132, 252), [
+    ("mcp", "|,.*,", "MCP servers", (192, 132, 252), [
         "names from the `claude mcp list` probe when its cache is warm",
         "else the config files: what is CONFIGURED, not what connected",
         "cached 300s, refreshed by one locked background job",
     ]),
-    ("compact_eta", r"^~", "Compaction ETA", (163, 163, 163), [
+    ("compact_eta", r"^\W*~[<>]?\d", "Compaction ETA", (163, 163, 163), [
         "when the context window is projected to fill",
         "Theil-Sen slope over a 16-sample ring, idle gaps excluded",
         "measured ~68% median error, so it is rounded and always ~",
-    ]),
-    ("cost", r"^\$", "Cost", (216, 180, 254), [
-        "a dollar figure from the renderer",
-        "session, billing block and repo total all read as $n.nn",
     ]),
 ]
 
@@ -180,13 +203,20 @@ def selfcheck():
     print("mklayout ok")
 
 
-def build(target):
+CONTEXT_ROW = re.compile(CARDS[[c[0] for c in CARDS].index("context")][1])
+
+
+def build(target, skip=()):
     """Every readout on the status line of `target`, or [] if there is none.
 
     Imported by the bridge, which calls it directly rather than reading a
     file: the columns move whenever a figure changes width (a token count
     gaining a digit shifts everything after it), so a layout published once
     is wrong within seconds. Calling this is one `capture-pane`.
+
+    `skip` is the screen rows a floating panel is covering. Those rows show
+    the panel, not the status line, so they are not read; the caller keeps
+    what it knew about them.
     """
     try:
         r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
@@ -200,9 +230,20 @@ def build(target):
     # a transcript line with a bullet in it is not a readout.
     for i in range(max(0, len(raw) - 8), len(raw)):
         clean = ANSI.sub("", raw[i])
+        row = i + 1                       # capture-pane rows are 0-based
+        if row in skip:
+            continue
+        m = CONTEXT_ROW.search(clean)
+        if m and SEP not in clean:
+            # The gauge row has no separators and no glyph, so the row test
+            # below would pass over it; it is one readout, found by its shape.
+            sid, title, rgb, body = classify(m.group(0))
+            segs.append({"id": sid, "row": row, "x": m.start() + 1,
+                         "w": len(m.group(0)), "title": title,
+                         "body": body, "rgb": list(rgb)})
+            continue
         if SEP not in clean or not NERD.search(clean):
             continue
-        row = i + 1                       # capture-pane rows are 0-based
         for col, w, text in pieces(clean):
             sid, title, rgb, body = classify(text)
             segs.append({
@@ -220,10 +261,51 @@ def build(target):
     return segs
 
 
+def cards_check():
+    """Every readout the REAL renderer draws must land on a card of its own.
+
+    A hand-written row proves only that the patterns match what was typed.
+    This runs the shipped binary over the whole payload corpus and classifies
+    what it actually prints, so a new readout (or a changed glyph) that has
+    no card fails here instead of showing "no card of its own yet" on hover.
+    Also asserts every id the renderer can emit is reachable, so a card
+    cannot rot unreachable.
+    """
+    import glob
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
+    env = dict(os.environ, NERDFLAIR_CCUSAGE="0", COLUMNS="250", TMUX="x,1,0")
+    seen, misses, rows = set(), {}, 0
+    for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
+        with open(f) as fh:
+            out = subprocess.run([binary], stdin=fh, capture_output=True,
+                                 text=True, env=env).stdout
+        for line in ANSI.sub("", out).split("\n"):
+            if CONTEXT_ROW.search(line):
+                seen.add("context")
+            if SEP not in line or not NERD.search(line):
+                continue
+            rows += 1
+            for _c, _w, text in pieces(line):
+                sid = classify(text)[0]
+                seen.add(sid)
+                if sid is None:
+                    misses[text] = misses.get(text, 0) + 1
+    assert rows, "the renderer printed no status rows; is it built?"
+    assert not misses, f"readouts with no card: {misses}"
+    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
+    # remote_control is drawn by the band, and ahead shares a piece with dirty.
+    assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
+    print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
+
+
 def main():
     """The CLI, which exists to SEE what the bridge computes."""
     if sys.argv[1:2] == ["--selfcheck"]:
         selfcheck()
+        return
+    if sys.argv[1:2] == ["--cards-check"]:
+        cards_check()
         return
     segs = build(sys.argv[1])
     if not segs:
