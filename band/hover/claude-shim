@@ -33,6 +33,8 @@ case "${1:-}" in mcp|plugin|plugins|config|update|upgrade|doctor|install|setup-t
 if (( wrap )); then
   "$SELF_DIR/nf-tmux-heal" 2>/dev/null || true
   export CLAUDE_BIN="$real"
-  exec python3 "$HOVER/nfpty.py" "$@"
+  # argv[0] is "claude" because tmux names the window from the foreground
+  # process's argv[0]; without this every window read "python3".
+  exec -a claude python3 "$HOVER/nfpty.py" "$@"
 fi
 exec "$real" "$@"
