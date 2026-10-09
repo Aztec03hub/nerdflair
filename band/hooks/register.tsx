@@ -342,19 +342,33 @@ export const register: Register = on => {
     // control is on cannot tell you it is OFF, and "no indicator" is also what
     // a broken indicator looks like, which is how the native one went missing
     // without anyone being able to say when.
-    const rcOn = rcSeen.length > 0
+    // The BRIDGE decides the state, not surfaces(). The renderer reports it
+    // from CLAUDE_CODE_BRIDGE_SESSION_ID, which Claude Code maintains in its
+    // own process as bridges attach and detach. surfaces() answers a
+    // different question, "who is drawing right now", and measured on this
+    // machine it said terminal-only while the session file carried a live
+    // bridgeSessionId: the chip read "RC off" with remote control attached.
+    // surfaces() is still worth showing, as the detail of WHERE it is drawing,
+    // so it stays in the card.
+    const rcSeg = cache.segs.find(s => s.id === 'remote_control')
+    const rcOn = rcSeg ? rcSeg.text === 'rc on' : rcSeen.length > 0
     const rcJustLeft = !rcOn && rcLeftAt > 0 && now - rcLeftAt < RC_LINGER_MS
+    // rcSeen can be empty while rcOn is true: a bridge is attached but no
+    // remote client is painting. "on" is the honest label for that.
     const rc = rcOn
-      ? { color: RC_GREEN, glyph: '⬤', label: rcSeen.join('+') }
+      ? { color: RC_GREEN, glyph: '⬤', label: rcSeen.length > 0 ? rcSeen.join('+') : 'on' }
       : rcJustLeft
         ? { color: RC_AMBER, glyph: '◌', label: `left ${ago(now - rcLeftAt)}` }
         : { color: RC_OFF, glyph: '◯', label: 'off' }
     const rcCard = rcOn
       ? [
-          `attached: ${rcSeen.join(', ')}`,
-          `since: ${ago(now - rcSince)} ago`,
-          'this session also draws on a remote client',
+          'a Remote Control bridge is attached to this session',
+          rcSeen.length > 0
+            ? `drawing on: ${rcSeen.join(', ')}`
+            : 'no remote client is drawing right now',
+          `seen attached for: ${ago(now - rcSince)}`,
           'anything typed there runs here, in this working directory',
+          'source: CLAUDE_CODE_BRIDGE_SESSION_ID, read fresh each render',
         ]
       : rcJustLeft
         ? [
@@ -371,11 +385,12 @@ export const register: Register = on => {
     // a property of the row, so it cannot be decided inside a per-segment map.
     // The RC chip is charged against the budget too, as it occupies the row
     // like any other segment.
+    // remote_control is drawn by the chip, so it must not also appear as an
+    // ordinary segment. One list from here on, so the chip and the segments
+    // cannot disagree about who is charged against the width budget.
+    const segs = cache.segs.filter(s => s.id !== 'remote_control')
     const rcText = `${rc.glyph} RC ${rc.label}`
-    const shown = budget(
-      [rcText, ...cache.segs.map(s => plain(s.text))],
-      SEP.length,
-    )
+    const shown = budget([rcText, ...segs.map(s => plain(s.text))], SEP.length)
 
     return (
       <Box flexDirection="column">
@@ -406,7 +421,7 @@ export const register: Register = on => {
             </Box>
           </Box>
           <Text color={DIM}>{SEP}</Text>
-          {cache.segs.map((s, i) => {
+          {segs.map((s, i) => {
             const card = CARDS[s.id]
             const color = card?.color ?? DIM
             // A keyed Box scopes the hover. The card is absolutely positioned

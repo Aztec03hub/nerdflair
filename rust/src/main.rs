@@ -1619,7 +1619,30 @@ fn render_inner(input: &str) -> Result<String, String> {
     // default text path is byte-for-byte untouched (difftest never passes
     // --json). Adding a segment means adding one line to this table.
     if std::env::args().any(|a| a == "--json") {
+        // Remote Control, emitted here because THIS process is the only one
+        // positioned to answer it. Claude Code sets
+        // CLAUDE_CODE_BRIDGE_SESSION_ID in its own process when a bridge
+        // attaches and deletes it when one detaches, so a child spawned fresh
+        // on each render reads the CURRENT value by inheritance. A long-lived
+        // process cannot: it only ever sees the value from its own start.
+        //
+        // This is NOT the same question as `$.session.surfaces()`, which the
+        // band asked first and which answers "who is drawing right now".
+        // Measured on this machine: the session file recorded a live
+        // bridgeSessionId matching this variable while surfaces() still said
+        // terminal only, so the chip read "RC off" with remote control
+        // plainly attached. A bridge can be attached with no remote client
+        // currently rendering, and "is remote control on" is the bridge.
+        let rc_on = std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let rc_segment = if rc_on {
+            String::from("rc on")
+        } else {
+            String::from("rc off")
+        };
         let segs: Vec<(&str, &String)> = vec![
+            ("remote_control", &rc_segment),
             ("folder", &folder_segment),
             ("model", &model_segment),
             ("dirty", &dirty_segment),
