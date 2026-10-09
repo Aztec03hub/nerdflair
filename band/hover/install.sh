@@ -41,6 +41,14 @@ EOF
 
 rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$f" ]] && echo "$f"; done; }
 
+# A file with a BEGIN marker and no END would lose everything after it, so the
+# markers must pair up before anything is stripped.
+paired() { # file
+  local b e
+  b=$(grep -cxF "$BEGIN" "$1" || true); e=$(grep -cxF "$END" "$1" || true)
+  [[ "$b" == "$e" && "$b" -le 1 ]]
+}
+
 strip() { # file: print it without our block
   awk -v b="$BEGIN" -v e="$END" '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$1"
 }
@@ -52,6 +60,7 @@ case "${1:-install}" in
     install -m 755 "$HERE/claude-shim" "$NF/bin/claude"
     install -m 755 "$HERE/nf-tmux-heal" "$NF/bin/nf-tmux-heal"
     for f in $(rcfiles); do
+      paired "$f" || { echo "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there" >&2; continue; }
       tmp="$f.nf.$$"
       { strip "$f"; block; } > "$tmp"
       if ! cmp -s "$tmp" "$f"; then cp -p "$f" "$f.nf-backup"; cat "$tmp" > "$f"; fi
@@ -62,6 +71,7 @@ case "${1:-install}" in
     ;;
   uninstall)
     for f in $(rcfiles); do
+      paired "$f" || { echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; continue; }
       tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
     done
     rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/hover"

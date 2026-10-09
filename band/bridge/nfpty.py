@@ -121,7 +121,7 @@ class Backdrop:
             r = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-e", "-t", self.pane,
                  "-S", str(y - 1), "-E", str(y + h - 2)],
-                capture_output=True, text=True, timeout=1)
+                capture_output=True, text=True, timeout=0.5)
         except (OSError, subprocess.SubprocessError):
             return
         if r.returncode == 0:
@@ -171,6 +171,10 @@ class Layout:
             return
         self.at = now
         fresh = mklayout.build(self.pane, skip=covered)
+        # tmux is read on the relay loop, so a slow answer is typing lag. If
+        # it took long, stop asking for a while rather than stall again.
+        if time.monotonic() - now > 0.3:
+            self.at = time.monotonic() + 5.0
         # An EMPTY read is an answer, not a failure to keep the old layout
         # through: it means something (a permission prompt, a dialog) is
         # drawn over the status line. Keeping the last good layout there made
@@ -191,6 +195,7 @@ class Layout:
         return None
 
 
+CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
 
@@ -232,9 +237,39 @@ def split_hovers(buf):
     # A trailing fragment is only held if it could still become a mouse
     # report. Anything else (a keystroke, a paste) goes through at once.
     cut = rest.rfind(ESC.encode() + b"[<")
-    if cut >= 0 and not MOUSE.match(rest, cut):
+    # A real report is under 24 bytes. A longer "fragment" is not one, and
+    # holding it would swallow the user's typing (the engine may not have a
+    # mouse mode on at all).
+    if cut >= 0 and len(rest) - cut < 24 and not MOUSE.match(rest, cut):
         return bytes(forward + rest[:cut]), hovers, rest[cut:]
     return bytes(forward + rest), hovers, b""
+
+
+def ends_clean(data):
+    """True if `data` does not stop in the middle of an escape sequence or a
+    UTF-8 character, i.e. if it is safe to write something of our own next.
+
+    Our panel is painted into the same byte stream the engine writes, in
+    separate writes. Landing between two halves of one sequence corrupts the
+    engine's output, so painting waits for a boundary.
+    """
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        if e.end >= len(data):
+            return False
+    i = data.rfind(b"\x1b")
+    if i < 0:
+        return True
+    rest = data[i + 1:]
+    if not rest:
+        return False                                   # a bare ESC
+    if rest[:1] == b"[":                               # CSI: ends on 0x40-0x7e
+        body = rest[1:]
+        return any(0x40 <= b <= 0x7e for b in body)
+    if rest[:1] == b"]":                               # OSC: BEL or ST
+        return b"\x07" in rest or b"\x1b\\" in data[i:]
+    return True
 
 
 def selfcheck():
@@ -267,6 +302,14 @@ def selfcheck():
     log = io.StringIO()
     assert note_modes(e + b"[?1003h" + e + b"[?1006h", log) is None
     assert log.getvalue() == "mode 1003h\nmode 1006h\n", log.getvalue()
+    # Painting waits for a clean boundary in the engine's stream.
+    assert ends_clean(b"abc") and ends_clean(b"\x1b[0m") and ends_clean(b"\x1b[38;2;1;2;3mx")
+    assert not ends_clean(b"abc\x1b") and not ends_clean(b"abc\x1b[38;2;1")
+    assert not ends_clean("é".encode()[:1]) and ends_clean("é".encode())
+    assert not ends_clean(b"\x1b]0;title") and ends_clean(b"\x1b]0;title\x07")
+    # A "mouse report" fragment that is too long to be one is not held back.
+    junk = b"\x1b[<" + b"1" * 40
+    assert split_hovers(junk) == (junk, [], b""), "an overlong fragment must pass through"
     # The layout FOLLOWS the status line: a readout that moved is found at its
     # new column, and the rows a panel covers keep what was known about them.
     seg = lambda i, row, x: {"id": i, "row": row, "x": x, "w": 5}  # noqa: E731
@@ -317,6 +360,7 @@ def main():
     pid, master = pty.fork()
     if pid == 0:                                    # child: become claude
         os.environ["NFPTY"] = "1"
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # Python ignores it; the child must not inherit that
         try:
             os.execvp(claude, [claude] + argv)
         except OSError as e:
@@ -331,10 +375,21 @@ def main():
 
     painted = [0]
 
+    # Our writes go into the engine's own byte stream, so they wait until the
+    # last chunk we relayed ended on a sequence boundary (see ends_clean).
+    clean = [True]
+    pending: list = []
+
+    def flush_pending():
+        if pending and clean[0]:
+            out.write("".join(pending).encode())
+            out.flush()
+            pending.clear()
+
     def write(s):
         painted[0] += len(s)
-        out.write(s.encode())
-        out.flush()
+        pending.append(s)
+        flush_pending()
 
     dbg = None
     if os.environ.get("NFPTY_LOG"):
@@ -359,6 +414,19 @@ def main():
     signal.signal(signal.SIGWINCH, on_winch)
 
     tail = b""
+    tail_since = [0.0]
+    status_box = [None]
+    quit_sig = [None]
+
+    def on_term(sig, _frame):
+        quit_sig[0] = sig
+        try:
+            os.kill(pid, sig)            # the child decides how to die
+        except OSError:
+            pass
+
+    for sg in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sg, on_term)
     last = time.monotonic()
     # When to take the panel down, if the pointer stays away.
     hide_at: list = [None]
@@ -373,6 +441,15 @@ def main():
 
             ready, _, _ = select.select([stdin_fd, master], [], [], FRAME)
 
+            # A descendant of the child (an MCP server, say) can still hold
+            # the slave after it exits, so EIO never comes. Ask directly.
+            if status_box[0] is None:
+                done, st = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    status_box[0] = st
+            if status_box[0] is not None and master not in ready:
+                break
+
             if master in ready:
                 try:
                     data = os.read(master, 65536)
@@ -385,6 +462,11 @@ def main():
                 note_modes(data, dbg)
                 out.write(data)
                 out.flush()
+                clean[0] = ends_clean(data)
+                m = CURSOR.findall(data)
+                if m:
+                    panel.cursor_visible = m[-1] == b"h"
+                flush_pending()
                 # The engine has just repainted its frame, which covers where
                 # the panel floats. Being last in the chain is the whole
                 # advantage of sitting here: repaint on top of it and the
@@ -409,6 +491,7 @@ def main():
                 if not data:
                     break
                 fwd, hovers, tail = split_hovers(tail + data)
+                tail_since[0] = time.monotonic()
                 if fwd:
                     os.write(master, fwd)
                 if hovers:
@@ -440,6 +523,11 @@ def main():
 
             now = time.monotonic()
 
+            # A held fragment that never completes is not a mouse report.
+            if tail and now - tail_since[0] > 0.3:
+                os.write(master, tail)
+                tail = b""
+
             if hide_at[0] is not None and now >= hide_at[0]:
                 hide_at[0] = None
                 # erase() puts back the rows saved from tmux. It does not ask
@@ -454,6 +542,13 @@ def main():
                 # HOW MUCH gets repainted depends on the interference.
                 panel.paint(full=panel.advance())
     finally:
+        # Whatever the exit path, leave the terminal usable: the engine resets
+        # its own mouse modes on a clean exit, and on a crash nobody does.
+        try:
+            out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
+            out.flush()
+        except (OSError, ValueError):
+            pass
         if old is not None:
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
         try:
@@ -461,8 +556,11 @@ def main():
         except OSError:
             pass
 
-    _, status = os.waitpid(pid, 0)
-    sys.exit(os.waitstatus_to_exitcode(status))
+    status = status_box[0]
+    if status is None:
+        _, status = os.waitpid(pid, 0)
+    code = os.waitstatus_to_exitcode(status)
+    sys.exit(128 - code if code < 0 else code)     # shell convention: 128 + signal
 
 
 if __name__ == "__main__":

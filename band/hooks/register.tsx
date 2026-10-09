@@ -364,7 +364,8 @@ export const register: Register = on => {
     }
     // Cheap and never rejects, so it is read every render rather than cached:
     // the whole point of this chip is that it is never stale.
-    rcSeen = (await $.session.surfaces()).filter(x => x !== 'terminal').slice()
+    // plain(): surface names come from outside and reach a Text and a tmux popup
+    rcSeen = (await $.session.surfaces()).filter(x => x !== 'terminal').map(plain)
     if (rcSeen.length > 0 && rcSince === 0) rcSince = now
     if (rcSeen.length === 0 && rcSince !== 0) {
       rcLeftAt = now

@@ -48,6 +48,9 @@ class Panel:
         self.backdrop = backdrop
         self.rows = rows
         self.cols = cols
+        # Whether the engine currently shows its cursor. Our paints hide it
+        # while drawing and must hand it back as they found it, not force it on.
+        self.cursor_visible = True
         self.rect = None          # (x, y, w, h), so we can erase exactly
         self.paths = []           # two runs of border cells: (row, col, char)
         self.accent = (255, 255, 255)
@@ -82,6 +85,9 @@ class Panel:
         b += [(y + r, x, "│") for r in range(1, h - 1)]
         b += [(y + h - 1, x + i, ch) for i, ch in enumerate(bottom)]
         return [a, b]
+
+    def _show_cursor(self):
+        return f"{ESC}[?25h" if self.cursor_visible else ""
 
     def show(self, sid, title, body, accent, anchor_col, anchor_row):
         """Place a panel just above `anchor_row`, left-aligned near
@@ -130,7 +136,7 @@ class Panel:
             out.append(f"{ESC}[{y+1+i};{x}H{acc}│{RESET} "
                        f"{line:<{w-4}} {acc}│{RESET}")
         out.append(self._border(full=True))
-        out += [f"{ESC}[?25h", f"{ESC}[u"]
+        out += [self._show_cursor(), f"{ESC}[u"]
         self.write("".join(out))
 
     def erase(self):
@@ -145,7 +151,7 @@ class Panel:
             # not the design.
             under = "".join(f"{ESC}[{r};{x}H{' ' * w}"
                             for r in range(y, y + h))
-        self.write(f"{ESC}[s{ESC}[?25l" + under + f"{ESC}[?25h{ESC}[u")
+        self.write(f"{ESC}[s{ESC}[?25l" + under + self._show_cursor() + f"{ESC}[u")
         self.rect = None
         self.paths = []
         self.shown = None
@@ -156,7 +162,7 @@ class Panel:
         if not self.paths:
             return
         self.write(f"{ESC}[s{ESC}[?25l" + self._border(full)
-                   + f"{ESC}[?25h{ESC}[u")
+                   + self._show_cursor() + f"{ESC}[u")
 
     def _border(self, full=False):
         """The border cells as escapes, for the caller to write.

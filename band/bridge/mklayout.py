@@ -220,7 +220,7 @@ def build(target, skip=()):
     """
     try:
         r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
-                           capture_output=True, text=True, timeout=2)
+                           capture_output=True, text=True, timeout=0.5)
     except (OSError, subprocess.SubprocessError):
         return []
     raw = r.stdout.split("\n")
