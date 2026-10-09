@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# nf-tmux-heal - bring a tmux server back when its socket has been deleted.
+#
+# tmux keeps running after something removes its socket directory, but no
+# client can reach it, and every `tmux` command fails with "error connecting".
+# The documented repair is SIGUSR1 to the SERVER (not a client), and it fails
+# unless the parent directory exists, so recreate that first.
+#
+# Deliberately small: it only signals a server that is already running. It
+# never starts, restarts or kills one, so it cannot loop and cannot cost a
+# session. Idempotent, and a no-op when a socket is present.
+set -u
+uid=$(id -u)
+# The server is the tmux process with no controlling terminal; clients have one.
+pid=$(ps -u "$uid" -o pid=,tty=,comm= | awk '$3=="tmux" && $2=="?"{print $1; exit}')
+[[ -n "$pid" ]] || exit 0                       # no server: nothing to heal
+for base in "${TMUX_TMPDIR:-/tmp}" /tmp "${XDG_RUNTIME_DIR:-/run/user/$uid}"; do
+  [[ -S "$base/tmux-$uid/default" ]] && exit 0  # a socket exists: healthy
+done
+dir="${TMUX_TMPDIR:-/tmp}/tmux-$uid"
+mkdir -m 700 -p "$dir" && kill -USR1 "$pid" && echo "nf-tmux-heal: socket recreated at $dir/default" >&2

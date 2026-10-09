@@ -371,6 +371,13 @@ while [[ $# -gt 0 ]]; do
       jq --arg cmd "$_sl_cmd" '.statusLine = {"type": "command", "command": $cmd}' "$NF_SETTINGS_FILE" > "$_tmp" && mv "$_tmp" "$NF_SETTINGS_FILE"
       printf '%b✓ statusLine configured in settings.json%b\n' "$NF_GREEN" "$NF_RST"
 
+      # Hover panels: a bare `claude` starts under the pty wrapper. Needs
+      # python3; skipped quietly without it, since the status line itself works.
+      _hover="$SCRIPT_DIR/../band/hover/install.sh"
+      if [[ -f "$_hover" ]] && command -v python3 >/dev/null 2>&1; then
+        bash "$_hover" install && printf '%b✓ Hover panels enabled%b (open a new shell; needs tmux)\n' "$NF_GREEN" "$NF_RST"
+      fi
+
       # Refresh spinnerVerbs if nerdflair spinners were previously enabled
       if [[ -f "$NF_SETTINGS_FILE" ]] && jq -e '.spinnerVerbs' "$NF_SETTINGS_FILE" &>/dev/null; then
         _is_nerdflair=$(jq '.spinnerVerbs.verbs // [] | map(select(contains("Chugging an estus flask"))) | length > 0' "$NF_SETTINGS_FILE")
@@ -393,6 +400,7 @@ while [[ $# -gt 0 ]]; do
       _nerdflair_dir="$HOME/.claude/nerdflair"
 
       printf '%bUninstalling nerdflair...%b\n' "$NF_DIM" "$NF_RST"
+      [[ -f "$SCRIPT_DIR/../band/hover/install.sh" ]] && bash "$SCRIPT_DIR/../band/hover/install.sh" uninstall
 
       # Restore or remove spinnerVerbs from settings.json
       _backup_file="$_nerdflair_dir/spinnerVerbs.backup.json"

@@ -271,6 +271,19 @@ def main():
         return
     claude = os.environ.get("CLAUDE_BIN") or "claude"
 
+    # Say so BEFORE the TUI owns the screen if tmux cannot be reached: layout
+    # and backdrop both depend on it, and without it hover fails silently.
+    sock = (os.environ.get("TMUX") or "").split(",")[0]
+    try:
+        ok = subprocess.run(["tmux", "display-message", "-p", "-t",
+                             os.environ.get("TMUX_PANE") or "", "ok"],
+                            capture_output=True, timeout=2).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if os.environ.get("TMUX") and not ok:
+        sys.stderr.write(f"nfpty: tmux unreachable (socket {sock or '?'}); hover "
+                         "panels will not work. Run nf-tmux-heal, or restart tmux.\n")
+
     pid, master = pty.fork()
     if pid == 0:                                    # child: become claude
         os.environ["NFPTY"] = "1"

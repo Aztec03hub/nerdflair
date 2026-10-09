@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# claude-shim - installed as ~/.nerdflair/bin/claude, ahead of the real claude
+# on PATH. A bare `claude` therefore starts under the hover wrapper, and an
+# update to Claude Code changes nothing here: the real binary is found afresh
+# on every start by walking PATH past this directory.
+#
+# It wraps only when wrapping can work, and otherwise gets out of the way:
+# the real claude is exec'd, never a failure, never a loop.
+set -u
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOVER="$SELF_DIR/../hover"
+
+real=""
+IFS=: read -ra dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+  [[ -z "$d" || "$(cd "$d" 2>/dev/null && pwd)" == "$SELF_DIR" ]] && continue
+  [[ -x "$d/claude" && ! -d "$d/claude" ]] && { real="$d/claude"; break; }
+done
+if [[ -z "$real" ]]; then
+  echo "claude-shim: no real claude on PATH after $SELF_DIR" >&2; exit 127
+fi
+
+wrap=1
+[[ -n "${NFPTY:-}" || "${NERDFLAIR_HOVER:-1}" == 0 ]] && wrap=0   # already wrapped, or opted out
+[[ -t 0 && -t 1 ]] || wrap=0                                      # pipes, -p, scripts
+[[ -n "${TMUX:-}" ]] || wrap=0                                    # panels need tmux to restore what they cover
+{ [[ -f "$HOVER/nfpty.py" ]] && command -v python3 >/dev/null; } || wrap=0   # dangling link: plain claude
+for a in "$@"; do
+  case "$a" in -p|--print|-v|--version|-h|--help) wrap=0 ;; esac
+done
+case "${1:-}" in mcp|plugin|plugins|config|update|upgrade|doctor|install|setup-token|migrate-installer|auth|agents) wrap=0 ;; esac
+
+if (( wrap )); then
+  "$SELF_DIR/nf-tmux-heal" 2>/dev/null || true
+  export CLAUDE_BIN="$real"
+  exec python3 "$HOVER/nfpty.py" "$@"
+fi
+exec "$real" "$@"
