@@ -16,15 +16,14 @@ import type { Register } from 'claude-code'
 // figures ("as the status line has them") and the plain call costs nothing,
 // so the payload is reconstructed from it.
 
-const BIN = `${process_env_home()}/.local/bin/nerdflair-statusline`
-// The popup helper, beside this file in the repo. tmux draws it, because the
+// No `process` in this environment, so HOME is asked of the system once, on
+// the first render. It used to be a hardcoded path, which made the band work
+// on exactly one machine.
+let HOME = ''
+const BIN = () => `${HOME}/.local/bin/nerdflair-statusline`
+// The popup helper, installed beside this file. tmux draws it, because the
 // engine cannot float anything here; see the note above the width budget.
-const POPUP = `${process_env_home()}/nerdflair/band/popup.sh`
-
-function process_env_home(): string {
-  // No `process` in this environment; the home path is stable for this mod.
-  return '/home/plafayette'
-}
+const POPUP = () => `${HOME}/.claude/local-marketplace/plugins/nerdflair-band/popup.sh`
 
 const DIM = '#6b7280'
 const LIT = '#1f2937' // hover background
@@ -285,6 +284,11 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const now = await $.clock.now()
+    if (!HOME) {
+      const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
+      HOME = h.exitCode === 0 ? h.stdout.trim() : ''
+      if (!HOME) return next(e) // no home, no renderer: let the engine draw its own
+    }
     if (!cache || now - cache.at > TTL_MS) {
       const segs = await (async () => {
         try {
@@ -334,7 +338,7 @@ export const register: Register = on => {
               }),
             },
           }
-          const r = await $.process.run([BIN, '--json'], {
+          const r = await $.process.run([BIN(), '--json'], {
             stdin: JSON.stringify(payload),
             timeoutMs: 5000,
           })
@@ -462,7 +466,7 @@ export const register: Register = on => {
     // `plain` draws "the label alone", no [ brackets ], so the band looks
     // exactly as it did and the pointer still lights the label.
     const popup = (title: string, bodyText: string, x: number) => {
-      void $.process.run(['bash', POPUP, String(x), title, bodyText], {
+      void $.process.run(['bash', POPUP(), String(x), title, bodyText], {
         timeoutMs: 60000,
       })
     }
@@ -481,15 +485,21 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box>
-          <Button
-            plain
-            key="rc"
-            onPress={() => popup('Remote Control', rcCard.join(' · '), 0)}
-          >
-            <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
-              {rcText}
-            </Text>
-          </Button>
+          {/* A Text with a hover style needs a KEYED Box around it: Claude Code
+              2.1.296 refuses the whole tree otherwise ("Text hover has no Box
+              with a key around it") and draws its own, which is why the band
+              and the Remote Control pill never appeared. */}
+          <Box key="rc">
+            <Button
+              plain
+              key="rc-button"
+              onPress={() => popup('Remote Control', rcCard.join(' · '), 0)}
+            >
+              <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
+                {rcText}
+              </Text>
+            </Button>
+          </Box>
           <Text color={DIM}>{SEP}</Text>
           {segs.map((s, i) => {
             const card = CARDS[s.id]
