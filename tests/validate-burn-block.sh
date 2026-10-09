@@ -5,7 +5,12 @@
 #
 # This is the strangler-fig check. nerdflair stopped calling ccusage on
 # 2026-10-08 and now derives both figures from ~/.claude/nerdflair-usage.tsv.
-# The two are genuinely INDEPENDENT methods and that is the point:
+# The two methods differ in AGGREGATION and in PRICING, and that is all they
+# differ in. Both start from the token counts the API reports, so a flaw that
+# lives upstream of both (cache-tier pricing, long-context or fast-mode
+# premiums, subagent usage) is invisible here, and so is whether the ledger
+# faithfully records Claude Code's figure. This catches window and arithmetic
+# bugs. Correctness is pinned by tests/burn-block-golden.sh, not by this.
 #
 #   ours     Claude Code's own `cost.total_cost_usd` per session, sampled once
 #            a minute into the ledger. Authoritative, but 60s-granular, and a
@@ -28,8 +33,9 @@
 # Windows are matched explicitly. ccusage reports its block's remaining time,
 # so elapsed = 5h - remaining, and our ledger is summed over that same span.
 #
-# Exit 0 if the two agree within TOLERANCE_PCT, 1 otherwise, 2 if it could not
-# run (no ccusage, no ledger). A SKIP is never a pass.
+# Exit 0 if the two agree within TOLERANCE_PCT, 1 if they do not, and 77 (the
+# conventional SKIP code) if it could not run: no ccusage, no ledger, an
+# unparseable answer. A SKIP is never a pass; a gate must require exactly 0.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -41,16 +47,16 @@ for c in "$HOME/.local/lib/node_modules/ccusage/node_modules/@ccusage/ccusage-li
   [[ -n "$c" && -x "$c" ]] && { CCUSAGE="$c"; break; }
 done
 
-[[ -f "$LEDGER" ]] || { printf 'validate: no ledger at %s\n' "$LEDGER" >&2; exit 2; }
-[[ -n "$CCUSAGE" ]] || { printf 'validate: ccusage not installed, cannot cross-check\n' >&2; exit 2; }
+[[ -f "$LEDGER" ]] || { printf 'validate: no ledger at %s\n' "$LEDGER" >&2; exit 77; }
+[[ -n "$CCUSAGE" ]] || { printf 'validate: ccusage not installed, cannot cross-check\n' >&2; exit 77; }
 
 # A stub would answer instantly and produce no figures. Catch that rather than
 # reporting a confusing parse failure: the binary was replaced by a stub during
 # the 2026-10-08 incident and could be again.
-if [[ $(stat -c %s "$CCUSAGE" 2>/dev/null || echo 0) -lt 100000 ]]; then
-  printf 'validate: %s looks like a stub (%s bytes), not the real binary\n' \
-    "$CCUSAGE" "$(stat -c %s "$CCUSAGE")" >&2
-  exit 2
+# By behaviour, not size: a real node shim is small and a stub is not always.
+if ! "$CCUSAGE" --version 2>/dev/null | grep -qE '[0-9]+\.[0-9]+'; then
+  printf 'validate: SKIP: %s does not report a version, not the real ccusage\n' "$CCUSAGE"
+  exit 77
 fi
 
 now=$(date +%s)
@@ -59,7 +65,7 @@ now=$(date +%s)
 # the newest so the file certainly exists.
 TRANSCRIPT=$(find "$HOME/.claude/projects" -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null \
              | sort -rn | head -1 | cut -d' ' -f2-)
-[[ -n "$TRANSCRIPT" ]] || { printf 'validate: no transcript to point ccusage at\n' >&2; exit 2; }
+[[ -n "$TRANSCRIPT" ]] || { printf 'validate: no transcript to point ccusage at\n' >&2; exit 77; }
 payload=$(TRANSCRIPT="$TRANSCRIPT" HOMEDIR="$HOME" python3 -c "
 import json, os
 print(json.dumps({'session_id':'validate-burn-block',
@@ -69,26 +75,37 @@ print(json.dumps({'session_id':'validate-burn-block',
  'context_window':{'context_window_size':1000000,'total_input_tokens':1,'total_output_tokens':1,'used_percentage':1},
  'cost':{'total_cost_usd':0.0,'total_duration_ms':1,'total_api_duration_ms':1}}))")
 
-printf 'validate-burn-block\n  ledger:  %s\n  ccusage: %s\n\n' "$LEDGER" "$CCUSAGE"
+printf 'validate-burn-block\n  ledger:  %s\n  ccusage: %s\n  scanned: %s transcripts under %s (TZ=%s)\n\n' \
+  "$LEDGER" "$CCUSAGE" "$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name '*.jsonl' 2>/dev/null | wc -l)" \
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" "${TZ:-unset}"
 
 cc=$(printf '%s' "$payload" | timeout -k 5 180 "$CCUSAGE" statusline --no-offline 2>/dev/null \
      | sed 's/\x1b\[[0-9;]*m//g')
-[[ -n "$cc" ]] || { printf 'validate: ccusage produced nothing\n' >&2; exit 2; }
+[[ -n "$cc" ]] || { printf 'validate: ccusage produced nothing\n' >&2; exit 77; }
 printf '  ccusage: %s\n\n' "$cc"
 
-# "$213.09 block (25m left)" / "(4h 35m left)" / "(59s left)"
-cc_block=$(sed -n 's/.*\$\([0-9.]*\) block.*/\1/p' <<<"$cc")
-rem_h=$(sed -n 's/.*block (\([0-9]*\)h.*/\1/p' <<<"$cc"); rem_h=${rem_h:-0}
-rem_m=$(sed -n 's/.*block ([^)]*[^0-9]\([0-9]*\)m left).*/\1/p' <<<"$cc")
-[[ -z "$rem_m" ]] && rem_m=$(sed -n 's/.*block (\([0-9]*\)m left).*/\1/p' <<<"$cc")
-rem_m=${rem_m:-0}
-
+# "$213.09 block (25m left)" / "(4h 35m left)" / "(59s left)" / "$1,216.20".
+# Taken AFTER ccusage returns: it can run for minutes, and every figure below
+# is "how old is the block right now".
+now=$(date +%s)
+cc_block=$(grep -oE '\$[0-9,]+\.[0-9]+ block' <<<"$cc" | head -1 | tr -d '$,' | sed 's/ block//')
+left=$(grep -oE 'block \(([0-9]+[hms] ?)+ left\)' <<<"$cc" | head -1 || true)
 if [[ -z "$cc_block" ]]; then
-  printf 'validate: could not parse a block cost out of ccusage output\n' >&2; exit 2
+  printf 'validate: could not parse a block cost out of ccusage output\n' >&2; exit 77
 fi
-elapsed=$(( 5*3600 - (rem_h*3600 + rem_m*60) ))
+if [[ -z "$left" ]]; then
+  printf 'validate: no "(... left)" clause in ccusage output, cannot place the block in time\n' >&2; exit 77
+fi
+rem=0
+for part in $(grep -oE '[0-9]+[hms]' <<<"$left"); do
+  n=${part%[hms]}
+  case "$part" in *h) rem=$((rem + n*3600)) ;; *m) rem=$((rem + n*60)) ;; *s) rem=$((rem + n)) ;; esac
+done
+elapsed=$(( 5*3600 - rem ))
+(( elapsed < 0 )) && elapsed=0
+(( elapsed > 18000 )) && elapsed=18000
 if (( elapsed < 600 )); then
-  printf 'validate: block only %ss old, too little signal to compare\n' "$elapsed" >&2; exit 2
+  printf 'validate: block only %ss old, too little signal to compare\n' "$elapsed" >&2; exit 77
 fi
 
 # Our figure, read off the SHIPPED renderer.
@@ -108,7 +125,7 @@ fi
 BIN="${NERDFLAIR_VALIDATE_IMPL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/rust/target/release/nerdflair-statusline}"
 # A .sh implementation (the bash reference) is run through bash.
 RUN=("$BIN"); [[ "$BIN" == *.sh ]] && RUN=(bash "$BIN")
-[[ -f "$BIN" ]] || { printf 'validate: not built: %s\n' "$BIN" >&2; exit 2; }
+[[ -f "$BIN" ]] || { printf 'validate: not built: %s\n' "$BIN" >&2; exit 77; }
 resets_at=$(( now + (5*3600 - elapsed) ))
 ours_payload=$(TRANSCRIPT="$TRANSCRIPT" HOMEDIR="$HOME" RESETS="$resets_at" python3 -c "
 import json, os
@@ -137,7 +154,7 @@ ours_burn=$(grep -oE $'\xf3\xb0\x88\xb8 \\$[0-9]+\\.[0-9][0-9]/h' <<<"$ours_all"
 ours_line=$(tail -3 <<<"$ours_all")
 if [[ -z "$ours" ]]; then
   printf 'validate: the renderer printed no block figure; row was:\n  %s\n' "$ours_line" >&2
-  exit 2
+  exit 77
 fi
 
 printf '  window: %.2fh (ccusage block elapsed)\n' "$(awk -v e="$elapsed" 'BEGIN{print e/3600}')"
@@ -150,6 +167,12 @@ printf '  ours:    $%s\n  ccusage: $%s\n' "$ours" "$cc_block"
 printf '  burn:    ours $%s/h vs ccusage block rate (different windows, not judged)\n\n' \
   "${ours_burn:-none}"
 
+if awk -v b="$cc_block" 'BEGIN{exit !(b+0 <= 0)}'; then
+  printf 'validate: no ccusage spend in the block, nothing to compare against\n' >&2; exit 77
+fi
+if awk -v a="$ours" 'BEGIN{exit !(a+0 <= 0)}'; then
+  printf 'validate: no ledger rows in the window, ours is zero; that is a failure to measure, not a match\n' >&2; exit 1
+fi
 read -r diff_pct verdict < <(awk -v a="$ours" -v b="$cc_block" -v tol="$TOLERANCE_PCT" 'BEGIN {
   if (b <= 0) { print "nan FAIL"; exit }
   d = (a - b) / b * 100; ad = (d < 0 ? -d : d)
@@ -158,11 +181,6 @@ read -r diff_pct verdict < <(awk -v a="$ours" -v b="$cc_block" -v tol="$TOLERANC
 
 if [[ "$verdict" == "PASS" ]]; then
   printf '  PASS  ours is %s%% from ccusage (tolerance %s%%)\n' "$diff_pct" "$TOLERANCE_PCT"
-  printf '\nTwo independent methods agreeing this closely corroborates both.\n'
-  printf 'Expect ours slightly HIGH: ccusage prices tokens off a table, while a\n'
-  printf 'session that began mid-window contributes to us only from its first\n'
-  printf '60s sample, which cuts the other way. Treat a persistent swing beyond\n'
-  printf 'the tolerance as a real regression, not as noise.\n'
   exit 0
 fi
 printf '  FAIL  ours is %s%% from ccusage (tolerance %s%%)\n' "$diff_pct" "$TOLERANCE_PCT"

@@ -25,66 +25,79 @@ Scope: attack the instruments (`tests/validate-burn-block.sh` and the argument b
 - Evidence: 11 sessions have a cumulative cost that goes down. 10 of the drops fall inside the last 5 h. Examples: `3c667d56` 677.6 -> 435.5 (after a 13.6 h gap), `a13dd10d` 517.2 -> 0.94, `873fd3f9` 2215 -> 2051. Zero within-session time inversions.
 - Proves vs claimed: any (last - first) or (max - min) rule is wrong across a drop. The 12% agreement was obtained with a rule that is wrong on this data and said nothing about it.
 - Fix: sum positive increments between consecutive time-ordered samples per session. Use it in bash, Rust and any harness, and pin it with a golden case that includes a drop followed by regrowth. (Team lead reports this is done, with a golden case; keep a regression for the drop-then-regrow shape.)
+- **Status 2026-10-09: FIXED.** Both renderers sum positive increments per session (a drop rebases and adds nothing). Pinned by `tests/burn-block-golden.sh` cases 1, 5 and 8 (falling counter, mid-window reset with regrowth, backwards row) and the `monotonic` mutation in `tests/golden-mutation.sh`, which the goldens kill.
 
 ### 3. High - harness checks block only; burn rate is unvalidated
 - Where: `:103` compares one number. Burn is `statusline.sh:1550-1557`.
 - Proves vs claimed: the name and header promise both burn and block.
 - Fix: replay a fixed ledger through the renderer and assert exact burn (`spent / span`), including the `NERDFLAIR_BURN_MIN_SPAN` threshold, the sub-minimum fallback to the session average, and the zero-spend suppression.
+- **Status 2026-10-09: FIXED.** Cases 1, 2 and 4 assert exact burn (`36.00 / 0.75h = $48.00/h`), the minimum-span suppression and the empty-ledger case; the `min_span` mutation is killed. The harness now also reads and prints burn, reported rather than judged because the windows differ.
 
 ### 4. High - window is ccusage's, not the shipped one
 - Where: `:83` and `:90` derive the window as `5h - remaining`. The shipped window is `rl_5h_reset - 18000` (`statusline.sh:1600-1604`).
 - ccusage floors its block start to the hour, so the windows can differ by up to about 59 min, which is up to about 20% of a block's spend.
 - Proves vs claimed: it validates a window nobody ships.
 - Fix: anchor on the payload's `resets_at`, and use ccusage only to report the delta between the two windows as a diagnostic.
+- **Status 2026-10-09: PARTLY FIXED.** The shipped renderer anchors on `resets_at` and the harness reproduces ccusage's elapsed block through `resets_at`. It still does not print the delta between ccusage's hour-floored start and ours as a diagnostic. OPEN, small.
 
 ### 5. High - independence claim is overstated
 - Both methods read API-reported token counts; only the price table and aggregation differ. Shared flaws are invisible (cache tier pricing, long-context or fast-mode premiums, subagent usage).
 - Proves vs claimed: it catches aggregation and window bugs, not pricing or accounting errors, and it never tests that the ledger faithfully records Claude Code's figure.
 - Fix: state the limitation in the harness header. Test ledger arithmetic with fixtures. Add a transcript-level recount against Anthropic's published opus-5 prices (cache tiers included).
+- **Status 2026-10-09: FIXED for the claim, OPEN for the recount.** The harness header now says the methods differ only in aggregation and pricing and that upstream flaws are invisible to it. The transcript-level recount at published prices is not done; see finding 6 and task B5.
 
 ### 6. High - "ccusage --no-offline is right" is unproven and circular
 - Evidence: only offline was shown wrong (86 -> 213); 213 is vouched for by the 12% agreement, which is vouched for by 213.
 - Fix: recompute one 5 h transcript window by hand from published prices, then compare with both numbers.
+- **Status 2026-10-09: OPEN.** Nothing recomputes a window by hand from published prices. It matters more now: the live comparison is 35% off, and B5 needs this recount to say which side is wrong.
 
 ### 7. High - tolerance and sample size cannot detect meaningful defects
 - Where: `:31` (`TOLERANCE_PCT=25`), single run.
 - These wrong implementations still pass at 25%: a 4 h or 6 h window, 20% of sessions missing (headless, `claude -p`, never rendering the statusline), a wrong repo filter, ignoring resets, counting only the largest sessions.
 - 17 of 22 in-window sessions already had more than $0.50 at their first in-window sample, so a lot of spend predates the first sample and truncation can be large.
 - Fix: exact golden fixtures for correctness; ccusage as advisory at about 10% after window alignment, and repeated at several block ages (about 1 h, 3 h, 4.8 h) because a real defect drifts with age.
+- **Status 2026-10-09: PARTLY FIXED.** Exact goldens now carry correctness and ccusage is the smoke test. Still open: running the comparison at several block ages (about 1 h, 3 h, 4.8 h) and tightening the tolerance to about 10% once the gap in B5 is explained.
 
 ### 8. Medium - direction-of-bias claim is a rationalisation
 - Where: `:112-115`. The text says ours should be HIGH and in the same sentence says truncation "cuts the other way".
 - All structural biases found push ours low (first-sample truncation, missing headless sessions, 60 s lag, `now` captured before a ccusage run that can take 180 s).
 - Proves vs claimed: a high result would be excused rather than explained.
 - Fix: delete the paragraph. Break the delta down per session and per model and explain the largest contributors.
+- **Status 2026-10-09: FIXED.** The paragraph that excused a high result is deleted. The per-session and per-model breakdown of the delta is still to do, in B5.
 
 ### 9. Medium - harness reads the whole ledger; the renderer reads the last 1 MiB
 - Where: `:98` vs `statusline.sh:1494-1505`.
 - Proves vs claimed: the tail-truncation edge (a session whose first in-window rows precede the tail start) is never exercised. The ledger is already 2.5 MB.
 - Fix: golden case with a ledger larger than `NERDFLAIR_LEDGER_TAIL_BYTES` whose window start falls before the tail boundary. Test through the renderer.
+- **Status 2026-10-09: FIXED.** Golden case 7 uses a tail cap shorter than the block window and asserts the suppression; the harness gives the cap room on purpose and says why.
 
 ### 10. Medium - parse and clock soft spots, so a wrong parse can fabricate a PASS
 - Where: `:74-83`, `:50`.
 - Seconds-only "59s left" parses to 0 remaining, so `elapsed` silently becomes 18000 (full 5 h). `$1,216.20` is read as 216.20. `now` is taken before the up-to-180 s ccusage run, but remaining time is measured after it.
 - Fix: capture `now` after ccusage returns, parse `[0-9,]+`, strip commas, bound `elapsed` to 0..18000, and exit 2 when the "left" clause does not match at all.
+- **Status 2026-10-09: FIXED.** `now` is taken after ccusage returns, costs parse `[0-9,]+` with commas stripped, "59s left" is parsed, `elapsed` is bounded to 0..18000, and a missing "left" clause exits 77.
 
 ### 11. Medium - SKIP (exit 2) can be read as pass; stub check can reject a legitimate shim
 - Where: `:25`, `:38-48`. Nothing currently calls the script, so no live misuse, but `|| true` or `[ $? -ne 1 ]` would turn SKIP into PASS.
 - The `<100000` byte check also rejects a real node shim from `command -v ccusage`, giving a permanent SKIP.
 - Fix: a distinct SKIP code (77), print the reason on stdout, and require explicit exit 0 in any release gate. Replace the size heuristic with `ccusage --version` output.
+- **Status 2026-10-09: FIXED.** Every could-not-run path exits 77, with the reason on stdout, and the stub check runs `ccusage --version` instead of testing a file size. A release gate must still require exactly 0.
 
 ### 12. Medium - per-session file order is assumed to be time order
 - Evidence: 0 inversions in the live ledger, but nothing enforces it. Each render takes `$EPOCHSECONDS` before the flock (`statusline.sh:1206-1208`); the stamp file is touched only after the append. Two renders of one session near the 60 s boundary can both be "due" and append out of order.
 - Effect: bounded (cents), because up-down-up counts the up leg twice.
 - Fix: in the positive-increment pass, skip any row whose epoch is lower than the previous accepted row of that session, or sort per session by epoch. Add a golden case with a swapped pair.
+- **Status 2026-10-09: FIXED.** A row whose epoch is lower than the previous accepted row of its session is skipped, in both renderers. Golden case 8 holds a swapped pair and the `ordering` mutation is killed.
 
 ### 13. Low - ccusage input environment is unrecorded
 - Different transcript roots, `CLAUDE_CONFIG_DIR` or `TZ` change what ccusage scans.
 - Fix: print the transcript roots, file count and TZ it used.
+- **Status 2026-10-09: FIXED.** The harness prints the transcript root, the file count and TZ it scanned.
 
 ### 14. Low - degenerate outputs
 - `b <= 0` prints "nan FAIL" (`:104`); an empty ledger window gives -100%. Both fail safely but read oddly.
 - Fix: print "no ccusage spend in block" and "no ledger rows in window" explicitly.
+- **Status 2026-10-09: FIXED.** Zero ccusage spend exits 77 with a plain message; an empty ledger window is a failure to measure and exits 1.
 
 ## Tests that cannot fail / missing positive controls
 
