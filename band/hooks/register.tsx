@@ -196,26 +196,29 @@ const SEG_MIN = 6
 // narrow enough that revealing one does not displace the whole row.
 const CARD_W = 68
 
-// Card height, and the number of rows the band RESERVES above its segments so
-// a card has somewhere to paint.
+// The card FLOATS DOWNWARD, over the prompt, and reserves nothing.
 //
-// This is the whole trick, and it is forced by how the engine clips. An
-// absolutely positioned Box is "clipped, pointer and paint, by the region its
-// site is in (viewport, pane, band)". The band is our site, so a card placed
-// above the segment row is cut away unless the band itself is that tall: that
-// is why the first attempt drew a bordered box with no body. Growing the card
-// in flow fixed the clipping and bought a shift of the whole screen instead,
-// which is worse.
+// Read out of the engine itself (2.1.295) rather than guessed, because two
+// guesses had already been wrong. The renderer does this to every absolutely
+// positioned node:
 //
-// Reserving the rows gives an absolute card room INSIDE the region, and
-// absolute means "no room among its siblings, painted over those before it",
-// so revealing one moves nothing at all. The cost is CARD_H quiet rows above
-// the band, always. That is the trade, and it is the only one available: a
-// true overlay across the transcript is not, since Pane docks or sits inline
-// rather than floating.
+//     if (P < 0 && n.style.position === "absolute") P = 0
 //
-// Keep CARD_H and the lines a card draws in step: 2 border rows plus the
-// title plus CARD_LINES of body.
+// It is a CLAMP, not a clip, and it is why the first version drew a bordered
+// box with no body: a card placed above the row did not vanish, it was
+// slammed onto row 0 of the live frame, which is the band's own row, and
+// painted its border over the segment text. The same clamp appears again in
+// the absolute-descendant pass, so it is deliberate. It has to be: rows above
+// the live frame are terminal scrollback the engine does not own, which is
+// also why tmux can paint over your history and a plugin cannot.
+//
+// Downward is not clamped. Below the band is the prompt, which the engine
+// DOES own and repaint every frame. And clipping is opt-in: `gC` returns a
+// clip rect only where `overflow` is "hidden" or "scroll", so unless an
+// ancestor sets one, nothing cuts the card off.
+//
+// So: absolute, one row down, painting over the prompt. No reserved rows, no
+// reflow, nothing moves.
 const CARD_LINES = 3
 const CARD_H = CARD_LINES + 3
 
@@ -438,13 +441,6 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {/* The reserved overlay space: always present, and the reason a card
-            can paint above the row without moving it. Each row holds a space
-            rather than being an empty Box, because a Box with a height and no
-            content collapses and the reservation silently does nothing. */}
-        {Array.from({ length: CARD_H }, (_, j) => (
-          <Text key={`pad${j}`}> </Text>
-        ))}
         <Box>
           <Box key="seg-rc">
             <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
@@ -452,7 +448,7 @@ export const register: Register = on => {
             </Text>
             <Box
               position="absolute"
-              top={-CARD_H}
+              top={1}
               left={0}
               display="none"
               hover={{ display: 'flex' }}
@@ -496,7 +492,7 @@ export const register: Register = on => {
                 {card ? (
                   <Box
                     position="absolute"
-                    top={-CARD_H}
+                    top={1}
                     left={0}
                     display="none"
                     hover={{ display: 'flex' }}
