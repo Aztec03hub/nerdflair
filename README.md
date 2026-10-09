@@ -34,6 +34,22 @@
 Restart Claude Code after install for the changes to take effect.
 
 
+## Hover panels
+
+Hover a readout on the status line and a small card floats over the screen, saying what the number is and where it comes from. No row is reserved for it, and nothing is patched inside Claude Code, so a Claude Code update cannot break it.
+
+`/nerdflair install` turns it on. It needs `python3` and **tmux**, and a new shell afterwards. A bare `claude` then starts under a small pty wrapper (`band/bridge/nfpty.py`) that watches the pointer on its way through and paints the card. To use it without the installer, run `band/hover/install.sh`; to remove it, `band/hover/install.sh uninstall`.
+
+How it stays out of the way:
+
+- The shim at `~/.nerdflair/bin/claude` finds the real `claude` on `PATH` at every start. It wraps only a real terminal inside tmux, and runs plain `claude` for pipes, `-p`, `--version` and subcommands such as `mcp` or `plugin`. `NERDFLAIR_HOVER=0` turns it off for one run.
+- Where a card sits is read from the screen on each hover, so it follows the status line when a figure changes width.
+- If tmux's socket has been deleted (the server keeps running but every `tmux` command fails), `nf-tmux-heal` recreates it by signalling the running server. It never starts or kills one.
+- `mklayout.py --cards-check` runs the real renderer over the test payloads and fails if any readout has no card.
+
+The band also ships as a Claude Code plugin, `nerdflair-band`, which adds the Remote Control indicator. `band/sync-local-plugin.sh` installs it for every session.
+
+
 ## Features
 
 - **3 layout modes:** full (3 rows), compact (2 rows), minimal (1 row)
