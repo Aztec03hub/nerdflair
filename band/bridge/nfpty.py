@@ -501,7 +501,7 @@ def main():
                 rows, cols = winsize(stdin_fd)
                 set_winsize(master, rows, cols)
                 panel.rows, panel.cols = rows, cols
-                panel.erase()         # its rect is meaningless after a reflow
+                panel.reset()         # its rect and saved rows are in the old geometry
 
             ready, _, _ = select.select([stdin_fd, master], [], [], FRAME)
 

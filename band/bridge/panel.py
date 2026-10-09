@@ -96,11 +96,20 @@ class Panel:
             return                        # already up, let it shine
         w = min(self.cols - 4,
                 max(len(title) + 6, max(len(b) for b in body) + 4))
+        w = max(w, 12)
+        # Clipped to the card, not left to run over its right edge: on a
+        # terminal narrower than the text the border would otherwise break.
+        title = title[:max(1, w - 6)]
+        body = [b[:w - 4] for b in body]
         h = len(body) + 2
         x = max(1, min(anchor_col - 2, self.cols - w - 1))
         y = anchor_row - h
         if y < 1:
             y = anchor_row + 1
+        # Never off the bottom: the restore would then write past the last
+        # row and scroll the screen.
+        if y + h - 1 > self.rows:
+            y = max(1, self.rows - h + 1)
 
         if self.rect:
             self.erase()
@@ -138,6 +147,17 @@ class Panel:
         out.append(self._border(full=True))
         out += [self._show_cursor(), f"{ESC}[u"]
         self.write("".join(out))
+
+    def reset(self):
+        """Forget the panel WITHOUT painting. For a resize: the rows we saved
+        and the rect belong to the old geometry, and writing them into the new
+        one would paint stale cells over what the engine is about to redraw."""
+        self.rect = None
+        self.paths = []
+        self.shown = None
+        self.body = []
+        if self.backdrop:
+            self.backdrop.rows = None
 
     def erase(self):
         """Put back what the panel covered, in one write."""
@@ -296,6 +316,20 @@ def demo():
     r = Panel(writes.append, rows=50, cols=200)
     r.show("c", "C", ["body"], (7, 8, 9), 10, 40)
     assert len(writes) == 1, len(writes)
+
+    # A card wider than the terminal is clipped to it, and one anchored on the
+    # last rows stays on screen.
+    nb = []
+    t = Panel(nb.append, rows=20, cols=30)
+    t.show("n", "A very long title indeed", ["x" * 80], (1, 2, 3), 29, 20)
+    tx, ty, tw, th = t.rect
+    assert tx + tw - 1 <= 30 and ty >= 1 and ty + th - 1 <= 20, t.rect
+    assert all(len(line) <= tw - 4 for line in t.body), t.body
+    assert len(t.title) <= tw - 6, t.title
+    # Reset forgets without painting, and a later show starts clean.
+    before = len(nb)
+    t.reset()
+    assert t.rect is None and len(nb) == before, "reset must not write"
 
     p.erase()
     assert p.rect is None and p.shown is None
