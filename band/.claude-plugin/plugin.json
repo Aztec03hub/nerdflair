@@ -1,0 +1,5 @@
+{
+  "name": "nerdflair-band",
+  "version": "0.1.0",
+  "description": "The nerdflair status line as a hoverable band: highlight a readout, hover for what it means and where it comes from"
+}
