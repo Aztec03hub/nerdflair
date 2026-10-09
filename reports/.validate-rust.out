@@ -1,0 +1,5 @@
+validate-burn-block
+  ledger:  /home/plafayette/.claude/nerdflair-usage.tsv
+  ccusage: /home/plafayette/.local/lib/node_modules/ccusage/node_modules/@ccusage/ccusage-linux-x64/bin/ccusage
+
+validate: ccusage produced nothing
