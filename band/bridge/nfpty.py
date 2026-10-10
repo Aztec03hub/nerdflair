@@ -311,10 +311,17 @@ class Stream:
 
     def __init__(self):
         self.carry = b""
+        self.cursor = None      # last ESC[?25h/l seen: True shown, None unknown
 
     def feed(self, data):
         """Returns True if it is safe to write something of our own now."""
         buf = self.carry + data
+        # Scanned over carry+data: a show/hide split across two reads is
+        # whole here, and the carry (an unfinished tail) cannot already hold
+        # a complete match, so nothing is counted twice.
+        m = CURSOR.findall(buf)
+        if m:
+            self.cursor = m[-1] == b"h"
         n = incomplete_tail(buf)
         # A tail this long is not a sequence; do not hold the panel hostage.
         # A sequence longer than 4096 bytes is not one a terminal emits in
@@ -382,6 +389,14 @@ def selfcheck():
     assert st.feed(b"\x1b]0;" + "\U000f024b".encode()[:2]) is False
     assert st.feed("\U000f024b".encode()[2:] + b" title") is False, "still inside the OSC after the glyph completes"
     assert st.feed(b"\x07") is True
+    # Cursor hide/show split across reads is still seen (the per-chunk scan
+    # it replaced missed both halves), and the last one wins.
+    st = Stream()
+    st.feed(b"x\x1b[?2"); assert st.cursor is None
+    st.feed(b"5l"); assert st.cursor is False, "hide split over two reads"
+    st.feed(b"\x1b[?25"); st.feed(b"h"); assert st.cursor is True, "show split before the final byte"
+    st.feed(b"\x1b[?25l\x1b[?25h"); assert st.cursor is True, "last in a chunk wins"
+    assert not CURSOR.findall(b"x\x1b[?2") and not CURSOR.findall(b"5l"), "control: per-chunk scan misses it"
     # A "mouse report" fragment that is too long to be one is not held back.
     junk = b"\x1b[<" + b"1" * 40
     assert split_hovers(junk) == (junk, [], b""), "an overlong fragment must pass through"
@@ -553,9 +568,8 @@ def main():
                     unclean_since[0] = time.monotonic()
                 if clean[0]:
                     unclean_since[0] = 0.0
-                m = CURSOR.findall(data)
-                if m:
-                    panel.cursor_visible = m[-1] == b"h"
+                if stream.cursor is not None:
+                    panel.cursor_visible = stream.cursor
                 flush_pending()
                 # The engine has just repainted its frame, which covers where
                 # the panel floats. Being last in the chain is the whole

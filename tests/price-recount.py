@@ -34,7 +34,7 @@ RATES = {
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.10),  # 0.05x, per the pricing page footnote
     "claude-sonnet-5": (2.0, 10.0, 0.20),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
     "claude-haiku-5-5": (0.10, 0.50, 0.01),
@@ -124,15 +124,17 @@ def recount(start, end, root=None):
 
 
 def selfcheck():
-    # The two sessions hand-priced on 2026-10-09; the ledger agreed to the cent.
+    # Two sessions' usage, re-priced at the published Sonnet 5.5 read rate (0.10).
+    # Claude Code 2.1.295 and earlier priced these reads at 0.20 in total_cost_usd
+    # (3.90 and 7.86), so their ledger totals overstate Sonnet 5.5 reads 2x.
     u = {"input_tokens": 152, "output_tokens": 58447, "cache_read_input_tokens": 12474761,
          "cache_creation_input_tokens": 204331,
          "cache_creation": {"ephemeral_1h_input_tokens": 204331, "ephemeral_5m_input_tokens": 0}}
-    assert abs(cost_of(u, "claude-sonnet-5-5") - 3.90) < 0.005, cost_of(u, "claude-sonnet-5-5")
+    assert abs(cost_of(u, "claude-sonnet-5-5") - 2.65) < 0.005, cost_of(u, "claude-sonnet-5-5")
     u = {"input_tokens": 268, "output_tokens": 103439, "cache_read_input_tokens": 27545531,
          "cache_creation_input_tokens": 328606,
          "cache_creation": {"ephemeral_1h_input_tokens": 328606, "ephemeral_5m_input_tokens": 0}}
-    assert abs(cost_of(u, "claude-sonnet-5-5") - 7.86) < 0.005, cost_of(u, "claude-sonnet-5-5")
+    assert abs(cost_of(u, "claude-sonnet-5-5") - 5.10) < 0.005, cost_of(u, "claude-sonnet-5-5")
     assert cost_of({"output_tokens": 1}, "claude-nonesuch-9") is None
     # Longest prefix wins: 5-5 must not be priced as 5.
     assert rates_for("claude-opus-5-5")[0] == 4.0 and rates_for("claude-opus-5")[0] == 5.0
