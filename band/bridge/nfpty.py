@@ -672,8 +672,10 @@ def main():
                 and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3]:
             # On the card itself: keep it, whatever is read under it. A hide that
             # typing already made due stays due.
-            if hide_at[0] is not None and hide_at[0] > time.monotonic():
-                hide_at[0] = None
+            # With no more reports (the pointer left the window) it still goes,
+            # after a few seconds; every report on the card pushes that back.
+            if hide_at[0] is None or hide_at[0] > time.monotonic():
+                hide_at[0] = time.monotonic() + 4.0
             return
         covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
                    if panel.rect else set())

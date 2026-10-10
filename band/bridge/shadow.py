@@ -107,7 +107,10 @@ class Shadow:
             except (OSError, subprocess.SubprocessError):
                 self.cool = time.monotonic() + 2.0      # tmux hung: do not wait on it every time
                 return False
-            if r.returncode == 0 and r.stdout.strip() == mark:
+            if r.returncode != 0:
+                self.ok = False         # the server is gone: stop paying for it
+                return False
+            if r.stdout.strip() == mark:
                 return True
             time.sleep(0.005)
         self.cool = time.monotonic() + 2.0      # stalled: stop asking for a while
@@ -123,6 +126,7 @@ class Shadow:
         try:
             r = _tmux(self.sock, "capture-pane", "-p", *args, "-t", "s", timeout=timeout)
         except (OSError, subprocess.SubprocessError):
+            self.cool = time.monotonic() + 2.0
             return None
         return r if r.returncode == 0 else None
 
@@ -173,6 +177,7 @@ def selfcheck():
     assert sh.ok, "tmux is required for this check"
     d = sh.dir
     try:
+        assert sh.sync(budget=3.0), "cat/tmux did not come up"      # warm-up: startup is slower than the 50 ms production budget
         sh.feed(f"{ESC}[2;3Hhello".encode())
         sh.feed(f"{ESC}[4;1H{ESC}[3".encode())          # a colour sequence split over two feeds
         sh.feed(b"1mred")
@@ -185,6 +190,7 @@ def selfcheck():
         # would abort it); the caller falls back to the live pane.
         sh.feed(f"{ESC}[5;1H{ESC}[3".encode(), clean=False)
         assert sh.capture() is None, "no capture inside an unfinished sequence"
+        sh.cool = 0.0
         sh.feed(b"2mgrn", clean=True)
         g = sh.capture("-e")
         assert g is not None and "\x1b[32m" in g.stdout and "grn" in g.stdout, g
