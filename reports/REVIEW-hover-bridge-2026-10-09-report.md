@@ -187,7 +187,7 @@ Checked against the source and fixed where the claim held. Findings are named as
 
 **Not changed, with the reason**
 - **M6 and M7** panel clipping and placement: width and x are already clamped to the screen (`panel.py` `show`); a narrower terminal than the text still needs a real clipping pass. OPEN.
-- **M9 and M10** a restored row can be stale if the status line changed under a panel, and the capture can race tmux's parse of our previous erase: real but small, and the fix (re-capturing after the engine's next repaint) needs live measurement. OPEN.
+- **M9 and M10** FIXED (see the update below): the backdrop is read from a private shadow tmux pane fed only the engine's bytes.
 - **M12** a resize erase paints pre-resize rows into the new geometry: OPEN.
 - **M14** the rc block moves tmux's socket directory for interactive shells: kept on purpose, because a socket under `/tmp` is what stranded the server; it only applies when no `/tmp` socket exists. Say if you want it opt-in.
 - **M15** the band's payload fakes the model name and API timings: it only affects what the renderer prints on the band row. OPEN, low.
@@ -210,5 +210,5 @@ Checked against the source and fixed where the claim held. Findings are named as
 - **M6, M7 fixed:** a card is clipped to the terminal width and kept on screen vertically (`panel.py` `show`; selfcheck case).
 - **M12 fixed:** a resize calls `reset()`, which forgets the rect and saved rows without painting.
 - **M15 fixed:** the band's payload uses the real model from `$.session.model()`. The API timings are still placeholders because the plugin API does not expose them; they only affect the session-average burn fallback, which the band row does not show.
-- **M9, M10 ACCEPTED as a limitation, not fixed.** Restoring the saved rows can show a status-line value that changed while the card was up, until the engine's next repaint (it repaints on any change, so within about a second). Fixing it needs a model of the screen under the card, which is the terminal emulator this design deliberately does not write. It is stated here so it is a known edge, not a surprise.
+- **M9, M10 FIXED** with a true engine screen (`band/bridge/shadow.py`). A private tmux server (its own socket in a 0700 temp directory, so `nf-tmux-heal` and the watcher never see it) runs `cat` on a fifo; nfpty feeds it every byte the engine writes and never one of its own paints. Rows are saved from it when a card opens and read from it AGAIN when the card closes, so a row the engine redrew under the card restores to its new text; the layout scan reads it too, so no row is ever "covered" and the carry-over hack is unused while it works. Ordering is exact: a numbered title sequence is appended before each read and the pane title polled until it shows (3 ms median). Any failure turns it off and the old live-pane path takes over. Tests: `hover-stale-e2e.py` (the engine rewrites a covered row; restored text must be the new one, with a `NFPTY_SHADOW=0` control that must show the OLD one) and `shadow.py` (selfcheck against real tmux: split sequences, resize, cleanup, overflow).
 

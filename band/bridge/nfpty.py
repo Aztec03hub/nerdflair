@@ -27,12 +27,18 @@ touches nothing inside Claude Code.
 HOW THE HOVER IS OBTAINED
 -------------------------
 A hover is motion with no button held, which a terminal only reports in mouse
-mode 1003 ("any event"). Claude Code asks for 1000/1002, which report presses
-and drags but not plain motion. Since we relay the output stream, we upgrade
-that request on its way to the terminal: `?1002h` becomes `?1003h`. The
-terminal then also reports motion, and on the way back we CONSUME the
-motion-only reports instead of forwarding them, so the engine receives
-exactly the event stream it asked for and behaves identically.
+mode 1003 ("any event"). Claude Code asks for 1000, 1002, 1003 and 1006
+itself (measured), so the terminal already reports plain motion and nothing in
+the output stream is rewritten. The motion-only reports are READ in passing
+and forwarded unchanged, so the engine keeps its own hover behaviour.
+
+WHAT IS UNDER A CARD
+--------------------
+A card is painted over the real screen, so the real screen cannot say what is
+beneath it. Every byte the engine writes is therefore also fed to a private
+tmux pane (shadow.py), which parses it into the engine's own screen, with no
+card on it. The rows a card covers are saved from there and read again when
+the card goes away, and the status-line layout is scanned from there.
 """
 import array
 import errno
@@ -52,6 +58,7 @@ import tty
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mklayout  # noqa: E402
 from panel import FRAME, Panel  # noqa: E402
+from shadow import Shadow  # noqa: E402
 
 ESC = "\033"
 
@@ -107,23 +114,31 @@ class Backdrop:
     and putting a whole line back is exact by construction.
     """
 
-    def __init__(self, pane):
+    def __init__(self, pane, shadow=None):
         self.pane = pane
+        self.shadow = shadow
         self.rows = None
         self.top = 0
+        self.span = None
 
     def save(self, y, h):
         self.rows = None
         if not self.pane:
             return
-        try:
-            # capture-pane numbers the visible pane from 0, screen rows from 1.
-            r = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-t", self.pane,
-                 "-S", str(y - 1), "-E", str(y + h - 2)],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
-        except (OSError, subprocess.SubprocessError):
-            return
+        self.span = (y, h)
+        # capture-pane numbers the visible pane from 0, screen rows from 1.
+        span = ["-e", "-S", str(y - 1), "-E", str(y + h - 2)]
+        # The engine's own screen first: it has none of our cards on it, so
+        # what is saved is what the engine last drew, and restoring it later
+        # shows the CURRENT status line, not the one from when the card opened.
+        r = self.shadow.capture(*span) if self.shadow is not None else None
+        if r is None:
+            try:
+                r = subprocess.run(
+                    ["tmux", "capture-pane", "-p", *span, "-t", self.pane],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
+            except (OSError, subprocess.SubprocessError):
+                return
         if r.returncode == 0:
             self.rows = r.stdout.split("\n")[:h]
             self.top = y
@@ -132,6 +147,14 @@ class Backdrop:
         """The escapes that put those rows back, or None if we have none."""
         if not self.rows:
             return None
+        # Read the rows again NOW from the engine's own screen: anything the
+        # engine drew under the card while it was up is in there, and the rows
+        # saved at open are not. The saved ones remain the fallback.
+        if self.shadow is not None and self.span:
+            y, h = self.span
+            r = self.shadow.capture("-e", "-S", str(y - 1), "-E", str(y + h - 2))
+            if r is not None:
+                self.rows = r.stdout.split("\n")[:h]
         out = []
         for i, line in enumerate(self.rows):
             # Clear to end of line first: the captured text stops at the last
@@ -160,8 +183,9 @@ class Layout:
 
     MIN_INTERVAL = 0.15
 
-    def __init__(self, pane):
+    def __init__(self, pane, shadow=None):
         self.pane = pane
+        self.shadow = shadow
         self.at = 0.0
         self.segs = []
 
@@ -170,7 +194,7 @@ class Layout:
         if not self.pane or now - self.at < self.MIN_INTERVAL:
             return
         self.at = now
-        fresh = mklayout.build(self.pane, skip=covered)
+        fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow)
         # tmux is read on the relay loop, so a slow answer is typing lag. If
         # it took long, stop asking for a while rather than stall again.
         if time.monotonic() - now > 0.3:
@@ -180,7 +204,10 @@ class Layout:
         # drawn over the status line. Keeping the last good layout there made
         # invisible regions open cards over the dialog. Only the rows a panel
         # of ours is covering are carried over, since they show the panel.
-        self.segs = [s for s in self.segs if s["row"] in covered] + fresh
+        # Read from the engine's own screen nothing is covered, so nothing is
+        # carried; read from the live pane the covered rows show the card.
+        keep = () if truth else covered
+        self.segs = [s for s in self.segs if s["row"] in keep] + fresh
 
     def hit(self, col, row):
         """The readout under the pointer, if the pointer is on one.
@@ -453,9 +480,9 @@ def selfcheck():
     shots = [[seg("a", 3, 10), seg("b", 3, 30), seg("c", 4, 5)],
              [seg("a", 3, 10), seg("b", 3, 36)],        # b moved; row 4 covered
              ]
-    real = mklayout.build
+    real = mklayout.build_ex
     try:
-        mklayout.build = lambda _pane, skip=(): shots.pop(0)
+        mklayout.build_ex = lambda _pane, skip=(), shadow=None: (shots.pop(0), shadow is not None)
         lay = Layout("%0")
         lay.MIN_INTERVAL = 0
         lay.refresh()
@@ -470,7 +497,7 @@ def selfcheck():
         assert lay.segs == [] and lay.hit(37, 3) is None, \
             "a covered status line must leave no hoverable regions"
     finally:
-        mklayout.build = real
+        mklayout.build_ex = real
     print("nfpty ok")
 
 
@@ -540,6 +567,11 @@ def main():
                          "panels will not work. Run nf-tmux-heal, or restart tmux.\n")
 
     stdin_fd = sys.stdin.fileno()
+    pane0 = os.environ.get("TMUX_PANE")
+    rows, cols = winsize(stdin_fd)
+    shadow = Shadow(rows, cols) if pane0 and os.environ.get("NFPTY_SHADOW", "1") != "0" else None
+    if shadow is not None and not shadow.ok:
+        shadow = None                  # no private tmux: read the live pane as before
     resized = [True]            # read the size once after the handler exists, so a resize in the gap is not lost
 
     def on_winch(*_):
@@ -592,8 +624,8 @@ def main():
         dbg = open(os.environ["NFPTY_LOG"], "a", buffering=1)
 
     pane = os.environ.get("TMUX_PANE")
-    panel = Panel(write, rows, cols, backdrop=Backdrop(pane), keeps=True)
-    layout = Layout(pane)
+    panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
+    layout = Layout(pane, shadow)
 
     old = None
     try:
@@ -662,6 +694,8 @@ def main():
                 rows, cols = winsize(stdin_fd)
                 set_winsize(master, rows, cols)
                 panel.rows, panel.cols = rows, cols
+                if shadow is not None:
+                    shadow.resize(rows, cols)
                 panel.reset()         # its rect and saved rows are in the old geometry
 
             ready, _, _ = select.select([stdin_fd, master], [], [],
@@ -691,6 +725,8 @@ def main():
                 note_modes(data, dbg)
                 out.write(data)
                 out.flush()
+                if shadow is not None:
+                    shadow.feed(data)         # the engine's bytes only, never ours
                 clean[0] = stream.feed(data)
                 if not clean[0] and not unclean_since[0]:
                     unclean_since[0] = time.monotonic()
@@ -791,6 +827,8 @@ def main():
             os.close(master)
         except OSError:
             pass
+        if shadow is not None:
+            shadow.close()
 
     # The loop is over: a late TERM/HUP must not reach a pid we are about to
     # (or already did) reap, so the handlers go back to their defaults.

@@ -229,8 +229,18 @@ def selfcheck():
 CONTEXT_ROW = re.compile(CARDS[[c[0] for c in CARDS].index("context")][1])
 
 
-def build(target, skip=()):
+def build(target, skip=(), shadow=None):
     """Every readout on the status line of `target`, or [] if there is none.
+    See build_ex; this is the list alone."""
+    return build_ex(target, skip, shadow)[0]
+
+
+def build_ex(target, skip=(), shadow=None):
+    """(segments, truth): every readout on the status line, and whether they
+    were read from the engine's own screen (`shadow`), in which case no row is
+    ever covered by a card and `skip` is not applied.
+
+    Every readout on the status line of `target`, or [] if there is none.
 
     Imported by the bridge, which calls it directly rather than reading a
     file: the columns move whenever a figure changes width (a token count
@@ -241,11 +251,16 @@ def build(target, skip=()):
     the panel, not the status line, so they are not read; the caller keeps
     what it knew about them.
     """
-    try:
-        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
-                           capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
-    except (OSError, subprocess.SubprocessError):
-        return []
+    r = shadow.capture() if shadow is not None else None
+    truth = r is not None
+    if not truth:
+        try:
+            r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
+                               capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
+        except (OSError, subprocess.SubprocessError):
+            return [], False
+    if truth:
+        skip = ()               # the shadow never has a card on it
     raw = r.stdout.split("\n")
 
     segs = []
@@ -282,7 +297,7 @@ def build(target, skip=()):
                 "rgb": list(rgb),
             })
 
-    return segs
+    return segs, truth
 
 
 def cards_check():
