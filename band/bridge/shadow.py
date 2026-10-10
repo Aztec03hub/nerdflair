@@ -105,6 +105,7 @@ class Shadow:
             try:
                 r = _tmux(self.sock, "display-message", "-p", "-t", "s", "#{pane_title}")
             except (OSError, subprocess.SubprocessError):
+                self.cool = time.monotonic() + 2.0      # tmux hung: do not wait on it every time
                 return False
             if r.returncode == 0 and r.stdout.strip() == mark:
                 return True

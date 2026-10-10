@@ -662,7 +662,7 @@ def main():
             panel.erase()         # a card left up with hover off would stay for ever
         finally:
             panel.reset()
-
+            flush_pending()
     guard = Guard(lambda: dbg, _drop_card)
     guarded = guard.run
 
@@ -670,7 +670,10 @@ def main():
         col0, row0 = hovers[-1]
         if panel.rect and panel.rect[0] <= col0 < panel.rect[0] + panel.rect[2] \
                 and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3]:
-            hide_at[0] = None         # on the card itself: keep it, whatever is read under it
+            # On the card itself: keep it, whatever is read under it. A hide that
+            # typing already made due stays due.
+            if hide_at[0] is not None and hide_at[0] > time.monotonic():
+                hide_at[0] = None
             return
         covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
                    if panel.rect else set())
@@ -736,9 +739,11 @@ def main():
                 note_modes(data, dbg)
                 out.write(data)
                 out.flush()
-                if shadow is not None:
-                    shadow.feed(data, clean[0])    # the engine's bytes only, never ours
                 clean[0] = stream.feed(data)
+                if shadow is not None:
+                    # The engine's bytes only, never ours, and the boundary
+                    # flag of THESE bytes (not the previous chunk's).
+                    shadow.feed(data, clean[0])
                 if not clean[0] and not unclean_since[0]:
                     unclean_since[0] = time.monotonic()
                 if clean[0]:
