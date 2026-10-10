@@ -121,7 +121,7 @@ class Backdrop:
             r = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-e", "-t", self.pane,
                  "-S", str(y - 1), "-E", str(y + h - 2)],
-                capture_output=True, text=True, timeout=0.5)
+                capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
         except (OSError, subprocess.SubprocessError):
             return
         if r.returncode == 0:
@@ -331,6 +331,23 @@ class Stream:
         return n == 0 or n > 4096
 
 
+IDLE = 0.25     # wake rate with nothing to animate; still bounds reaping and the tail timeout
+
+
+def select_timeout(active, hide_at, tail, pending, quitting):
+    """FRAME while anything is animating or waiting on a clock, IDLE otherwise:
+    an idle session used to wake 28 times a second for nothing."""
+    return FRAME if (active or hide_at is not None or tail or pending or quitting) else IDLE
+
+
+def write_all(fd, data):
+    """os.write returns a short count when a signal lands mid-write of a large
+    paste; the rest must still go. (A child that stops reading its input while
+    we block here is not something a TUI does; it reads stdin continuously.)"""
+    while data:
+        data = data[os.write(fd, data):]
+
+
 def ends_clean(data):
     return incomplete_tail(data) == 0
 
@@ -389,6 +406,36 @@ def selfcheck():
     assert st.feed(b"\x1b]0;" + "\U000f024b".encode()[:2]) is False
     assert st.feed("\U000f024b".encode()[2:] + b" title") is False, "still inside the OSC after the glyph completes"
     assert st.feed(b"\x07") is True
+    # L5: an idle session sleeps long; anything animating or on a clock does not.
+    assert select_timeout(None, None, b"", [], None) == IDLE
+    for args in ((True, None, b"", [], None), (None, 1.0, b"", [], None), (None, None, b"x", [], None),
+                 (None, None, b"", [("w", False)], None), (None, None, b"", [], 15)):
+        assert select_timeout(*args) == FRAME, args
+    # L3: a short write is continued, not dropped.
+    real_write, sent = os.write, []
+    try:
+        os.write = lambda fd, d: (sent.append(bytes(d[:3])), min(3, len(d)))[1]
+        write_all(1, b"abcdefgh")
+    finally:
+        os.write = real_write
+    assert b"".join(sent) == b"abcdefgh", sent
+    # L9: a bug in hover code is absorbed ONCE, loudly, and disables hover; the
+    # relay (the caller) keeps going. Control: without the guard it raises.
+    global ERRLOG
+    saved_log, ERRLOG = ERRLOG, os.devnull
+    try:
+        hits, cleaned = [], []
+        g = Guard(lambda: None, lambda: cleaned.append(1))
+        g.run("boom", lambda: hits.append(1) or 1 / 0)
+        g.run("again", lambda: hits.append(1))
+        assert g.ok is False and hits == [1] and cleaned == [1], (g.ok, hits, cleaned)
+        try:
+            (lambda: 1 / 0)()
+            raise AssertionError("control: the bug must raise unguarded")
+        except ZeroDivisionError:
+            pass
+    finally:
+        ERRLOG = saved_log
     # Cursor hide/show split across reads is still seen (the per-chunk scan
     # it replaced missed both halves), and the last one wins.
     st = Stream()
@@ -427,12 +474,57 @@ def selfcheck():
     print("nfpty ok")
 
 
+ERRLOG = os.path.expanduser("~/.local/state/nerdflair/nfpty-error.log")
+
+
+def degrade(where, dbg=None):
+    """A bug in hover or panel code must not end the user's claude session.
+    This is the one place an exception is absorbed, and it is loud: the
+    traceback goes to a log that is never rotated away silently and to NFPTY_LOG,
+    and the caller turns hover OFF for the rest of the session so the bug cannot
+    repeat 28 times a second. Relaying the engine's output carries on."""
+    import traceback
+    text = f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {where} failed, hover disabled\n{traceback.format_exc()}"
+    try:
+        os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
+        with open(ERRLOG, "a") as f:
+            f.write(text)
+    except OSError:
+        pass
+    if dbg:
+        dbg.write(text)
+
+
+class Guard:
+    """Runs decoration code. The first exception turns it off for good (see
+    degrade), so one bug costs the cards, not the session."""
+
+    def __init__(self, get_dbg, cleanup):
+        self.ok = True
+        self.get_dbg, self.cleanup = get_dbg, cleanup
+
+    def run(self, what, fn, *args):
+        if not self.ok:
+            return
+        try:
+            fn(*args)
+        except Exception:
+            self.ok = False
+            degrade(what, self.get_dbg())
+            try:
+                self.cleanup()
+            except Exception:
+                pass
+
+
 def main():
     argv = sys.argv[1:]
-    if argv[:1] == ["--selfcheck"]:
+    if argv[:1] == ["--nfpty-selfcheck"]:
         selfcheck()
         return
-    claude = os.environ.get("CLAUDE_BIN") or "claude"
+    # Popped, not read: the shim hands the real path over by environment, and
+    # every tool claude launches would otherwise inherit it.
+    claude = os.environ.pop("CLAUDE_BIN", None) or "claude"
 
     # Say so BEFORE the TUI owns the screen if tmux cannot be reached: layout
     # and backdrop both depend on it, and without it hover fails silently.
@@ -447,9 +539,22 @@ def main():
         sys.stderr.write(f"nfpty: tmux unreachable (socket {sock or '?'}); hover "
                          "panels will not work. Run nf-tmux-heal, or restart tmux.\n")
 
+    stdin_fd = sys.stdin.fileno()
+    resized = [True]            # read the size once after the handler exists, so a resize in the gap is not lost
+
+    def on_winch(*_):
+        resized[0] = True
+
+    signal.signal(signal.SIGWINCH, on_winch)
+    rows, cols = winsize(stdin_fd)
+    resized[0] = False
     pid, master = pty.fork()
     if pid == 0:                                    # child: become claude
         os.environ["NFPTY"] = "1"
+        try:
+            set_winsize(0, rows, cols)      # before exec: it must never read 0x0
+        except OSError:
+            pass
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # Python ignores it; the child must not inherit that
         try:
             os.execvp(claude, [claude] + argv)
@@ -457,9 +562,8 @@ def main():
             sys.stderr.write(f"nfpty: cannot run {claude}: {e}\n")
             os._exit(127)
 
-    stdin_fd = sys.stdin.fileno()
-    rows, cols = winsize(stdin_fd)
     set_winsize(master, rows, cols)
+    resized[0] = True           # a resize that landed during the fork is applied by the loop
 
     out = sys.stdout.buffer
 
@@ -498,13 +602,6 @@ def main():
     except termios.error:
         pass                      # not a tty (a pipe, a test): relay anyway
 
-    resized = [False]
-
-    def on_winch(*_):
-        resized[0] = True
-
-    signal.signal(signal.SIGWINCH, on_winch)
-
     tail = b""
     tail_since = [0.0]
     status_box = [None]
@@ -528,6 +625,36 @@ def main():
     last = time.monotonic()
     # When to take the panel down, if the pointer stays away.
     hide_at: list = [None]
+    guard = Guard(lambda: dbg, lambda: panel.reset())
+    guarded = guard.run
+
+    def on_hover(hovers):
+        covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
+                   if panel.rect else set())
+        layout.refresh(covered)
+        col, row = hovers[-1]      # only the latest position
+        hit = layout.hit(col, row)
+        if dbg:
+            dbg.write(f"hover {col},{row} "
+                      f"hit={hit['id'] if hit else None} "
+                      f"shown={panel.shown} rect={panel.rect} "
+                      f"painted={painted[0]}\n")
+        # HYSTERESIS. Leaving a readout does not hide the panel at
+        # once: crossing a gap between readouts, or clipping the
+        # row above for one event, used to erase and rebuild it,
+        # which restarted the shine from the first corner every
+        # time the pointer twitched. The hide is scheduled and
+        # cancelled if the pointer comes back.
+        if hit is None:
+            if panel.shown and hide_at[0] is None:
+                hide_at[0] = time.monotonic() + HIDE_AFTER
+        else:
+            hide_at[0] = None          # back on a readout
+            if hit["id"] != panel.shown:
+                panel.show(hit["id"], hit["title"], hit["body"],
+                           tuple(hit["rgb"]), hit["x"],
+                           hit["row"])
+
     try:
         while True:
             if resized[0]:
@@ -537,7 +664,8 @@ def main():
                 panel.rows, panel.cols = rows, cols
                 panel.reset()         # its rect and saved rows are in the old geometry
 
-            ready, _, _ = select.select([stdin_fd, master], [], [], FRAME)
+            ready, _, _ = select.select([stdin_fd, master], [], [],
+                                        select_timeout(panel.shown or panel.rect, hide_at[0], tail, pending, quit_sig[0]))
 
             # A descendant of the child (an MCP server, say) can still hold
             # the slave after it exits, so EIO never comes. Ask directly.
@@ -585,45 +713,26 @@ def main():
                 # cannot render a half-restored panel; it costs about 2KB
                 # against the engine's own frame.
                 if panel.rect:
-                    panel.redraw()
+                    guarded("panel.redraw", panel.redraw)
 
             if stdin_fd in ready:
                 try:
                     data = os.read(stdin_fd, 65536)
-                except OSError:
+                except OSError as e:
+                    if e.errno in (errno.EAGAIN, errno.EINTR):
+                        continue          # a shared non-blocking tty is not end of input
                     break
                 if not data:
                     break
                 fwd, hovers, tail = split_hovers(tail + data)
                 tail_since[0] = time.monotonic()
                 if fwd:
-                    os.write(master, fwd)
+                    write_all(master, fwd)
+                    # Typing takes a card down: nothing tells us the pointer left.
+                    if panel.shown and MOUSE.sub(b"", fwd):
+                        hide_at[0] = time.monotonic()
                 if hovers:
-                    covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
-                               if panel.rect else set())
-                    layout.refresh(covered)
-                    col, row = hovers[-1]      # only the latest position
-                    hit = layout.hit(col, row)
-                    if dbg:
-                        dbg.write(f"hover {col},{row} "
-                                  f"hit={hit['id'] if hit else None} "
-                                  f"shown={panel.shown} rect={panel.rect} "
-                                  f"painted={painted[0]}\n")
-                    # HYSTERESIS. Leaving a readout does not hide the panel at
-                    # once: crossing a gap between readouts, or clipping the
-                    # row above for one event, used to erase and rebuild it,
-                    # which restarted the shine from the first corner every
-                    # time the pointer twitched. The hide is scheduled and
-                    # cancelled if the pointer comes back.
-                    if hit is None:
-                        if panel.shown and hide_at[0] is None:
-                            hide_at[0] = time.monotonic() + HIDE_AFTER
-                    else:
-                        hide_at[0] = None          # back on a readout
-                        if hit["id"] != panel.shown:
-                            panel.show(hit["id"], hit["title"], hit["body"],
-                                       tuple(hit["rgb"]), hit["x"],
-                                       hit["row"])
+                    guarded("hover", on_hover, hovers)
 
             now = time.monotonic()
 
@@ -655,14 +764,14 @@ def main():
                 # erase() puts back the rows saved from tmux. It does not ask
                 # the engine to repaint: a SIGWINCH with no size change is a
                 # no-op for it, which is why the old version left holes.
-                panel.erase()
+                guarded("panel.erase", panel.erase)
 
             if now - last >= FRAME:
                 last = now
                 # The head moves every frame whatever else is going on, so a
                 # burst of engine repaints does not freeze the shine; only
                 # HOW MUCH gets repainted depends on the interference.
-                panel.paint(full=panel.advance())
+                guarded("panel.paint", lambda: panel.paint(full=panel.advance()))
     finally:
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.

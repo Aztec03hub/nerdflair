@@ -27,7 +27,9 @@ block() {
 # Managed by nerdflair (band/hover/install.sh). Remove with: install.sh uninstall
 # Put the shim first so a bare `claude` gets hover panels, whatever else
 # has edited PATH since.
-case ":$PATH:" in *":$HOME/.nerdflair/bin:"*) PATH="${PATH//:$HOME\/.nerdflair\/bin:/:}" ;; esac
+case ":$PATH:" in *":$HOME/.nerdflair/bin:"*)
+  _nf=":$PATH:"; _nf="${_nf//:$HOME\/.nerdflair\/bin:/:}"; _nf="${_nf#:}"; PATH="${_nf%:}"; unset _nf ;;
+esac
 export PATH="$HOME/.nerdflair/bin:$PATH"
 # tmux's socket lives in /tmp by default, and anything sweeping /tmp strands
 # the server. A running server keeps its current socket; this applies to the
@@ -94,6 +96,11 @@ case "${1:-install}" in
       if (( rc == 1 )); then echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
       (( rc == 0 )) || continue
       tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
+      # The backup install made is only ours to remove if it is exactly what
+      # the file is now (nothing the user edited since); otherwise say where it is.
+      if [[ -f "$f.nf-backup" ]]; then
+        if cmp -s "$f.nf-backup" "$f"; then rm -f "$f.nf-backup"; else echo "uninstall: kept $f.nf-backup (it differs from $f); remove it when you no longer need it"; fi
+      fi
     done
     if systemctl --user show-environment >/dev/null 2>&1; then
       systemctl --user disable --now nf-tmux-watch.service >/dev/null 2>&1 || true
@@ -101,7 +108,7 @@ case "${1:-install}" in
       systemctl --user daemon-reload
     fi
     rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
-    rmdir "$NF/bin" 2>/dev/null || true
+    rmdir "$NF/bin" "$NF" 2>/dev/null || true
     echo "hover removed"
     ;;
   status)
@@ -109,6 +116,12 @@ case "${1:-install}" in
       if grep -qF "$BEGIN" "$f"; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f)"; fi
     done
     [[ -x "$NF/bin/claude" ]] && echo "shim: yes" || echo "shim: NO"
+    # Copied, not linked, so a repo update does not reach them by itself.
+    for pair in "claude-shim:claude" "nf-tmux-heal:nf-tmux-heal" "nf-tmux-watch:nf-tmux-watch"; do
+      if [[ -f "$NF/bin/${pair#*:}" ]] && ! cmp -s "$HERE/${pair%%:*}" "$NF/bin/${pair#*:}"; then
+        echo "STALE: $NF/bin/${pair#*:} differs from the repo copy; run install.sh again"
+      fi
+    done
     echo "claude resolves to: $(PATH="$NF/bin:$PATH" command -v claude)"
     ;;
   *) echo "usage: install.sh [install|uninstall|status]" >&2; exit 2 ;;

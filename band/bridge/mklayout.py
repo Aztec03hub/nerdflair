@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 GAP = re.compile(r"\s{3,}")
@@ -136,6 +137,20 @@ def classify(text):
     return None, title, rgb, body
 
 
+def cells(s):
+    """Screen cells a string occupies: East Asian wide and fullwidth characters
+    take two, combining marks none. A cwd or branch with CJK in it used to
+    shift every later column by one per wide character, so hover hit the
+    wrong card. Nerd Font glyphs are ambiguous-width and count one, as the
+    terminal this is built for draws them."""
+    n = 0
+    for ch in s:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue
+        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return n
+
+
 def pieces(line):
     """Every readout in a rendered row, as (column, width, text).
 
@@ -148,9 +163,9 @@ def pieces(line):
         off = 0
         for part in text.split(SEP):
             t = part.strip()
-            if len(t) >= MIN_W:
+            if cells(t) >= MIN_W:
                 lead = len(part) - len(part.lstrip())
-                out.append((start + off + lead + 1, len(t), t))
+                out.append((cells(line[:start + off + lead]) + 1, cells(t), t))
             off += len(part) + len(SEP)
     return out
 
@@ -183,6 +198,14 @@ def selfcheck():
     for col, w, text in got:
         assert col == line.index(text) + 1, (text, col, line.index(text) + 1)
         assert w == len(text), (text, w)
+
+    # Wide characters take two cells: the column of what FOLLOWS them is the
+    # cell count, not the character count (control: len() gets it wrong).
+    wide = "\u6f22\u5b57 dir \u00b7 branch-x"
+    (c1, w1, t1), (c2, w2, t2) = pieces(wide)
+    assert (c1, w1, t1) == (1, 8, "\u6f22\u5b57 dir") and t2 == "branch-x", pieces(wide)
+    assert c2 == cells("\u6f22\u5b57 dir \u00b7 ") + 1 == 12 and wide.index("branch-x") + 1 == 10, (c2,)
+    assert cells("e\u0301") == 1 and cells("\U000f024b") == 1 and cells("ab") == 2
 
     # The justification gap must SPLIT, and a lone separator must not produce
     # an empty readout.
@@ -220,15 +243,16 @@ def build(target, skip=()):
     """
     try:
         r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
-                           capture_output=True, text=True, timeout=0.5)
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
     except (OSError, subprocess.SubprocessError):
         return []
     raw = r.stdout.split("\n")
 
     segs = []
-    # Only the last handful of rows: the status line lives at the bottom, and
-    # a transcript line with a bullet in it is not a readout.
-    for i in range(max(0, len(raw) - 8), len(raw)):
+    # The status line lives at the bottom, but a multi-line input box pushes
+    # it up, so look at the bottom 30 rows. A transcript line with a bullet in
+    # it is still not a readout: the glyph-and-separator test below decides.
+    for i in range(max(0, len(raw) - 30), len(raw)):
         clean = ANSI.sub("", raw[i])
         row = i + 1                       # capture-pane rows are 0-based
         if row in skip:
@@ -238,8 +262,8 @@ def build(target, skip=()):
             # The gauge row has no separators and no glyph, so the row test
             # below would pass over it; it is one readout, found by its shape.
             sid, title, rgb, body = classify(m.group(0))
-            segs.append({"id": sid, "row": row, "x": m.start() + 1,
-                         "w": len(m.group(0)), "title": title,
+            segs.append({"id": sid, "row": row, "x": cells(clean[:m.start()]) + 1,
+                         "w": cells(m.group(0)), "title": title,
                          "body": body, "rgb": list(rgb)})
             continue
         if SEP not in clean or not NERD.search(clean):
@@ -279,7 +303,7 @@ def cards_check():
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:
             out = subprocess.run([binary], stdin=fh, capture_output=True,
-                                 text=True, env=env).stdout
+                                 encoding="utf-8", errors="replace", env=env).stdout
         for line in ANSI.sub("", out).split("\n"):
             if CONTEXT_ROW.search(line):
                 seen.add("context")

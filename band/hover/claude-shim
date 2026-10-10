@@ -28,7 +28,7 @@ fi
 
 wrap=1
 [[ -n "${NFPTY:-}" || "${NERDFLAIR_HOVER:-1}" == 0 ]] && wrap=0   # already wrapped, or opted out
-[[ -t 0 && -t 1 ]] || wrap=0                                      # pipes, -p, scripts
+[[ -t 0 && -t 1 && -t 2 ]] || wrap=0                               # pipes, -p, scripts, and `claude 2>log` (the child's stderr would be the pty)
 [[ -n "${TMUX:-}" ]] || wrap=0                                    # panels need tmux to restore what they cover
 { [[ -f "$HOVER/nfpty.py" ]] && command -v python3 >/dev/null; } || wrap=0   # dangling link: plain claude
 # Import check, about 30ms: catches python older than the wrapper needs and a

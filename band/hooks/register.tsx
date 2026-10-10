@@ -231,27 +231,32 @@ const SEG_MIN = 6
 // fighting. It costs a permanently reserved row, which is why the real
 // floating panel ended up outside the engine instead.
 
+// Cells, not UTF-16 units: a Nerd Font glyph is one astral code point, which
+// .length counts as 2 and .slice can cut in half.
+const len = (t: string): number => Array.from(t).length
+const cut = (t: string, n: number): string => Array.from(t).slice(0, n).join('')
+
 function budget(texts: string[], sep: number, fixed = 0): string[] {
   const out = [...texts]
   const width = () =>
-    fixed + out.reduce((n, t) => n + t.length, 0) + sep * Math.max(0, out.length - 1)
+    fixed + out.reduce((n, t) => n + len(t), 0) + sep * Math.max(0, out.length - 1)
   // Each pass shortens only the current longest, so the result does not depend
   // on segment order and no segment is cut while a longer one is left alone.
   while (width() > BAND_MAX) {
     let i = 0
-    let best = out[0]?.length ?? 0
+    let best = len(out[0] ?? '')
     for (let j = 1; j < out.length; j++) {
-      const n = out[j]?.length ?? 0
+      const n = len(out[j] ?? '')
       if (n > best) {
         best = n
         i = j
       }
     }
     const cur = out[i]
-    if (cur === undefined || cur.length <= SEG_MIN) break // at the floor: stop rather than spin
-    out[i] = cur.slice(0, cur.length - 1)
+    if (cur === undefined || len(cur) <= SEG_MIN) break // at the floor: stop rather than spin
+    out[i] = cut(cur, len(cur) - 1)
   }
-  return out.map((t, i) => (t.length < (texts[i]?.length ?? 0) ? t.slice(0, -1) + '…' : t))
+  return out.map((t, i) => (len(t) < len(texts[i] ?? '') ? cut(t, len(t) - 1) + '…' : t))
 }
 
 function ago(ms: number): string {
@@ -262,6 +267,8 @@ function ago(ms: number): string {
 }
 
 const TTL_MS = 2000
+const STALE_MS = 30000
+let inflight: Promise<Seg[] | null> | null = null
 
 export const register: Register = on => {
   // Timestamp the transitions. The state itself still comes from surfaces();
@@ -290,7 +297,9 @@ export const register: Register = on => {
       if (!HOME) return next(e) // no home, no renderer: let the engine draw its own
     }
     if (!cache || now - cache.at > TTL_MS) {
-      const segs = await (async () => {
+      // One refresh at a time: renders arrive faster than the renderer returns,
+      // and each would otherwise spawn its own.
+      const segs = await (inflight ??= (async () => {
         try {
           const u = await $.session.usage()
           const cwd = await $.session.cwd()
@@ -362,8 +371,13 @@ export const register: Register = on => {
           lastError = String(err).slice(0, 200)
           return null
         }
-      })()
+      })().finally(() => {
+        inflight = null
+      }))
       if (segs) cache = { at: now, segs }
+      // A renderer that keeps failing must not leave figures frozen as if
+      // they were live: after 30 s the old ones go and the error shows.
+      else if (cache && now - cache.at > STALE_MS) cache = null
     }
     // Cheap and never rejects, so it is read every render rather than cached:
     // the whole point of this chip is that it is never stale.

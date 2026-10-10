@@ -14,7 +14,7 @@ run() {
     fail=1
   fi
 }
-run python3 "$B/nfpty.py" --selfcheck
+run python3 "$B/nfpty.py" --nfpty-selfcheck
 run python3 "$B/panel.py"
 run python3 "$B/mklayout.py" --selfcheck
 run python3 "$B/mklayout.py" --cards-check

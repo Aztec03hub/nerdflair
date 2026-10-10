@@ -191,7 +191,18 @@ Checked against the source and fixed where the claim held. Findings are named as
 - **M12** a resize erase paints pre-resize rows into the new geometry: OPEN.
 - **M14** the rc block moves tmux's socket directory for interactive shells: kept on purpose, because a socket under `/tmp` is what stranded the server; it only applies when no `/tmp` socket exists. Say if you want it opt-in.
 - **M15** the band's payload fakes the model name and API timings: it only affects what the renderer prints on the band row. OPEN, low.
-- **Low findings:** not individually triaged here; they are in the report body above.
+- **Low findings, triaged one by one (2026-10-09, later):**
+  - **L1** Ctrl-Z inert: ACCEPTED, not fixed. Suspending would mean restoring the terminal, stopping ourselves and the child, and re-arming raw mode on resume, which is a job-control implementation for a key a TUI session rarely needs inside tmux (where the window is detached, not suspended). Say if you want it.
+  - **L2** 0x0 child size: FIXED. The size is read before the fork, set on the child's own tty before exec, and the SIGWINCH handler exists before the size is read.
+  - **L3** short write to the master: FIXED (`write_all`, selfcheck with a forced short write). The reviewer's writable-select deadlock case is not handled: it needs a child that stops reading its input while we are writing, which a TUI does not do.
+  - **L4** stdin read error ends the session: FIXED for EAGAIN and EINTR (continue). The hang-on-SIGHUP half was already closed by the final reap (SIGKILL after 2 s).
+  - **L5** idle wakeups: FIXED (`select_timeout`: 0.25 s idle, 36 ms while anything animates or waits on a clock).
+  - **L6** card stays up: PARTLY FIXED. Typing now takes the card down at once. A fixed timeout after the last motion report is NOT added: a pointer resting on a readout is a legitimate reason to keep the card, and no terminal reports leaving its window.
+  - **L7** cell widths: FIXED in the layout (`cells()`: wide characters take two, combining marks none; selfcheck with a CJK case). The card text is ours and ASCII-only, so `panel.py` keeps `len`.
+  - **L8** `text=True` decode: FIXED at every site (`encoding="utf-8", errors="replace"`).
+  - **L9** exception in hover code kills the session: FIXED as the reviewer asked, deliberately loud: the first exception is logged with its traceback to `~/.local/state/nerdflair/nfpty-error.log` (and `NFPTY_LOG`), hover is turned off for the session, and the relay carries on (`Guard`, selfcheck with an unguarded control).
+  - **L10** band scan window: FIXED (bottom 30 rows; the glyph-and-separator test still decides what is a readout).
+  - **L11** shim and installer, item by item: `claude --selfcheck` is now `--nfpty-selfcheck` (FIXED); `CLAUDE_BIN` is popped from the child's environment (FIXED; `NFPTY` stays, it is how nested claudes know); `claude 2>log` is no longer wrapped (FIXED, `-t 2`); the `-p` value scan and `claude --model x mcp list` being wrapped are ACCEPTED (a wrapped non-interactive command still works, just through the pty); uninstall removes `.nf-backup` only if it equals the restored file, otherwise prints it, and removes `~/.nerdflair` (FIXED); the PATH dedupe handles first, middle and last (FIXED, `tests/install-rc.sh`); `install.sh status` names a stale copy (FIXED); `sync-local-plugin.sh` replaces `types` whole and no longer hides a failed update (FIXED); a failing refresh now drops figures after 30 s and refreshes are de-duplicated (FIXED); `register.tsx` string widths count code points (FIXED).
 - **Tests that are not run:** the selfchecks are now exercised by the new e2e and exit tests, but there is still no single runner. OPEN.
 
 ### Update 2026-10-09 (later)

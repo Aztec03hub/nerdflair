@@ -20,6 +20,9 @@ if [[ -L "$DEST" ]]; then
 fi
 mkdir -p "$DEST/.claude-plugin" "$DEST/hooks"
 cp -f "$HERE/.claude-plugin/plugin.json" "$DEST/.claude-plugin/plugin.json"
+# Replace the types directory whole: cp -r over it would leave behind files
+# that were deleted in the repo.
+[[ -d "$DEST/.claude-plugin/types" && ! -L "$DEST/.claude-plugin/types" ]] && rm -rf -- "$DEST/.claude-plugin/types"
 cp -rf "$HERE/.claude-plugin/types" "$DEST/.claude-plugin/"
 cp -f "$HERE/hooks/hooks.json" "$HERE/hooks/register.tsx" "$DEST/hooks/"
 cp -f "$HERE/popup.sh" "$HERE/tsconfig.json" "$DEST/"
@@ -27,7 +30,7 @@ cp -f "$HERE/popup.sh" "$HERE/tsconfig.json" "$DEST/"
 if claude plugin list --json | python3 -c '
 import sys, json
 sys.exit(0 if any(p["id"] == "nerdflair-band@local" for p in json.load(sys.stdin)) else 1)'; then
-  claude plugin update nerdflair-band@local || true
+  claude plugin update nerdflair-band@local
 else
   claude plugin install nerdflair-band@local
 fi
