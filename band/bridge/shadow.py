@@ -43,6 +43,8 @@ class Shadow:
         self.dir = None
         self.pending = b""
         self.n = 0
+        self.clean = True       # last fed bytes ended on a sequence boundary
+        self.cool = 0.0         # no captures before this time after a failed sync
         try:
             base = os.environ.get("XDG_RUNTIME_DIR")
             # mkdtemp is private (0700) and ours alone; the socket and fifo live in it.
@@ -54,7 +56,7 @@ class Shadow:
             # O_RDWR: opens at once without waiting for the reader, and cat never sees EOF
             self.fd = os.open(self.fifo, os.O_RDWR | os.O_NONBLOCK)
             r = _tmux(self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "s",
-                      "-x", str(cols), "-y", str(rows), f"exec cat < {shlex.quote(self.fifo)}",
+                      "-x", str(cols), "-y", str(rows), f"stty raw -echo; exec cat < {shlex.quote(self.fifo)}",
                       timeout=3)
             self.ok = r.returncode == 0
         except (OSError, subprocess.SubprocessError):
@@ -63,10 +65,12 @@ class Shadow:
             self.close()
 
     # ── feeding ──────────────────────────────────────────────────────────────
-    def feed(self, data):
-        """Pass the engine's bytes on. Never raises; too far behind turns it off."""
+    def feed(self, data, clean=True):
+        """Pass the engine's bytes on. `clean` says they end on a sequence
+        boundary. Never raises; too far behind turns it off."""
         if not self.ok:
             return
+        self.clean = clean
         self.pending += data
         self._drain()
         if len(self.pending) > MAX_BACKLOG:
@@ -86,9 +90,11 @@ class Shadow:
             self.pending = self.pending[n:]
 
     # ── reading ──────────────────────────────────────────────────────────────
-    def sync(self, budget=0.15):
+    def sync(self, budget=0.05):
         """Wait until everything fed so far has been parsed. True if it has."""
-        if not self.ok:
+        # A sync mark inside an unfinished sequence would abort it and corrupt
+        # the screen, so wait for a boundary; the caller reads the live pane.
+        if not self.ok or not self.clean or time.monotonic() < self.cool:
             return False
         self.n += 1
         mark = f"nfsync{self.n}"
@@ -103,6 +109,7 @@ class Shadow:
             if r.returncode == 0 and r.stdout.strip() == mark:
                 return True
             time.sleep(0.005)
+        self.cool = time.monotonic() + 2.0      # stalled: stop asking for a while
         return False
 
     def capture(self, *args, timeout=0.5):
@@ -110,7 +117,8 @@ class Shadow:
         shadow cannot answer (the caller reads the live pane instead)."""
         if not self.ok:
             return None
-        self.sync()
+        if not self.sync():
+            return None             # a screen that may lack the latest bytes is not the truth
         try:
             r = _tmux(self.sock, "capture-pane", "-p", *args, "-t", "s", timeout=timeout)
         except (OSError, subprocess.SubprocessError):
@@ -121,7 +129,8 @@ class Shadow:
         if not self.ok:
             return
         try:
-            _tmux(self.sock, "resize-window", "-t", "s", "-x", str(cols), "-y", str(rows))
+            if _tmux(self.sock, "resize-window", "-t", "s", "-x", str(cols), "-y", str(rows)).returncode != 0:
+                self.ok = False
         except (OSError, subprocess.SubprocessError):
             self.ok = False
 
@@ -171,6 +180,13 @@ def selfcheck():
         lines = r.stdout.split("\n")
         assert lines[1].strip() == "hello" and lines[1].startswith("  hello"), lines[:3]
         assert "red" in lines[3] and "\x1b[31m" in lines[3], lines[3]
+        # A read that ends inside a sequence is not synced into (the mark
+        # would abort it); the caller falls back to the live pane.
+        sh.feed(f"{ESC}[5;1H{ESC}[3".encode(), clean=False)
+        assert sh.capture() is None, "no capture inside an unfinished sequence"
+        sh.feed(b"2mgrn", clean=True)
+        g = sh.capture("-e")
+        assert g is not None and "\x1b[32m" in g.stdout and "grn" in g.stdout, g
         sh.resize(7, 30)
         small = sh.capture()
         assert small is not None and len(small.stdout.rstrip("\n").split("\n")) <= 7

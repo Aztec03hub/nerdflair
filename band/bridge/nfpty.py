@@ -657,10 +657,21 @@ def main():
     last = time.monotonic()
     # When to take the panel down, if the pointer stays away.
     hide_at: list = [None]
-    guard = Guard(lambda: dbg, lambda: panel.reset())
+    def _drop_card():
+        try:
+            panel.erase()         # a card left up with hover off would stay for ever
+        finally:
+            panel.reset()
+
+    guard = Guard(lambda: dbg, _drop_card)
     guarded = guard.run
 
     def on_hover(hovers):
+        col0, row0 = hovers[-1]
+        if panel.rect and panel.rect[0] <= col0 < panel.rect[0] + panel.rect[2] \
+                and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3]:
+            hide_at[0] = None         # on the card itself: keep it, whatever is read under it
+            return
         covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
                    if panel.rect else set())
         layout.refresh(covered)
@@ -726,7 +737,7 @@ def main():
                 out.write(data)
                 out.flush()
                 if shadow is not None:
-                    shadow.feed(data)         # the engine's bytes only, never ours
+                    shadow.feed(data, clean[0])    # the engine's bytes only, never ours
                 clean[0] = stream.feed(data)
                 if not clean[0] and not unclean_since[0]:
                     unclean_since[0] = time.monotonic()
