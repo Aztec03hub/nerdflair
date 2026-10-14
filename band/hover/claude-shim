@@ -77,7 +77,7 @@ if (( wrap )); then
   # argv[0] is "claude" because tmux names the window from the foreground
   # process's argv[0]; without this every window read "python3".
   exec -a claude python3 -c '
-import os, pty, runpy, subprocess, sys
+import os, pty, runpy, signal, subprocess, sys
 hover, args, real = sys.argv[1], sys.argv[2:], os.environ.get("CLAUDE_BIN")
 forked = []
 _fork = pty.fork
@@ -99,6 +99,7 @@ except BaseException as e:
     subprocess.run(["bash", "-c", ". \"$1\"; nf_log shim \"$2\"", "nf-boot", os.environ.get("NF_LOG_SH", "/nonexistent"), why], check=False)
     sys.stderr.write("nerdflair: " + why + " (see ~/.local/state/nerdflair/launcher.log)\n")
     os.environ.pop("NFPTY", None)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     os.execv(real, [real] + args)
 ' "$HOVER" "$@"
 fi

@@ -54,7 +54,11 @@ _nf_stamp_dir() {
   if [[ -n "${NERDFLAIR_ERR_STAMP_DIR:-}" ]]; then _NF_SDIR="$NERDFLAIR_ERR_STAMP_DIR"; return 0; fi
   _d="${_h%/}/.claude/.nerdflair-stamps"        # HOME unset or empty means /, as in Rust
   [[ -d "$_d" ]] || mkdir -p -m 700 "$_d" 2>/dev/null
-  if [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]]; then _NF_SDIR="$_d"; fi
+  if [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]]; then
+    # Ours but possibly lax (an old umask): tighten rather than reject, like errlog::stamp_dir.
+    [[ -w "$_d" ]] && chmod 700 "$_d" 2>/dev/null
+    _NF_SDIR="$_d"
+  fi
   return 0
 }
 # Sets _NF_STAMP (empty when there is no safe directory). No subshell.
@@ -112,8 +116,10 @@ _nf_err() {
   _nf_stamp "$_k"
   _st="$_NF_STAMP"
   if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < 3600 )); then return 0; fi
-  # Log first, stamp after: a failed append must not silence the key for an hour.
-  if _nf_log_line "$_k" "${2:-}" && [[ -n "$_st" ]]; then _nf_stamp_write "$_st"; fi
+  # Log, then stamp whether or not the append worked: an unwritable log would
+  # otherwise make every render retry and write to stderr.
+  _nf_log_line "$_k" "${2:-}"
+  [[ -n "$_st" ]] && _nf_stamp_write "$_st"
   return 0
 }
 # A keyed condition that had logged has cleared: say so, once per failure line.
@@ -126,9 +132,10 @@ _nf_ok() {
   [[ -e "$_st" || -L "$_st" ]] || return 0
   _nf_stamp "recovered-$1"; _rec="$_NF_STAMP"
   _age=$(_nf_stamp_age "$_st")
-  if (( _age >= 3600 )); then rm -f "$_st" "$_rec" 2>/dev/null; return 0; fi   # stale: nothing recent to recover from
+  if (( _age >= 604800 )); then rm -f "$_st" "$_rec" 2>/dev/null; return 0; fi   # a week old: long forgotten, say nothing
   if [[ -e "$_rec" || -L "$_rec" ]] && (( $(_nf_stamp_age "$_rec") <= _age )); then return 0; fi
-  if _nf_log_line recovered "$1"; then _nf_stamp_write "$_rec"; fi
+  _nf_log_line recovered "$1"
+  _nf_stamp_write "$_rec"
   return 0
 }
 _nf_recent() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" && ( -e "$_NF_STAMP" || -L "$_NF_STAMP" ) ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }

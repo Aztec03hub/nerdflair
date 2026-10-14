@@ -20,6 +20,7 @@ import type { Hook, Register } from 'claude-code'
 // the first render. It used to be a hardcoded path, which made the band work
 // on exactly one machine.
 let HOME = ''
+let homeLookup: Promise<void> | null = null // the lookup in flight: overlapping renders share it instead of seeing HOME empty
 let homeTriedAt = -Infinity // when the HOME lookup last ran: a failing one is retried every 30 s, not every render
 const BIN = () => `${HOME}/.local/bin/nerdflair-statusline`
 // The popup helper, installed beside this file. tmux draws it, because the
@@ -300,6 +301,7 @@ let inflight: Promise<Seg[] | null> | null = null
 export function resetStateForTests(): void {
   HOME = ''
   homeTriedAt = -Infinity
+  homeLookup = null
   cache = null
   lastError = ''
   inflight = null
@@ -348,21 +350,28 @@ export const register: Register = on => {
 
 async function band($: RenderArgs[0], e: RenderArgs[1]) {
   const now = await $.clock.now()
-  if (!HOME && now - homeTriedAt > 30000) {
+  if (!HOME && !homeLookup && now - homeTriedAt > 30000) {
     homeTriedAt = now
     // No home, no renderer path. Say so in the band (red, with the reason)
     // instead of silently handing the screen back to the engine, which
     // would repeat every render forever with no explanation.
-    let why = ''
-    try {
-      const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
-      HOME = h.exitCode === 0 ? h.stdout.trim() : ''
-      if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
-    } catch (err) {
-      why = `printenv HOME failed: ${err}`
-    }
-    if (!HOME) report($, 'HOME lookup', why)
+    homeLookup = (async () => {
+      let why = ''
+      try {
+        const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
+        HOME = h.exitCode === 0 ? h.stdout.trim() : ''
+        if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
+      } catch (err) {
+        why = `printenv HOME failed: ${err}`
+      }
+      if (!HOME) report($, 'HOME lookup', why)
+    })().finally(() => {
+      homeLookup = null
+    })
   }
+  // A render that arrives while the lookup runs waits for it, rather than finding
+  // HOME empty and drawing a false "no recorded reason" error.
+  if (homeLookup) await homeLookup
   if (HOME && (!cache || now - cache.at > TTL_MS)) {
     // One refresh at a time: renders arrive faster than the renderer returns,
     // and each would otherwise spawn its own.

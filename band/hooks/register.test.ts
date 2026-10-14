@@ -203,3 +203,15 @@ test('a popup whose spawn fails or exits non-zero is toasted and logged; a 60 s 
   expect(w.toasts.length, 'a popup left open is not a failure').toBe(before)
   await ui.unmount()
 })
+
+test('two renders that overlap the HOME lookup draw the band, not a false "no recorded reason" error', async ($, on) => {
+  const { w } = world(on, ok)
+  // Both renders start before the first printenv answers.
+  const [a, b] = await Promise.all([$.ui.render(BAND as never), $.ui.render(BAND as never)])
+  for (const tree of [a, b]) {
+    const t = textOf(tree)
+    expect(t).not.toContain('no recorded reason')
+    expect(t).toContain('myrepo main')
+  }
+  expect(w.logs.some(l => l.includes('no recorded reason'))).toBe(false)
+})

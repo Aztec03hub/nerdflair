@@ -629,7 +629,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                         "git:multi-branch",
                         &[],
                     );
-                    if !ok2 {
+                    if !ok2 && !proc::timed_out() {   // after a timeout the calls were skipped: already logged
                         errlog::note("git-branch", &format!("neither symbolic-ref nor rev-parse HEAD worked in {}", sub));
                     }
                     b = b2;
@@ -643,8 +643,12 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
                 list.push_str(&format!("{}:{}", basename(sub), b));
             }
-            if let Err(e) = std::fs::write(&cache_file, format!("{}\n{}", off, list)) {
-                errlog::note_io(&errlog::tmp_key(&cache_file), &cache_file.display().to_string(), &e);
+            // Not after a git timeout: the list is then "no other branches", which is not
+            // what the repository says, and would be served from the cache for its TTL.
+            if !proc::timed_out() {
+                if let Err(e) = std::fs::write(&cache_file, format!("{}\n{}", off, list)) {
+                    errlog::note_io(&errlog::tmp_key(&cache_file), &cache_file.display().to_string(), &e);
+                }
             }
         }
         let content = std::fs::read_to_string(&cache_file).unwrap_or_default();
@@ -2156,7 +2160,7 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
             // Detached HEAD is normal (symbolic-ref exits 1 quietly). Both
             // failing is not.
             let (b2, ok2) = proc::out_chk("git", &["rev-parse", "--short", "HEAD"], Some(d), "git:rev-parse-head", &[]);
-            if !ok2 {
+            if !ok2 && !proc::timed_out() {   // after a timeout the calls were skipped: already logged
                 errlog::note("git-branch", &format!("neither symbolic-ref nor rev-parse HEAD worked in {}", d.display()));
             }
             branch = b2;
@@ -2195,8 +2199,12 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
             "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
             dirty, added, removed, branch, remote, worktree, ahead, behind
         );
-        if let Err(e) = std::fs::write(&cache_file, &payload) {
-            errlog::note_io(&errlog::tmp_key(&cache_file), &format!("{} (git re-runs every render)", cache_file.display()), &e);
+        // Same rule: a result computed while git calls were being skipped after a
+        // timeout is not "clean, no branch", and must not be cached as that.
+        if !proc::timed_out() {
+            if let Err(e) = std::fs::write(&cache_file, &payload) {
+                errlog::note_io(&errlog::tmp_key(&cache_file), &format!("{} (git re-runs every render)", cache_file.display()), &e);
+            }
         }
         computed = Some(payload);
     }
@@ -2482,7 +2490,8 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
              if [ -n \"$_why\" ]; then _fl=$(printf '%s %s' \"$_raw\" \"$(cat \"$_ef\" 2>/dev/null)\" | head -n 1 | cut -c1-160); \
                if [ -z \"$_st\" ] || [ ! -f \"$_st\" ] || [ $(( $(date +%s) - $(stat -c %Y \"$_st\" 2>/dev/null || echo 0) )) -ge 3600 ]; then \
                  [ -z \"$_st\" ] || : > \"$_st\"; printf '%s %s mcp-probe: %s; first output: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" \"$_why\" \"$_fl\" >> {log}; fi; \
-             elif [ -n \"$_st\" ] && [ -f \"$_st\" ]; then rm -f \"$_st\"; printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log}; fi; \
+             elif [ -n \"$_st\" ] && [ -f \"$_st\" ] && [ -n {recst} ] && {{ [ ! -f {recst} ] || [ {recst} -ot \"$_st\" ]; }}; then \
+               printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log} && : > {recst}; fi; \
              [ \"$_ef\" != /dev/null ] && rm -f \"$_ef\"; \
              if [ $((_o+_b+_w)) -gt 0 ]; then \
                printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
@@ -2494,6 +2503,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
             cache = shq_bare(&cache.to_string_lossy()),
             // Empty when no safe stamp directory exists: the script then logs without a rate limit.
             stamp = shq(&errlog::stamp_path("mcp-probe").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
+            recst = shq(&errlog::stamp_path("recovered-mcp-probe").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
             log = shq(&errlog::log_path().to_string_lossy()),
         );
         // The `else touch` above matters as much as the lock. The cache used

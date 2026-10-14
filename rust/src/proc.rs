@@ -37,6 +37,13 @@ fn drain<R: Read + Send + 'static>(h: Option<R>, what: &'static str) -> thread::
 /// `chk = Some((label, quiet))` also logs a non-zero exit with the first line
 /// of stderr, unless stderr contains one of the `quiet` substrings (the
 /// documented "this just means no" answers, such as "not a git repository").
+/// True once any git call timed out in this process (one render): its results,
+/// and everything derived from the calls skipped after it, are NOT a statement
+/// about the repository and must not be cached as one.
+pub fn timed_out() -> bool {
+    TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static TIMED_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn run(
@@ -75,14 +82,14 @@ fn run(
             Ok(Some(s)) => break s,
             Ok(None) => {
                 if start.elapsed() >= limit {
-                    // Log FIRST: reaping can itself hang on a process stuck in
-                    // uninterruptible I/O, and the line must not wait on that.
+                    // Kill first (it does not block), then log, then a BOUNDED reap:
+                    // only wait() can hang on a process stuck in uninterruptible I/O.
+                    let _ = child.kill();
                     errlog::note(
                         &format!("timeout:{}", label),
                         &format!("{} {:?} still running after {} ms, killed; no more {} this render", prog, args, limit.as_millis(), prog),
                     );
                     TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
-                    let _ = child.kill();
                     // Bounded reap (about 200 ms): never block the render on a stuck child.
                     for _ in 0..200 {
                         if matches!(child.try_wait(), Ok(Some(_))) {

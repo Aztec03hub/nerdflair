@@ -945,7 +945,7 @@ def main():
                 except OSError as e:
                     if e.errno in (errno.EAGAIN, errno.EINTR):
                         continue          # a shared non-blocking tty is not end of input
-                    if e.errno not in (errno.EIO, errno.EBADF):      # EIO: the terminal hung up, the normal end
+                    if e.errno != errno.EIO:      # EIO: the terminal hung up, the normal end
                         note_once("stdin-read", f"stdin read failed ({e}): treating it as the terminal going away and ending the session")
                     break
                 if not data:

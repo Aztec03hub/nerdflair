@@ -50,11 +50,16 @@ fn stamp_dir() -> Option<&'static PathBuf> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
         let m = std::fs::symlink_metadata(&dir).ok()?;
-        if m.is_dir() && m.uid() == uid() && m.mode() & 0o077 == 0 {
-            Some(dir)
-        } else {
-            None
+        if !(m.is_dir() && m.uid() == uid()) {
+            return None; // a symlink, a file, or someone else's directory: not ours to trust
         }
+        if m.mode() & 0o077 != 0 {
+            // Ours but lax (an old umask): tighten it rather than reject it, or stamps
+            // would never work and every render would log every key again.
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        Some(dir)
     })
     .as_ref()
 }
@@ -186,12 +191,13 @@ pub fn note(key: &str, reason: &str) {
             return;
         }
     }
-    // Log first, stamp after: a failed append must not silence the key for an
-    // hour. ponytail: two renderers racing at the hour boundary may both log.
-    if emit(key, reason) {
-        if let Some(st) = &stamp {
-            let _ = write_stamp(st); // false only loses the rate limit
-        }
+    // Log, then stamp whether or not the append worked: an unwritable log would
+    // otherwise make EVERY render retry and write to stderr. (The reason still
+    // reached stderr once, which is the last resort.)
+    // ponytail: two renderers racing at the hour boundary may both log.
+    emit(key, reason);
+    if let Some(st) = &stamp {
+        let _ = write_stamp(st); // false only loses the rate limit
     }
 }
 
@@ -207,8 +213,8 @@ pub fn ok(key: &str) {
         return;
     }
     let age = file_age(&fail);
-    if age >= RATE_SECS {
-        let _ = std::fs::remove_file(&fail); // stale: nothing recent to recover from
+    if age >= 7 * 86_400 {
+        let _ = std::fs::remove_file(&fail); // a week old: long forgotten, say nothing
         let _ = std::fs::remove_file(&rec);
         return;
     }
@@ -216,9 +222,8 @@ pub fn ok(key: &str) {
     if rec.exists() && file_age(&rec) <= age {
         return;
     }
-    if emit("recovered", key) {
-        let _ = write_stamp(&rec);
-    }
+    emit("recovered", key);
+    let _ = write_stamp(&rec);
 }
 
 /// True when `key` was touched less than `secs` ago. For retry back-off.

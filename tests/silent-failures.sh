@@ -236,6 +236,32 @@ s_git_hang() {
   printf '#!/bin/sh\nexec sleep 30\n' > "$CASE_DIR/bin/git"; chmod +x "$CASE_DIR/bin/git"
   CASE_PATH="$CASE_DIR/bin:$PATH"; CASE_ENV+=(NERDFLAIR_PROC_TIMEOUT_MS=300)
 }
+# A git that answers "inside a work tree" at once but hangs on everything else (a stalled
+# filesystem under the repo): the call that times out must not leave a cached "clean,
+# no branch" for the repository, because that would be served for the cache TTL.
+git_cache_path() { printf '/tmp/nerdflair-git-%s' "$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"; }
+s_git_partial_hang() {
+  printf '#!/bin/sh\ncase "$1" in rev-parse) case "$*" in *is-inside-work-tree*) echo true; exit 0 ;; *--git-dir*) echo .git; exit 0 ;; esac ;; esac\nexec sleep 30\n' > "$CASE_DIR/bin/git"
+  chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
+  CASE_PATH="$CASE_DIR/bin:$PATH"; CASE_ENV+=(NERDFLAIR_PROC_TIMEOUT_MS=300)
+  rm -f -- "$(git_cache_path)"
+}
+chk_git_not_cached() {
+  if [[ -e "$(git_cache_path)" ]]; then printf '  FAIL  git timeout: a git cache file was written (%s)\n' "$(git_cache_path)"; fail=1
+  else printf '  PASS  git timeout: no cache file written for the repo\n'; fi
+  rm -f -- "$(git_cache_path)"
+}
+s_git_fast() {   # CONTROL: the same repo with a git that answers, so the cache path above is the real one
+  printf '#!/bin/sh\ncase "$*" in *is-inside-work-tree*) echo true ;; *--git-dir*) echo .git ;; *symbolic-ref*) echo main ;; *) ;; esac\nexit 0\n' > "$CASE_DIR/bin/git"
+  chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
+  CASE_PATH="$CASE_DIR/bin:$PATH"
+  rm -f -- "$(git_cache_path)"
+}
+chk_git_cached() {
+  if [[ -e "$(git_cache_path)" ]]; then printf '  PASS  control: a working git does write the cache (path is right)\n'
+  else printf '  FAIL  control: no cache file for a working git; the not-cached check above proves nothing\n'; fail=1; fi
+  rm -f -- "$(git_cache_path)"
+}
 s_transcript_missing() {
   PAYLOAD=$(printf '{"session_id":"%s-tm","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s","project_dir":"%s"},"transcript_path":"%s/nope.jsonl","cost":{"total_cost_usd":1.25}}' \
     "$TAG" "$CASE_DIR/work" "$CASE_DIR/work" "$CASE_DIR")
@@ -275,6 +301,10 @@ run_case mcp-probe-timeout        mcp-probe              1 s_mcp_timeout
 run_case git-dubious-ownership    git:inside-work-tree:128 1 s_git_dubious
 run_case git-not-installed        spawn:git              1 s_git_missing
 run_case git-hangs                timeout:git:inside-work-tree 1 s_git_hang
+IMPLS_SAVE=$IMPLS; IMPLS=rust
+run_case git-partial-hang          timeout:git:status 1 s_git_partial_hang chk_git_not_cached
+run_case git-fast-control          -   0 s_git_fast chk_git_cached
+IMPLS=$IMPLS_SAVE
 run_case missing-transcript       ctx-transcript-missing 1 s_transcript_missing
 run_case bad-payload-json         payload-parse          1 s_payload_bad
 run_case empty-payload            payload-empty          1 s_payload_empty
