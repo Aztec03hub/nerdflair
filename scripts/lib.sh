@@ -48,11 +48,18 @@ _nf_stamp() {
 # Age in seconds of a stamp. Missing or future-dated = very old, like util::file_age.
 _nf_stamp_age() {
   local _m _a
-  [[ -e "$1" ]] || { printf '%s' 4611686018427387903; return; }
+  [[ -e "$1" || -L "$1" ]] || { printf '%s' 4611686018427387903; return; }
   _m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
   _a=$(( ${EPOCHSECONDS:-$(date +%s)} - _m ))
   (( _a < 0 )) && _a=4611686018427387903
   printf '%s' "$_a"
+}
+# Create or touch a stamp WITHOUT following a symlink (/tmp is shared and the
+# name is predictable): touch -h acts on a link itself, noclobber refuses to
+# write through one that appeared meanwhile.
+_nf_stamp_write() {
+  if [[ -e "$1" || -L "$1" ]]; then touch -h "$1" 2>/dev/null
+  else ( set -o noclobber; : > "$1" ) 2>/dev/null; fi
 }
 _nf_log_line() {
   local _k="$1" _r="${2:-}" _sz _tmp
@@ -77,19 +84,19 @@ _nf_err() {
   _nf_stamp "$1"
   local _st="$_NF_STAMP"
   (( $(_nf_stamp_age "$_st") < 3600 )) && return 0
-  : > "$_st" 2>/dev/null   # if this fails we cannot rate limit; log anyway
+  _nf_stamp_write "$_st"   # if this fails we cannot rate limit; log anyway
   _nf_log_line "$1" "${2:-}"
   return 0
 }
 _nf_ok() {
   _nf_stamp "$1"
   local _st="$_NF_STAMP"
-  [[ -e "$_st" ]] || return 0
+  [[ -e "$_st" || -L "$_st" ]] || return 0
   rm -f "$_st" 2>/dev/null && _nf_log_line recovered "$1"
   return 0
 }
-_nf_recent() { _nf_stamp "$1"; [[ -e "$_NF_STAMP" ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }
-_nf_touch() { _nf_stamp "$1"; : > "$_NF_STAMP" 2>/dev/null; return 0; }
+_nf_recent() { _nf_stamp "$1"; [[ -e "$_NF_STAMP" || -L "$_NF_STAMP" ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }
+_nf_touch() { _nf_stamp "$1"; _nf_stamp_write "$_NF_STAMP"; return 0; }
 _nf_clear() { _nf_stamp "$1"; rm -f "$_NF_STAMP" 2>/dev/null; return 0; }
 
 # ── jq check ─────────────────────────────────────────────────────

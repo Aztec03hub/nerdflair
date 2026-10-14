@@ -102,7 +102,8 @@ _nf_jrc=$?
 # schema" must not look like a quiet, slightly degraded bar.
 if [[ -z "${input//[[:space:]]/}" ]]; then
   _nf_err payload-empty "empty status payload on stdin"
-elif (( _nf_jrc == 5 )); then
+elif (( _nf_jrc != 0 )) && [[ "$(head -n 1 "$_SL_BUF.err")" != *"parse error"* ]]; then
+  # jq exits 5 for BOTH a parse error and a runtime type error; tell them apart.
   _nf_err payload-shape "unexpected payload shape; ALL payload fields blanked: $(head -n 1 "$_SL_BUF.err")"
 elif (( _nf_jrc != 0 )); then
   _nf_err payload-parse "$(head -n 1 "$_SL_BUF.err"); first 200 chars: ${input:0:200}"
@@ -1542,7 +1543,10 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
       exec 9>>"$_mh_lock" 2>/dev/null \
         || { _nf_err flock-open "cannot open MCP probe lock $_mh_lock; probe never runs"; exit 0; }
       flock -n 9 || exit 0   # a probe already running: normal, silent
-      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 2>"${_mh_cache}.err"); _rc=$?
+      # The probe's stderr goes to an unguessable mktemp file, never to a
+      # predictable name in shared /tmp that a planted symlink could redirect.
+      _mh_err=$(mktemp "${TMPDIR:-/tmp}/nerdflair-mcperr.XXXXXX" 2>/dev/null) || _mh_err=/dev/null
+      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 2>"$_mh_err"); _rc=$?
       _out=$(printf '%s\n' "$_raw" | sed 's/\x1b\[[0-9;]*m//g')
       _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
@@ -1581,11 +1585,11 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
         _why="claude mcp list printed no parseable server lines"
       fi
       if [[ -n "$_why" ]]; then
-        _nf_err mcp-probe "$_why; first output: $(printf '%s %s' "$_raw" "$(cat "${_mh_cache}.err" 2>/dev/null)" | head -n 1 | cut -c1-160)"
+        _nf_err mcp-probe "$_why; first output: $(printf '%s %s' "$_raw" "$(cat "$_mh_err" 2>/dev/null)" | head -n 1 | cut -c1-160)"
       else
         _nf_ok mcp-probe
       fi
-      rm -f "${_mh_cache}.err"
+      [[ "$_mh_err" != /dev/null ]] && rm -f "$_mh_err"
       if (( _o + _b + _w == 0 )); then touch "$_mh_cache" 2>/dev/null || true; fi
       (( _o + _b + _w > 0 )) && { printf '%s\x1f%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" "$_nm" > "${_mh_cache}.tmp" \
         && mv -f "${_mh_cache}.tmp" "$_mh_cache" \

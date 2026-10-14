@@ -17,6 +17,7 @@
 
 use crate::util::{epoch_secs, file_age, slugify, uid};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 const RATE_SECS: i64 = 3600;
@@ -119,6 +120,19 @@ fn emit(key: &str, reason: &str) {
     }
 }
 
+/// Create or touch a stamp WITHOUT following a symlink: /tmp is shared and the
+/// stamp name is predictable, so a planted symlink must not make us truncate
+/// someone else's file. Returns false when it could not be written.
+fn write_stamp(path: &PathBuf) -> bool {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .is_ok()
+}
+
 /// Record an absorbed failure, once per key per hour.
 pub fn note(key: &str, reason: &str) {
     let stamp = stamp_path(key);
@@ -128,7 +142,7 @@ pub fn note(key: &str, reason: &str) {
     // Stamp first. If the stamp cannot be written we cannot rate limit, and
     // losing a reason is worse than a repeat, so log regardless.
     // ponytail: two renderers racing at the hour boundary may both log.
-    let _ = std::fs::write(&stamp, "");
+    let _ = write_stamp(&stamp); // false only loses the rate limit, never the line
     emit(key, reason);
 }
 
@@ -148,7 +162,7 @@ pub fn recent(key: &str, secs: i64) -> bool {
 
 /// Mark `key` now (back-off marker; logs nothing).
 pub fn touch(key: &str) {
-    let _ = std::fs::write(stamp_path(key), ""); // logger-owned stamp; failing only loses the back-off
+    let _ = write_stamp(&stamp_path(key)); // failing only loses the back-off
 }
 
 /// Drop a back-off marker.

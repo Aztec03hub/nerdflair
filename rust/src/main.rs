@@ -2450,7 +2450,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     if !fresh && idle {
         let script = format!(
             "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-             _raw=$(timeout -k 5 {tmo} claude mcp list 2>{cache}.err); _rc=$?; \
+             _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 2>\"$_ef\"); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
@@ -2467,11 +2467,11 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
              elif [ $((_o+_b+_w)) -eq 0 ] && [ -n \"$_raw\" ] && ! printf '%s' \"$_raw\" | grep -qi 'no mcp servers'; then \
                _why=\"claude mcp list printed no parseable server lines\"; fi; \
              _st={stamp}; \
-             if [ -n \"$_why\" ]; then _fl=$(printf '%s %s' \"$_raw\" \"$(cat {cache}.err 2>/dev/null)\" | head -n 1 | cut -c1-160); \
+             if [ -n \"$_why\" ]; then _fl=$(printf '%s %s' \"$_raw\" \"$(cat \"$_ef\" 2>/dev/null)\" | head -n 1 | cut -c1-160); \
                if [ ! -f \"$_st\" ] || [ $(( $(date +%s) - $(stat -c %Y \"$_st\" 2>/dev/null || echo 0) )) -ge 3600 ]; then \
                  : > \"$_st\"; printf '%s %s mcp-probe: %s; first output: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" \"$_why\" \"$_fl\" >> {log}; fi; \
              elif [ -f \"$_st\" ]; then rm -f \"$_st\"; printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log}; fi; \
-             rm -f {cache}.err; \
+             [ \"$_ef\" != /dev/null ] && rm -f \"$_ef\"; \
              if [ $((_o+_b+_w)) -gt 0 ]; then \
                printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
                && mv -f {cache}.tmp {cache} \
