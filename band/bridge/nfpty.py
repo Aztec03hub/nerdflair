@@ -67,6 +67,9 @@ MOUSE = re.compile(rb"\033\[<(\d+);(\d+);(\d+)([Mm])")
 # Motion is bit 5 (32); the low two bits are the button, 3 meaning "none".
 # 35 = 32|3 is therefore motion with nothing held, which is a hover.
 HOVER_BTN = 35
+# Bytes the terminal itself sends that are not the user typing: focus in/out,
+# bracketed-paste markers are NOT here (a paste is typing), device replies.
+TERMINAL_NOISE = re.compile(rb"\033\[[IO]|\033\[[?>]?[0-9;]*c|\033\[[0-9;]*R|\033\[\?[0-9;]*\$y")
 
 # MEASURED: Claude Code sets 1000h, 1002h, 1003h and 1006h itself, so the
 # terminal already reports plain motion and nothing in the output stream needs
@@ -77,6 +80,14 @@ HOVER_BTN = 35
 # Long enough to cross the gap between two readouts without the panel
 # blinking, short enough that leaving the band feels immediate.
 HIDE_AFTER = 0.25
+# With no pointer report this long, a card is taken down (the pointer left the
+# window: terminals send nothing then). A pointer resting on the card still
+# sends nothing, so this is also how long a card stays while you read it.
+WATCHDOG = 4.0
+# Longer when the last report was ON the card: the pointer is probably resting
+# there while it is read. Leaving the window from the card is rarer (the card
+# sits above the status line, away from the window edge).
+WATCHDOG_ON_CARD = 20.0
 
 
 def winsize(fd):
@@ -120,6 +131,7 @@ class Backdrop:
         self.rows = None
         self.top = 0
         self.span = None
+        self.note = None        # optional debug sink: note(str)
 
     def save(self, y, h):
         self.rows = None
@@ -153,6 +165,9 @@ class Backdrop:
         if self.shadow is not None and self.span:
             y, h = self.span
             r = self.shadow.capture("-e", "-S", str(y - 1), "-E", str(y + h - 2))
+            if self.note:
+                self.note(f"restore shadow={'none' if r is None else 'ok'} ok={self.shadow.ok} "
+                          f"clean={self.shadow.clean} rows={None if r is None else r.stdout.split(chr(10))[:h]}")
             if r is not None:
                 self.rows = r.stdout.split("\n")[:h]
         out = []
@@ -571,6 +586,15 @@ def main():
     rows, cols = winsize(stdin_fd)
     shadow = Shadow(rows, cols) if pane0 and os.environ.get("NFPTY_SHADOW", "1") != "0" else None
     if shadow is not None and not shadow.ok:
+        # Not silent: without it cards restore stale rows again, and that is
+        # otherwise indistinguishable from "working".
+        try:
+            os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
+            with open(ERRLOG, "a") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: shadow screen unavailable "
+                        f"({shadow.why or 'unknown'}); reading the live pane\n")
+        except OSError:
+            pass
         shadow = None                  # no private tmux: read the live pane as before
     resized = [True]            # read the size once after the handler exists, so a resize in the gap is not lost
 
@@ -626,6 +650,7 @@ def main():
     pane = os.environ.get("TMUX_PANE")
     panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
     layout = Layout(pane, shadow)
+    panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
 
     old = None
     try:
@@ -657,6 +682,9 @@ def main():
     last = time.monotonic()
     # When to take the panel down, if the pointer stays away.
     hide_at: list = [None]
+    last_motion = [0.0]         # when the pointer last reported; the watchdog below uses it
+    on_card = [False]           # whether that last report was on the card OR on the readout that opens it
+
     def _drop_card():
         try:
             panel.erase()         # a card left up with hover off would stay for ever
@@ -668,20 +696,24 @@ def main():
 
     def on_hover(hovers):
         col0, row0 = hovers[-1]
-        if panel.rect and panel.rect[0] <= col0 < panel.rect[0] + panel.rect[2] \
-                and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3]:
-            # On the card itself: keep it, whatever is read under it. A hide that
-            # typing already made due stays due.
-            # With no more reports (the pointer left the window) it still goes,
-            # after a few seconds; every report on the card pushes that back.
+        last_motion[0] = time.monotonic()
+        on_card[0] = bool(panel.rect and panel.rect[0] <= col0 < panel.rect[0] + panel.rect[2]
+                          and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3])
+        if on_card[0]:
+            # On the card itself: keep it, whatever is read under it. Any pending
+            # hide is cancelled UNLESS typing already made it due. If the reports
+            # simply stop (the pointer left the terminal window) the watchdog in
+            # the main loop takes the card down; nothing is armed here, so moving
+            # off the card later is judged on its own, by the branch below.
             if hide_at[0] is None or hide_at[0] > time.monotonic():
-                hide_at[0] = time.monotonic() + 4.0
+                hide_at[0] = None
             return
         covered = (set(range(panel.rect[1], panel.rect[1] + panel.rect[3]))
                    if panel.rect else set())
         layout.refresh(covered)
         col, row = hovers[-1]      # only the latest position
         hit = layout.hit(col, row)
+        on_card[0] = hit is not None     # resting on a readout is resting on the card's trigger: same long grace
         if dbg:
             dbg.write(f"hover {col},{row} "
                       f"hit={hit['id'] if hit else None} "
@@ -694,8 +726,13 @@ def main():
         # time the pointer twitched. The hide is scheduled and
         # cancelled if the pointer comes back.
         if hit is None:
-            if panel.shown and hide_at[0] is None:
-                hide_at[0] = time.monotonic() + HIDE_AFTER
+            # Off the card and off every readout: it goes soon. min(), not
+            # "if none": a longer timer left from an earlier state must not
+            # keep it up while the pointer is somewhere else entirely.
+            if panel.shown:
+                due = time.monotonic() + HIDE_AFTER
+                if hide_at[0] is None or hide_at[0] > due:
+                    hide_at[0] = due
         else:
             hide_at[0] = None          # back on a readout
             if hit["id"] != panel.shown:
@@ -780,13 +817,19 @@ def main():
                     break
                 fwd, hovers, tail = split_hovers(tail + data)
                 tail_since[0] = time.monotonic()
+                typed = False
                 if fwd:
                     write_all(master, fwd)
+                    if MOUSE.search(fwd):
+                        last_motion[0] = time.monotonic()    # any mouse report: the pointer is still in the window
                     # Typing takes a card down: nothing tells us the pointer left.
-                    if panel.shown and MOUSE.sub(b"", fwd):
-                        hide_at[0] = time.monotonic()
+                    typed = bool(MOUSE.sub(b"", TERMINAL_NOISE.sub(b"", fwd)))
                 if hovers:
                     guarded("hover", on_hover, hovers)
+                # AFTER the hovers: a keystroke and a motion report in one read
+                # used to have the hover cancel the typing-hide.
+                if typed and panel.shown:
+                    hide_at[0] = time.monotonic()
 
             now = time.monotonic()
 
@@ -813,6 +856,10 @@ def main():
                 except OSError:
                     pass
 
+            # Watchdog: a card up with no pointer report for WATCHDOG seconds (the
+            # pointer left the window, so no more reports come) is taken down.
+            if panel.shown and hide_at[0] is None and last_motion[0] and now - last_motion[0] > (WATCHDOG_ON_CARD if on_card[0] else WATCHDOG):
+                hide_at[0] = now
             if hide_at[0] is not None and now >= hide_at[0]:
                 hide_at[0] = None
                 # erase() puts back the rows saved from tmux. It does not ask

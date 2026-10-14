@@ -39,6 +39,7 @@ def _tmux(sock, *args, timeout=0.5):
 class Shadow:
     def __init__(self, rows, cols):
         self.ok = False
+        self.why = ""           # why it is off, when it is: logged by the caller, never silent
         self.fd = -1
         self.dir = None
         self.pending = b""
@@ -50,6 +51,11 @@ class Shadow:
             # mkdtemp is private (0700) and ours alone; the socket and fifo live in it.
             self.dir = tempfile.mkdtemp(prefix="nf-shadow-",
                                         dir=base if base and os.path.isdir(base) else None)
+            # mkdtemp's 0700 is masked by the umask: the tmux server runs with
+            # 0117, which made this 0600 (no search bit) for every window it
+            # starts, so tmux got "Permission denied" and the shadow never came
+            # up inside tmux. chmod is not masked.
+            os.chmod(self.dir, 0o700)
             self.sock = os.path.join(self.dir, "s")
             self.fifo = os.path.join(self.dir, "in")
             os.mkfifo(self.fifo, 0o600)
@@ -59,8 +65,11 @@ class Shadow:
                       "-x", str(cols), "-y", str(rows), f"stty raw -echo; exec cat < {shlex.quote(self.fifo)}",
                       timeout=3)
             self.ok = r.returncode == 0
-        except (OSError, subprocess.SubprocessError):
+            if not self.ok:
+                self.why = (r.stderr or f"tmux exit {r.returncode}").strip()
+        except (OSError, subprocess.SubprocessError) as e:
             self.ok = False
+            self.why = f"{type(e).__name__}: {e}"
         if not self.ok:
             self.close()
 
@@ -168,7 +177,20 @@ class Shadow:
             self.dir = None
 
 
+def _umask_check():
+    """Under the tmux server's umask (0117) the shadow must still come up. Falsifiable:
+    without the chmod its directory is 0600 and tmux reports Permission denied."""
+    old = os.umask(0o117)
+    try:
+        hostile = Shadow(5, 20)
+        assert hostile.ok, f"shadow must start under umask 0117: {hostile.why}"
+        hostile.close()
+    finally:
+        os.umask(old)
+
+
 def selfcheck():
+    _umask_check()
     """Against a real tmux: bytes fed appear on the shadow screen in order, a
     sequence split across two feeds is joined, a resize takes, and close
     leaves nothing behind. Falsifiable: a screen that never got the bytes is

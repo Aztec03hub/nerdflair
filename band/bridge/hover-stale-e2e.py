@@ -55,7 +55,7 @@ def run(shadow):
     fake.close()
     tmux("kill-window", "-t", WIN)
     tmux("new-window", "-d", "-n", WIN,
-         f"NFPTY_SHADOW={1 if shadow else 0} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+         f"NFPTY_LOG={os.environ.get('NFPTY_LOG', '/dev/null')} NFPTY_SHADOW={1 if shadow else 0} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     try:
         time.sleep(2)
@@ -75,6 +75,8 @@ def run(shadow):
         screen = tmux("capture-pane", "-p", "-t", target)
         if re.search(r"╭─ \S", screen):
             return "CARD STILL OPEN"
+        if os.environ.get("E2E_DEBUG"):
+            print("   rows 44-48 after:", [r.rstrip()[:50] for r in screen.split("\n")[43:48]], file=sys.stderr)
         return screen.split("\n")[ROW - 1].strip()
     finally:
         tmux("kill-window", "-t", target)
