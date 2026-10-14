@@ -295,6 +295,8 @@ function ago(ms: number): string {
 const TTL_MS = 2000
 const STALE_MS = 30000
 let inflight: Promise<Seg[] | null> | null = null
+let lastFailAt = 0
+const FAIL_BACKOFF_MS = 5000
 
 // Test seam: module state outlives a hook registration, so cases in one test
 // file would see each other's cache and errors. The engine never calls this.
@@ -372,7 +374,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   // A render that arrives while the lookup runs waits for it, rather than finding
   // HOME empty and drawing a false "no recorded reason" error.
   if (homeLookup) await homeLookup
-  if (HOME && (!cache || now - cache.at > TTL_MS)) {
+  if (HOME && (!cache || now - cache.at > TTL_MS) && (cache || now - lastFailAt > FAIL_BACKOFF_MS)) {
     // One refresh at a time: renders arrive faster than the renderer returns,
     // and each would otherwise spawn its own.
     const segs = await (inflight ??= (async () => {
@@ -397,7 +399,10 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         // An unparseable time is OMITTED (and noted), never sent as NaN, which
         // JSON turns into null and the renderer would take for "no reset".
         const epoch = (t?: string) => {
-          if (!t) return undefined
+          if (!t) {
+            note($, 'payload', 'rate limit has no resetsAt: resets_at omitted')
+            return undefined
+          }
           const s = Math.floor(Date.parse(t) / 1000)
           if (Number.isFinite(s)) return s
           note($, 'payload', `rate limit resetsAt is not a date, resets_at omitted: ${t}`)
@@ -412,8 +417,12 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         else {
           if (ctx.tokens === undefined) note($, 'payload', 'usage.context.tokens missing: omitted')
           if (ctx.percent === undefined) note($, 'payload', 'usage.context.percent missing: omitted')
+          if (ctx.window === undefined) note($, 'payload', 'usage.context.window missing: omitted')
         }
         if (!u.cost) note($, 'payload', 'usage.cost missing: cost segments omitted')
+        else if (u.cost.usd === undefined) note($, 'payload', 'usage.cost.usd missing: omitted')
+        if (five && five.percentUsed === undefined) note($, 'payload', 'five_hour percentUsed missing: omitted')
+        if (seven && seven.percentUsed === undefined) note($, 'payload', 'seven_day percentUsed missing: omitted')
         if (!five) note($, 'payload', 'no five_hour rate limit reported: that window is omitted')
         if (!seven) note($, 'payload', 'no seven_day rate limit reported: that window is omitted')
         const payload = {
@@ -529,11 +538,14 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       // recurrence is logged again rather than swallowed as a duplicate.
       if (lastError) seen.delete(lastError)
       lastError = ''
+      lastFailAt = 0
+    } else {
+      // A renderer that keeps failing must not leave figures frozen as if
+      // they were live: until 30 s pass the old ones stay, marked `stale`
+      // below with the reason; after that they go and the red error shows.
+      lastFailAt = now // back off: a renderer that fails is not re-run on every render
+      if (cache && now - cache.at > STALE_MS) cache = null
     }
-    // A renderer that keeps failing must not leave figures frozen as if
-    // they were live: until 30 s pass the old ones stay, marked `stale`
-    // below with the reason; after that they go and the red error shows.
-    else if (cache && now - cache.at > STALE_MS) cache = null
   }
   // Cheap and never rejects, so it is read every render rather than cached:
   // the whole point of this chip is that it is never stale.
@@ -684,7 +696,11 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
     const fail = (why: string) => {
       const msg = note($, 'popup', why)
       // A toast that cannot be shown is itself reported (the cause is already logged by note).
-      void Promise.resolve($.ui.toast(`nerdflair-band: ${msg}`)).catch(err => note($, 'toast', `could not show: ${err}`))
+      try {
+        void Promise.resolve($.ui.toast(`nerdflair-band: ${msg}`)).catch(err => note($, 'toast', `could not show: ${err}`))
+      } catch (err) {
+        note($, 'toast', `could not show: ${err}`)
+      }
     }
     void (async () => {
       try {

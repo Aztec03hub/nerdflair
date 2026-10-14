@@ -32,20 +32,21 @@ fn drain<R: Read + Send + 'static>(h: Option<R>, what: &'static str) -> thread::
     })
 }
 
-/// Run `prog`, returning stdout and success. Failures that are always
-/// unexpected (cannot spawn, timeout) are logged here, once, for every caller.
-/// `chk = Some((label, quiet))` also logs a non-zero exit with the first line
-/// of stderr, unless stderr contains one of the `quiet` substrings (the
-/// documented "this just means no" answers, such as "not a git repository").
-/// True once any git call timed out in this process (one render): its results,
-/// and everything derived from the calls skipped after it, are NOT a statement
-/// about the repository and must not be cached as one.
+/// True once any git call timed out in this process (one render), or git was
+/// skipped because a recent render saw it hang: its results, and everything
+/// derived from the calls skipped after it, are NOT a statement about the
+/// repository and must not be cached as one.
 pub fn timed_out() -> bool {
     TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 static TIMED_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Run `prog`, returning stdout and success. Failures that are always
+/// unexpected (cannot spawn, timeout) are logged here, once, for every caller.
+/// `chk = Some((label, quiet))` also logs a non-zero exit with the first line
+/// of stderr, unless stderr contains one of the `quiet` substrings (the
+/// documented "this just means no" answers, such as "not a git repository").
 fn run(
     prog: &str,
     args: &[&str],
@@ -54,6 +55,11 @@ fn run(
 ) -> (Vec<u8>, bool) {
     // After one timeout this render, do not wait another full timeout for the next
     // call (a hung filesystem makes every git call hang): already logged once.
+    // Cross-render back-off: a render within 60 s of a git hang skips git outright
+    // (the hang was logged by the render that saw it).
+    if prog == "git" && !TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed) && errlog::recent("git-hung", 60) {
+        TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     if TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed) && prog == "git" {
         return (Vec::new(), false);
     }
@@ -89,6 +95,9 @@ fn run(
                         &format!("timeout:{}", label),
                         &format!("{} {:?} still running after {} ms, killed; no more {} this render", prog, args, limit.as_millis(), prog),
                     );
+                    if prog == "git" {
+                        errlog::touch("git-hung");
+                    }
                     TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
                     // Bounded reap (about 200 ms): never block the render on a stuck child.
                     for _ in 0..200 {

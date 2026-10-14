@@ -325,7 +325,13 @@ def cards_check():
     import glob
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
-    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0")
+    # The tmux readout comes from a per-pane cache, else from a live tmux; seed
+    # the cache for a pane of our own so this never depends on what ran before.
+    pane = "%nfcards"
+    tcache = f"/tmp/nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}"
+    with open(tcache, "w") as fh:
+        fh.write("cards")
+    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane)
     seen, misses, rows = set(), {}, 0
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:

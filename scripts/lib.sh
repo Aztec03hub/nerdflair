@@ -111,7 +111,7 @@ _nf_log_line() {
 }
 _nf_err() {
   local _k="$1" _st
-  case "$_NF_MEM" in *" ${_k} "*) return 0 ;; esac    # once per process whatever the stamp says
+  case "$_NF_MEM" in *" "${_k}" "*) return 0 ;; esac    # once per process whatever the stamp says
   _NF_MEM+="${_k} "
   _nf_stamp "$_k"
   _st="$_NF_STAMP"
@@ -174,10 +174,11 @@ _nf_read_field() {
 _nf_read_recent_styles() {
   if [[ -f "$NF_STATE_FILE" ]]; then
     local _rerr _rcsv
-    if _rcsv=$(jq -r '.chime_recent_styles // [] | join(",")' "$NF_STATE_FILE" 2>&1); then
+    if _rcsv=$(jq -r '.chime_recent_styles // [] | join(",")' "$NF_STATE_FILE" 2>/dev/null); then
       printf '%s\n' "$_rcsv"
     else
-      _nf_err "state-read" "jq could not read chime_recent_styles from $NF_STATE_FILE: ${_rcsv%%$'\n'*}"
+      _rerr=$(jq -r '.chime_recent_styles // [] | join(",")' "$NF_STATE_FILE" 2>&1 >/dev/null)
+      _nf_err "state-read" "jq could not read chime_recent_styles from $NF_STATE_FILE: ${_rerr%%$'\n'*}"
     fi
   fi
 }

@@ -611,6 +611,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             cksum(cwd.as_bytes())
         ));
         let fresh = cache_file.is_file() && file_age(&cache_file) < GIT_CACHE_TTL;
+        let mut computed_multi: Option<String> = None;
         if !fresh {
             let mut list = String::new();
             let mut off = 0i64;
@@ -645,13 +646,18 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
             // Not after a git timeout: the list is then "no other branches", which is not
             // what the repository says, and would be served from the cache for its TTL.
+            let payload = format!("{}\n{}", off, list);
             if !proc::timed_out() {
-                if let Err(e) = std::fs::write(&cache_file, format!("{}\n{}", off, list)) {
+                if let Err(e) = std::fs::write(&cache_file, &payload) {
                     errlog::note_io(&errlog::tmp_key(&cache_file), &cache_file.display().to_string(), &e);
                 }
+                computed_multi = Some(payload);
             }
         }
-        let content = std::fs::read_to_string(&cache_file).unwrap_or_default();
+        let content = match computed_multi {
+            Some(t) => t,
+            None => std::fs::read_to_string(&cache_file).unwrap_or_default(),
+        };
         let mut lines = content.splitn(2, '\n');
         let first = lines.next().unwrap_or("").to_string();
         let rest = lines.next().unwrap_or("");
@@ -969,7 +975,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             None => {
                 let (o, ok) = proc::out_chk("tput", &["cols"], None, "tput", &[]);
                 if ok {
-                    bash_int(&o).unwrap_or(80)
+                    bash_int(&o).unwrap_or_else(|| {
+                        errlog::note("columns-bad", &format!("tput cols printed {:?}, not an integer; using 80", o));
+                        80
+                    })
                 } else {
                     80
                 }
@@ -2208,15 +2217,21 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
         }
         computed = Some(payload);
     }
-    let content = match std::fs::read_to_string(&cache_file) {
-        Ok(t) => t,
-        Err(e) => {
-            // NotFound with a fresh computation is just the failed write above.
-            if computed.is_none() {
-                errlog::note_io("git-cache-read", &cache_file.display().to_string(), &e);
+    // A fresh computation beats whatever file is there (a failed write leaves the
+    // old one). After a git timeout the computation is empty: prefer the last file.
+    let fresh_value = if proc::timed_out() { None } else { computed.take() };
+    let content = match fresh_value {
+        Some(t) => t,
+        None => match std::fs::read_to_string(&cache_file) {
+            Ok(t) => t,
+            Err(e) => {
+                // NotFound with a computation in hand is just the failed write or a skipped one.
+                if computed.is_none() {
+                    errlog::note_io("git-cache-read", &cache_file.display().to_string(), &e);
+                }
+                computed.unwrap_or_default()
             }
-            computed.unwrap_or_default()
-        }
+        },
     };
     let p = read_ifs_unit(&content, 8);
     GitCache {

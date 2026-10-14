@@ -7,7 +7,12 @@ input=$(cat)
 
 # Buffer all output and flush at exit so Claude Code sees complete output
 # atomically — prevents partial first-render from locking statusline height.
-_SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX")
+if ! _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX" 2>/dev/null); then
+  # /tmp full or TMPDIR bad: log it (lib.sh is not sourced yet) and buffer under ~/.claude.
+  source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+  _nf_err buf-mktemp "mktemp failed in ${TMPDIR:-/tmp}; buffering under ~/.claude"
+  _SL_BUF="${HOME:-}/.claude/.nerdflair-sl.$$"
+fi
 exec 3>&1 1>"$_SL_BUF"
 trap '_nf_rc=$?; cat "$_SL_BUF" >&3; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
 
@@ -38,12 +43,18 @@ fi
 _nf_cmd() {
   local _l="$1" _q="$2" _rc _e
   shift 2
+  if [[ "$1" == git ]]; then
+    # Cross-render back-off (twin of proc::run): a hang in the last 60 s skips git.
+    [[ -z "${_NF_GIT_TIMED_OUT:-}" ]] && _nf_recent git-hung 60 && _NF_GIT_TIMED_OUT=1
+    if [[ -n "${_NF_GIT_TIMED_OUT:-}" ]]; then _NF_OUT=""; return 124; fi
+  fi
   _NF_OUT=$("${_NF_TCMD[@]+"${_NF_TCMD[@]}"}" "$@" 2>"$_SL_BUF.err"); _rc=$?
   if (( _rc != 0 )); then
     _e=$(< "$_SL_BUF.err")
     if (( _rc == 126 || _rc == 127 )); then
       _nf_err "spawn:$1" "cannot run $1 (rc=$_rc): ${_e%%$'\n'*}"
     elif (( _rc == 124 )); then
+      if [[ "$1" == git ]]; then _NF_GIT_TIMED_OUT=1; _nf_touch git-hung; fi
       _nf_err "timeout:${_l/#-/$1}" "$* still running after ${_NF_TMO}s, killed"
     elif [[ "$_l" != "-" ]] && { [[ -z "$_q" ]] || [[ ! "$_e" =~ $_q ]]; }; then
       _e="${_e%%$'\n'*}"
@@ -335,7 +346,12 @@ git_dir=""
 _multi_git_subs=()
 _adopted_repo_name=""
 if [[ -n "$cwd" ]]; then
-  cd "$cwd" 2>/dev/null
+  if ! cd "$cwd" 2>/dev/null; then
+    _nf_err cwd-cd "cannot cd to $cwd; git UI skipped"
+    _cd_ok=""
+  fi
+fi
+if [[ -n "$cwd" && -n "${_cd_ok-1}" ]]; then
   # "not a git repository" is the normal answer for a plain directory: silent.
   # Any other failure (dubious ownership, corrupt repo) drops the whole git UI.
   if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree; then
@@ -375,7 +391,13 @@ if [[ -n "$git_dir" ]]; then
     (( _cache_age < _GIT_CACHE_TTL )) && _git_cache_fresh=true
   fi
   if [[ "$_git_cache_fresh" == "false" ]]; then
-    cd "$git_dir" 2>/dev/null
+    if ! cd "$git_dir" 2>/dev/null; then
+      _nf_err cwd-cd "cannot cd to $git_dir; git UI skipped"
+      git_dir=""
+    fi
+  fi
+  if [[ -n "$git_dir" && "$_git_cache_fresh" == "false" ]]; then
+    _gc_computed=1
     _nf_cmd git:status '' git -c core.useBuiltinFSMonitor=false status --porcelain --ignore-submodules=dirty
     _gc_dirty=0
     [[ -n "$_NF_OUT" ]] && _gc_dirty=$(printf '%s\n' "$_NF_OUT" | wc -l | tr -d ' ')
@@ -409,7 +431,7 @@ if [[ -n "$git_dir" ]]; then
       _gc_branch="$_NF_OUT"
     else
       _nf_cmd git:rev-parse-head '' git rev-parse --short HEAD \
-        || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $git_dir"
+        || [[ -n "${_NF_GIT_TIMED_OUT:-}" ]] || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $git_dir"
       _gc_branch="$_NF_OUT"
     fi
     # In a linked worktree --git-dir and --git-common-dir differ; in the main checkout they match.
@@ -436,10 +458,21 @@ if [[ -n "$git_dir" ]]; then
     # \x1f, not \t: tab is IFS-whitespace, so `IFS=$'\t' read` collapses runs of
     # separators and empty fields vanish -- a repo with no `origin` would shift
     # every field after _gc_remote by one. \x1f is not IFS-whitespace.
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file" \
-      || _nf_err tmp-write "cannot write $_git_cache_file (git re-runs every render)"
+    # Not after a git timeout: the empty result is not "clean, no branch".
+    if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file" \
+        || _nf_err "tmp-write:${_git_cache_file##*/}" "cannot write $_git_cache_file (git re-runs every render)"
+    fi
   fi
-  IFS=$'\x1f' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree _gc_ahead _gc_behind < "$_git_cache_file"
+  # A fresh computation beats the file (a failed write leaves the old one); after a
+  # timeout the computation is empty, so prefer the last file when there is one.
+  if [[ -n "$git_dir" ]] && [[ -z "${_gc_computed:-}" || -n "${_NF_GIT_TIMED_OUT:-}" ]]; then
+    if [[ -r "$_git_cache_file" ]]; then
+      IFS=$'\x1f' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree _gc_ahead _gc_behind < "$_git_cache_file"
+    elif [[ -z "${_gc_computed:-}" ]]; then
+      _nf_err git-cache-read "cannot read $_git_cache_file"
+    fi
+  fi
 fi
 
 # ── Uncommitted files segment ────────────────────────────────────
@@ -491,7 +524,7 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
         _sub_branch="$_NF_OUT"
       else
         _nf_cmd git:multi-branch '' git -C "$_sub" rev-parse --short HEAD \
-          || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $_sub"
+          || [[ -n "${_NF_GIT_TIMED_OUT:-}" ]] || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $_sub"
         _sub_branch="$_NF_OUT"
       fi
       [[ -z "$_sub_branch" ]] && continue
@@ -503,11 +536,19 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
       _mb_list+="$(basename "$_sub"):${_sub_branch}"
     done
     # Cache: off-count on line 1, joined list on line 2 (list may be empty).
-    printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file" \
-      || _nf_err tmp-write "cannot write $_multi_cache_file"
+    if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
+      printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file" \
+        || _nf_err "tmp-write:${_multi_cache_file##*/}" "cannot write $_multi_cache_file"
+      _mb_have=1
+    fi
   fi
-  IFS= read -r _multi_off_count < "$_multi_cache_file"
-  _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file")
+  if [[ -n "${_mb_have:-}" ]]; then
+    _multi_off_count=$_mb_off
+    _multi_branch_list=$_mb_list
+  else
+    IFS= read -r _multi_off_count < "$_multi_cache_file" 2>/dev/null
+    _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file" 2>/dev/null)
+  fi
   _multi_off_count=${_multi_off_count:-0}
   _multi_branch_list=$(_sanitize "$_multi_branch_list")
 fi
@@ -1356,7 +1397,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
       # whole ledger for as long as a compaction held the lock: the per-refresh
       # cost scaling with a file that grows on its own, which is the incident
       # pattern. A skipped sample costs nothing, the column being cumulative.
-      : > "$_rc_stamp" 2>/dev/null || _nf_err tmp-write "cannot write $_rc_stamp"
+      : > "$_rc_stamp" 2>/dev/null || _nf_err "tmp-write:${_rc_stamp##*/}" "cannot write $_rc_stamp"
       # Compact when the log gets big AND the cooldown has expired, writing via
       # a temp file so a reader without the lock never sees a partial.
       #
@@ -1480,7 +1521,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
       ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
         || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
-      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || _nf_err tmp-write "cannot write $_rc_memo"
+      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
@@ -2101,7 +2142,7 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
       || _nf_err tmux "tmux display-message failed; session name segment hidden"
     _tmux_name="$_NF_OUT"
     if [[ -n "$_tmux_name" ]]; then
-      printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null || _nf_err tmp-write "cannot write $_tx_cache"
+      printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null || _nf_err "tmp-write:${_tx_cache##*/}" "cannot write $_tx_cache"
     fi
   fi
   [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
