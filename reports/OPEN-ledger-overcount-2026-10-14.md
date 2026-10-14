@@ -28,23 +28,48 @@ baseline, as the renderer does):
 1cefdce1 is a Sonnet 5.5-only session with 54 transcripts (53 subagent files). Largest
 single ledger jumps: 2.13, 2.05, 1.77, 1.65, 1.56.
 
-## Hypotheses to test (none verified)
+## What the investigation found (2026-10-14, same day)
 
-1. The host's `cost.total_cost_usd` for a session includes subagent spend that the
-   transcripts count once, so a subagent-heavy session is priced above its transcripts
-   in some way (cache-write TTL: subagents write 5-minute cache at 1.25x, the recount
-   prices per call from `cache_creation`, the host may price them differently).
-2. Sonnet 5.5 cache reads: the recount uses the same $0.20/MTok as the host (matched the
-   ledger within 1% in aggregate on 2026-10-14), but TokenLens documents $0.10 for
-   Sonnet 5.5 and Opus 5.5. A Sonnet-only, read-heavy session would be where a 2x on
-   reads shows most.
-3. A session id reused or resumed, so its cumulative cost counter restarted and a
-   positive increment was counted twice.
+Method: for the session, regress the ledger's cumulative cost on the transcripts'
+cumulative token counts over the 3 h window (176 samples, no intercept, baseline
+subtracted); the fit is tight (rmse $0.02-0.04), so the host's effective per-token
+rates can be read off. Window tokens: 83.9 M cache read, 1.52 M cache write,
+0.17 M output (0.13 M of it in subagent transcripts); ledger delta $17.62.
+
+Effective rates the host charged, against published Sonnet 5.5:
+
+    cache read   $0.11-0.12 /MTok   published $0.10   (+10-22%)
+    cache write  $3.7-4.0  /MTok    published $2.5 (5m) / $4.0 (1h), about $3.1 blended here
+    output (sub) $15-16    /MTok    published $10     (+50%)
+    output (main) not determined (only 0.04 MTok in the window; the fit is noise)
+
+Ruled out:
+- Hypothesis 2 as stated (the recount's cache-read rate): the host's effective read rate
+  is about the published $0.10, not 2x it. The recount at $0.10 gives $14.81 for the
+  window; at $0.20 it gives $23.19; the host charged $17.62, in between.
+- A US-geography (x1.1) or fast-mode multiplier: every call in the three sessions
+  checked reports inference_geo global/not_available and speed standard/null.
+- Compaction calls with zero top-level usage: calls carrying usage.iterations have a
+  single iteration that duplicates the top-level usage, none has zero top-level usage.
+- A session id reused or resumed (hypothesis 3): no counter reset appears in the ledger
+  samples for this session.
+
+Still open, in order of likelihood:
+1. The transcripts under-record tokens for subagent calls. In subagent transcripts the
+   same message id appears on several lines with output_tokens growing as it streams
+   (examples 20 -> 363, 3 -> 1138, 7 -> 2050: sum over first lines 90,808, over last
+   lines 556,600). The recount keeps the last line. If even the last line is short of the
+   final count, every subagent-heavy session reads low in the recount and the ledger (the
+   host's own figure) is right. This fits the +50% on subagent output; it does not by
+   itself explain the +10-22% on reads and writes.
+2. Calls the host bills to the session that never reach a transcript (titles, hook
+   or memory calls made through the host).
+3. A cache-write TTL mix: subagents write 5 m (x1.25), the main thread 1 h (x2).
 
 ## Next step
 
-Compare 1cefdce1 call by call: sum the host's own per-call cost if the transcript has it,
-against the recount, split by cache-read / cache-write / output, and check the ledger
-rows around the 12:18 jump. Decide whether the ledger or the recount is right, then
-either fix the renderer or the recount. Until then `validate-ledger.sh` stays strict and
-fails; that failure is the point.
+Find ground truth that is not either estimate: the host's own per-call cost if any
+transcript line or debug log carries it, or an API usage export for the same hour.
+Until then do not change the renderer on this evidence: the ledger is the host's own
+number, and the recount is the less certain side for subagent sessions. The like-for-like
+gate stays strict and failing so the gap stays visible.
