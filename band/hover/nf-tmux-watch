@@ -27,6 +27,7 @@ Pure standard library: inotify through ctypes.
 """
 import ctypes
 import ctypes.util
+import errno
 import os
 import re
 import select
@@ -39,6 +40,7 @@ IN_MOVED_FROM = 0x00000040
 IN_DELETE = 0x00000200
 IN_DELETE_SELF = 0x00000400
 IN_MOVE_SELF = 0x00000800
+IN_Q_OVERFLOW = 0x00004000
 MASK = IN_MOVED_FROM | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF
 
 UID = os.getuid()
@@ -52,31 +54,92 @@ libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
 
 LOG_MAX = 1_000_000
+STATE = os.environ.get("NF_STATE_DIR") or os.path.expanduser("~/.local/state/nerdflair")
+LAUNCHER_LOG = os.path.join(STATE, "launcher.log")   # shared with nf-log.sh: `ISO-time component: reason`
+# TEST ONLY: makes every inotify_add_watch fail with ENOSPC, to test the report.
+TEST_INOTIFY_FAIL = os.environ.get("NF_TEST_INOTIFY_FAIL") == "1"
+_stderr_seen = set()
+
+
+def _stderr_once(key, msg):
+    """Last resort when a log cannot be written: the journal, once per kind."""
+    if key not in _stderr_seen:
+        _stderr_seen.add(key)
+        try:
+            sys.stderr.write(f"nf-tmux-watch: {msg}\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass            # no stderr either: nothing left, and the logger must never raise
+
+
+def _append(path, line):
+    """Append one line, one rotated generation, never raise."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            if os.path.getsize(path) > LOG_MAX:      # one generation is enough: this is a diagnostic
+                os.replace(path, path + ".1")
+        except FileNotFoundError:
+            pass            # no log yet
+        except OSError as e:
+            _stderr_once("rotate:" + path, f"cannot rotate {path}: {e}")
+        with open(path, "a") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        _stderr_once("write:" + path, f"cannot write {path}: {e}; lost: {line}")
 
 
 def log(msg):
-    os.makedirs(os.path.dirname(LOG), exist_ok=True)
-    try:
-        if os.path.getsize(LOG) > LOG_MAX:      # one generation is enough: this is a diagnostic
-            os.replace(LOG, LOG + ".1")
-    except OSError:
-        pass
-    with open(LOG, "a") as f:
-        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    _append(LOG, time.strftime("%Y-%m-%d %H:%M:%S ") + msg)
+
+
+_state = {}
+
+
+def transition(key, reason):
+    """Report a failure when it starts and a recovery when it ends, not on every
+    30 s rescan. reason None means healthy. Goes to the watcher log and to the
+    shared launcher log, so one place shows every absorbed failure."""
+    prev = _state.get(key)
+    if reason == prev:
+        return
+    _state[key] = reason
+    if reason:
+        msg = f"{key}: {reason}"
+    elif prev:
+        msg = f"{key}: recovered (was: {prev})"
+    else:
+        return
+    log(msg)
+    _append(LAUNCHER_LOG, time.strftime("%Y-%m-%dT%H:%M:%S%z ") + "watch: " + " ".join(msg.split()))
+
+
+SS_LINE = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+(\S.*?)\s+\d+\s+\*\s+\d+\s+users:\(\(\"tmux: server\"")
 
 
 def socket_paths():
     """Paths of every listening tmux server socket of this user, from the
-    kernel, which still names a path whose directory has been deleted."""
+    kernel, which still names a path whose directory has been deleted. A
+    failure of ss, or a change of its format, is reported (see transition)."""
     try:
-        out = subprocess.run(["ss", "-xlnp"], capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.SubprocessError):
+        r = subprocess.run(["ss", "-xlnp"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        transition("ss", f"cannot run ss: {e}")
         return []
-    paths = []
-    for line in out.splitlines():
-        m = re.match(r"^\S+\s+\S+\s+\d+\s+\d+\s+(\S.*?)\s+\d+\s+\*\s+\d+\s+users:\(\(\"tmux: server\"", line)
+    if r.returncode != 0:
+        transition("ss", f"ss exited {r.returncode}: {r.stderr.strip()[:200]}")
+        return []
+    paths, unparsed = [], []
+    for line in r.stdout.splitlines():
+        m = SS_LINE.match(line)
         if m and f"/tmux-{UID}/" in m.group(1):
             paths.append(m.group(1))
+        elif f"/tmux-{UID}/" in line:
+            unparsed.append(line)       # ours by path but not in the format we read
+    if unparsed and not paths:
+        transition("ss", f"output format not recognised, watching nothing: {unparsed[0][:200]}")
+    else:
+        transition("ss", None)
     return paths
 
 
@@ -114,9 +177,16 @@ class Watcher:
     def add(self, d):
         if d in self.wd.values() or not os.path.isdir(d):
             return
-        wd = libc.inotify_add_watch(self.fd, d.encode(), MASK)
+        if TEST_INOTIFY_FAIL:
+            wd = -1
+            ctypes.set_errno(errno.ENOSPC)
+        else:
+            wd = libc.inotify_add_watch(self.fd, d.encode(), MASK)
         if wd >= 0:
             self.wd[wd] = d
+            transition(f"watch {d}", None)
+        else:
+            transition(f"watch {d}", f"inotify_add_watch failed, deletions here will go unnoticed: {os.strerror(ctypes.get_errno())}")
 
     def rescan(self):
         for p in socket_paths():
@@ -139,8 +209,24 @@ class Watcher:
             log(line)
         self.heals.append(now)
         time.sleep(0.2)          # let whatever is deleting finish before recreating
-        r = subprocess.run([HEAL], capture_output=True, text=True)
-        log(f"healed rc={r.returncode} {r.stderr.strip()}")
+        try:
+            r = subprocess.run([HEAL], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            transition("heal", f"could not run {HEAL}: {e}")
+            return
+        # The measured outcome, not the exit code alone: did the socket come back?
+        deadline = time.time() + 3
+        while True:
+            missing = [p for p in socket_paths() if not os.path.exists(p)]
+            if not missing or time.time() >= deadline:
+                break
+            time.sleep(0.25)
+        err = " ".join(r.stderr.split())
+        if missing:
+            transition("heal", f"NOT HEALED rc={r.returncode}, still missing {missing}: {err or 'no reason given'}")
+        else:
+            transition("heal", None)
+            log(f"healed rc={r.returncode} socket restored {err}".rstrip())
 
     def run(self):
         self.rescan()
@@ -159,6 +245,11 @@ class Watcher:
                     wd, mask, _cookie, ln = struct.unpack_from("iIII", buf, i)
                     name = buf[i + 16:i + 16 + ln].rstrip(b"\0").decode(errors="replace")
                     i += 16 + ln
+                    if mask & IN_Q_OVERFLOW:
+                        # The kernel dropped events, so a deletion may be among them: assume one.
+                        log("inotify queue overflowed; healing and rescanning to be safe")
+                        hit = "inotify queue overflow (events lost)"
+                        continue
                     d = self.wd.get(wd, "?")
                     # Only what concerns a tmux socket directory or its socket.
                     if mask & (IN_DELETE_SELF | IN_MOVE_SELF) and f"/tmux-{UID}" in d:

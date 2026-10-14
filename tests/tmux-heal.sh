@@ -13,9 +13,10 @@ HEAL="${NF_TMUX_HEAL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/band/hove
 [[ -x "$HEAL" ]] || { echo "tmux-heal: missing $HEAL" >&2; exit 2; }
 command -v tmux >/dev/null && command -v ss >/dev/null || { echo "tmux-heal: needs tmux and ss" >&2; exit 77; }
 
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-heal-XXXXXX")
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-heal-XXXXXX") || exit 1
 export TMUX_TMPDIR="$ROOT"
 unset TMUX
+export NF_STATE_DIR="$ROOT/state"   # heal logs failures here, never the real ~/.local/state
 fail=0
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
@@ -61,7 +62,7 @@ stop_under() { # dir: kill the tmux servers whose socket lives under it
 # Two servers, only one with its socket gone. Heal must signal ONLY that one:
 # SIGUSR1 makes a server recreate its socket, so a signalled healthy server
 # shows a new socket inode. The healthy one must keep pid, inode and session.
-ROOT2=$(mktemp -d "${TMPDIR:-/tmp}/nf-heal2-XXXXXX")
+ROOT2=$(mktemp -d "${TMPDIR:-/tmp}/nf-heal2-XXXXXX") || exit 1
 TMUX_TMPDIR="$ROOT2" tmux new-session -d -s healthy 'sleep 120'
 sock2="$ROOT2/tmux-$(id -u)/default"
 pid2=$(TMUX_TMPDIR="$ROOT2" tmux display -p -t healthy '#{pid}')
@@ -73,7 +74,7 @@ check "two servers: the healthy one kept its socket inode (never signalled)" "$i
 check "two servers: the healthy one kept its pid and session" "$pid2 healthy" "$(TMUX_TMPDIR="$ROOT2" tmux list-sessions -F '#{pid} #{session_name}' 2>/dev/null | head -1)"
 
 # A socket path with a space in it must be found and healed too.
-ROOT3=$(mktemp -d "${TMPDIR:-/tmp}/nf heal3-XXXXXX")
+ROOT3=$(mktemp -d "${TMPDIR:-/tmp}/nf heal3-XXXXXX") || exit 1
 TMUX_TMPDIR="$ROOT3" tmux new-session -d -s spaced 'sleep 120'
 mv "$ROOT3/tmux-$(id -u)" "$ROOT3/removed"
 check "spaced path: server unreachable" 1 "$(TMUX_TMPDIR="$ROOT3" tmux ls >/dev/null 2>&1; echo $?)"

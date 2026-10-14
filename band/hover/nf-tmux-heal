@@ -15,34 +15,69 @@
 # (`ss -xlnp`), which still names the deleted path, and the process owning
 # it. Matching on a process name or a tty does not work: the server's name is
 # "tmux: server", with a space, and a client can look the same.
+#
+# Exit status: 0 = nothing was broken, or a server was signalled to recreate
+# its socket; 3 = a socket is missing (or ss could not tell) and this could not
+# act, with the reason on stderr and in launcher.log (nf-log.sh). Callers must
+# not read 0 as "repaired" unless something was signalled.
 set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=nf-log.sh
+if [[ -r "$HERE/nf-log.sh" ]]; then . "$HERE/nf-log.sh"; else nf_log() { :; }; fi
 uid=$(id -u)
-command -v ss >/dev/null 2>&1 || exit 0
+failed=0
+fail() { # reason: say why nothing was done, on stderr and in the log
+  echo "nf-tmux-heal: $1" >&2
+  nf_log heal "$1"
+  failed=1
+}
+if ! command -v ss >/dev/null 2>&1; then
+  fail "ss not found: tmux socket repair is disabled (install iproute2)"
+  exit 3
+fi
+ss_out=$(ss -xlnp 2>&1); ss_rc=$?
+if (( ss_rc != 0 )); then
+  fail "ss -xlnp failed rc=$ss_rc: ${ss_out//$'\n'/ }"
+  exit 3
+fi
 
 # The socket path may contain spaces (a TMUX_TMPDIR under "My Files"), so it is
 # the text between the fourth column and the trailing "<inode> * <peer>" fields,
 # not a whitespace-split field.
 re='^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +(.+) +[0-9]+ +\* +[0-9]+ *(.*)$'
-ss -xlnp 2>/dev/null | while IFS= read -r line; do
-  [[ "$line" =~ $re ]] || continue
+while IFS= read -r line; do
+  [[ "$line" == *"/tmux-$uid/"* ]] || continue     # not one of our tmux sockets: filter, silent by design
+  if ! [[ "$line" =~ $re ]]; then
+    # Ours by path but not in the format we parse: heal would be blind, say so.
+    fail "cannot parse ss line (format changed?): $line"; continue
+  fi
   path=${BASH_REMATCH[1]}; proc=${BASH_REMATCH[2]}
   [[ "$path" == */tmux-"$uid"/* ]] || continue
   [[ -S "$path" ]] && continue                    # present: healthy
+  # From here the socket is MISSING, so every way out must say why.
   pid=$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<<"$proc")
-  [[ -n "$pid" ]] || continue
+  [[ -n "$pid" ]] || { fail "socket $path is missing but ss gave no pid (ss -p needs privilege?); not healed"; continue; }
   # comm, not cmdline: the server keeps the argv it was started with, and
   # only its comm reads "tmux: server".
-  [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "tmux: server" ]] || continue
-  [[ "$(stat -c %u "/proc/$pid" 2>/dev/null)" == "$uid" ]] || continue
+  # (stderr dropped: probing a pid that may have just exited; the empty answer is reported below)
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+  [[ "$comm" == "tmux: server" ]] || { fail "socket $path is missing, but pid $pid is '${comm:-gone}', not 'tmux: server'; not healed"; continue; }
+  [[ "$(stat -c %u "/proc/$pid" 2>/dev/null)" == "$uid" ]] || { fail "socket $path is missing, but pid $pid is not ours; not healed"; continue; }
   dir=${path%/*}
-  mkdir -m 700 -p "$dir" || continue
+  mkdir -m 700 -p "$dir" || { fail "cannot create $dir; not healed"; continue; }
   # Only signal if what is there is really ours: a real directory (not a
   # symlink someone planted in /tmp), owned by us, mode 700. tmux itself
   # refuses an unsafe socket directory, but we should not even ask it to.
   if [[ -L "$dir" || ! -d "$dir" || "$(stat -c %u "$dir")" != "$uid" || "$(stat -c %a "$dir")" != "700" ]]; then
-    echo "nf-tmux-heal: $dir exists but is not a private directory of ours; leaving it" >&2
+    fail "$dir exists but is not a private directory of ours; leaving it"
     continue
   fi
-  kill -USR1 "$pid" && echo "nf-tmux-heal: socket recreated at $path" >&2
-done
+  if kill -USR1 "$pid"; then
+    echo "nf-tmux-heal: socket recreated at $path" >&2
+    nf_log heal "sent SIGUSR1 to tmux server pid $pid to recreate $path"
+  else
+    fail "kill -USR1 $pid failed; socket $path not recreated"
+  fi
+done <<<"$ss_out"
+(( failed == 0 )) || exit 3
 exit 0
