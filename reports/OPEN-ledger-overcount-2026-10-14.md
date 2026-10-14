@@ -51,8 +51,10 @@ Ruled out:
   checked reports inference_geo global/not_available and speed standard/null.
 - Compaction calls with zero top-level usage: calls carrying usage.iterations have a
   single iteration that duplicates the top-level usage, none has zero top-level usage.
-- A session id reused or resumed (hypothesis 3): no counter reset appears in the ledger
-  samples for this session.
+- A session id reused or resumed (hypothesis 3), for THIS window: the ledger samples
+  for 1cefdce1 hold exactly one counter reset ($35.64 -> $0.0003, a resume 3.5 days before
+  the window), so none falls inside the 3 h and 4.8 h windows. (An earlier draft of this
+  line said "no reset appears" without having checked; it was checked afterwards.)
 
 Still open, in order of likelihood:
 1. The transcripts under-record tokens for subagent calls. In subagent transcripts the
