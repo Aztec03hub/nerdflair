@@ -33,6 +33,8 @@ nf_log() {
       # A stamp younger than an hour means this exact failure was logged recently.
       [[ -z "$(find "$stamp" -mmin -60 2>/dev/null)" ]] || return 0
       : > "$stamp" || true
+      # Stamps are per (component, reason): drop the ones a day old so reasons that vary cannot pile up.
+      find "$dir" -maxdepth 1 -name '.launcher-stamp-*' -mmin +1440 -delete 2>/dev/null || true
     fi
     size=$(stat -c %s "$log" 2>/dev/null || echo 0)
     if [[ "$size" =~ ^[0-9]+$ ]] && (( size > 1000000 )); then mv -f "$log" "$log.1" || true; fi

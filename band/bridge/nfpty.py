@@ -259,14 +259,17 @@ class Layout:
             return
         self.at = now
         fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow)
-        if fresh is None:
-            return              # unreadable, not empty: keep what we knew (already logged by mklayout)
         # tmux is read on the relay loop, so a slow answer is typing lag. If
-        # it took long, stop asking for a while rather than stall again.
+        # it took long, stop asking for a while rather than stall again. This
+        # comes BEFORE the unreadable check: a hung tmux times out (0.5 s) and
+        # returns None, and must engage the backoff or every hover blocks the
+        # relay for 0.5 s.
         if time.monotonic() - now > 0.3:
             self.backoff_until = time.monotonic() + 5.0
             note_rate("layout-slow", f"layout: the screen read took {time.monotonic() - now:.2f}s on the relay loop; "
                                      "hover is paused for 5 s")
+        if fresh is None:
+            return              # unreadable, not empty: keep what we knew (already logged by mklayout)
         # An EMPTY read is an answer, not a failure to keep the old layout
         # through: it means something (a permission prompt, a dialog) is
         # drawn over the status line. Keeping the last good layout there made
@@ -680,8 +683,9 @@ def main():
     except (OSError, subprocess.SubprocessError):
         ok = False
     if os.environ.get("TMUX") and not ok:
-        sys.stderr.write(f"nfpty: tmux unreachable (socket {sock or '?'}); hover "
-                         "panels will not work. Run nf-tmux-heal, or restart tmux.\n")
+        msg = f"tmux unreachable (socket {sock or '?'}); hover panels will not work. Run nf-tmux-heal, or restart tmux."
+        note_once("tmux-unreachable", msg)             # the log, not only the terminal
+        sys.stderr.write(f"nfpty: {msg}\n")
 
     stdin_fd = sys.stdin.fileno()
     pane0 = os.environ.get("TMUX_PANE")
@@ -709,7 +713,12 @@ def main():
     signal.signal(signal.SIGWINCH, on_winch)
     rows, cols = winsize(stdin_fd)
     resized[0] = False
-    pid, master = pty.fork()
+    try:
+        pid, master = pty.fork()
+    except BaseException:
+        if shadow is not None:
+            shadow.close()                          # the shim may now exec plain claude: leave no tmux server behind
+        raise
     if pid == 0:                                    # child: become claude
         os.environ["NFPTY"] = "1"
         set_winsize(0, rows, cols)          # before exec: it must never read 0x0 (logs by itself if it fails)
@@ -764,8 +773,10 @@ def main():
     try:
         old = termios.tcgetattr(stdin_fd)
         tty.setraw(stdin_fd)
-    except termios.error:
-        pass                      # not a tty (a pipe, a test): relay anyway
+    except termios.error as e:
+        # ENOTTY is "not a terminal" (a pipe, a test): relay anyway, by design. Anything else is not.
+        if (e.args[0] if e.args else None) != errno.ENOTTY:
+            note_once("tcgetattr", f"cannot read or set the terminal mode ({e}): input may not be raw")
 
     tail = b""
     tail_since = [0.0]
@@ -934,7 +945,8 @@ def main():
                 except OSError as e:
                     if e.errno in (errno.EAGAIN, errno.EINTR):
                         continue          # a shared non-blocking tty is not end of input
-                    note_once("stdin-read", f"stdin read failed ({e}): treating it as the terminal going away and ending the session")
+                    if e.errno not in (errno.EIO, errno.EBADF):      # EIO: the terminal hung up, the normal end
+                        note_once("stdin-read", f"stdin read failed ({e}): treating it as the terminal going away and ending the session")
                     break
                 if not data:
                     break

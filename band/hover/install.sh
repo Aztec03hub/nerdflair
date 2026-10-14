@@ -53,7 +53,11 @@ export PATH="$HOME/.nerdflair/bin${PATH:+:$PATH}"
 unalias claude 2>/dev/null || true      # an alias would break the definition below and beat it
 claude() {
   if [ -x "$HOME/.nerdflair/bin/claude" ]; then "$HOME/.nerdflair/bin/claude" "$@"
-  else echo "nerdflair: shim missing, running plain claude (run band/hover/install.sh)" >&2; command claude "$@"; fi
+  else
+    # Once per shell, not per call: this line must not pollute `claude -p ... 2>&1`.
+    [ -n "${_NF_SHIM_WARNED:-}" ] || { _NF_SHIM_WARNED=1; echo "nerdflair: shim missing, running plain claude (run band/hover/install.sh)" >&2; }
+    command claude "$@"
+  fi
 }
 # tmux's socket lives in /tmp by default, and anything sweeping /tmp strands
 # the server. A running server keeps its current socket; this applies to the
@@ -222,7 +226,13 @@ case "${1:-install}" in
     done
     if systemctl --user show-environment >/dev/null 2>&1; then
       # If the watcher cannot be stopped it keeps running with its files gone: say so.
-      out=$(systemctl --user disable --now nf-tmux-watch.service 2>&1) || warn "uninstall: could not stop nf-tmux-watch.service: ${out//$'\n'/ }"
+      # A unit that was never installed is already "disabled": not a failure.
+      out=$(systemctl --user disable --now nf-tmux-watch.service 2>&1) || {
+        case "$out" in
+          *"does not exist"*|*"not loaded"*|*"No such file"*|*"not found"*) ;;
+          *) warn "uninstall: could not stop nf-tmux-watch.service: ${out//$'\n'/ }" ;;
+        esac
+      }
       rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
       out=$(systemctl --user daemon-reload 2>&1) || warn "uninstall: systemctl daemon-reload failed: ${out//$'\n'/ }"
     fi

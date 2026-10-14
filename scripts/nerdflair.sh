@@ -400,7 +400,11 @@ while [[ $# -gt 0 ]]; do
       _nerdflair_dir="$HOME/.claude/nerdflair"
 
       printf '%bUninstalling nerdflair...%b\n' "$NF_DIM" "$NF_RST"
-      [[ -f "$SCRIPT_DIR/../band/hover/install.sh" ]] && bash "$SCRIPT_DIR/../band/hover/install.sh" uninstall
+      # Non-fatal: this script runs under set -e, and the hover uninstall exits non-zero
+      # when any of its steps warned. The rest of the uninstall must still run.
+      if [[ -f "$SCRIPT_DIR/../band/hover/install.sh" ]]; then
+        bash "$SCRIPT_DIR/../band/hover/install.sh" uninstall || printf 'nerdflair: the hover uninstall reported a problem (see above); continuing\n' >&2
+      fi
 
       # Restore or remove spinnerVerbs from settings.json
       _backup_file="$_nerdflair_dir/spinnerVerbs.backup.json"

@@ -81,7 +81,11 @@ import os, pty, runpy, subprocess, sys
 hover, args, real = sys.argv[1], sys.argv[2:], os.environ.get("CLAUDE_BIN")
 forked = []
 _fork = pty.fork
-pty.fork = lambda: (forked.append(1), _fork())[1]
+def _marked_fork():
+    r = _fork()             # if the fork itself fails nothing has forked: fall back to plain claude
+    forked.append(1)
+    return r
+pty.fork = _marked_fork
 sys.path.insert(0, hover)
 sys.argv = [os.path.join(hover, "nfpty.py")] + args
 try:

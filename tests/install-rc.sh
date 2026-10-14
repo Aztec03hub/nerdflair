@@ -246,6 +246,23 @@ check "status: says where tmux's socket will live" 1 "$(env -u XDG_RUNTIME_DIR b
 bash "$INSTALL" uninstall >/dev/null 2>&1
 HOME="$ROOT/home"
 
+# A watcher unit that was never installed is already disabled: uninstall must not fail on it
+# (nerdflair.sh runs the hover uninstall under set -e).
+cat > "$ROOT/stub/systemctl" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *show-environment*) exit 0 ;;
+  *disable*) echo "Failed to disable unit: Unit file nf-tmux-watch.service does not exist." >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+printf 'x=1\n' > "$HOME/.bashrc"; rm -f "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login"
+bash "$INSTALL" install >/dev/null 2>&1 || true
+out=$(bash "$INSTALL" uninstall 2>&1); rc=$?
+check "uninstall: a never-installed watcher unit is not a failure (exit 0)" 0 "$rc"
+check "uninstall: and it prints no warning for it" 0 "$(grep -c 'could not stop' <<<"$out")"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys

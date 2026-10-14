@@ -83,6 +83,17 @@ def t_rate():
     check("note_once: once", sum("x" in ln for ln in lines()) == 1)
 
 
+def t_encoding():
+    fresh()
+    try:
+        nflog.note_once("enc", "path with a lone surrogate: /tmp/\udcff/x")
+        ok = True
+    except Exception as e:      # a "never raises" logger must not
+        ok = False
+        print("   raised", e)
+    check("nflog: a message that cannot be encoded does not raise, and is logged", ok and any("path with" in ln for ln in lines()), str(lines()))
+
+
 def t_unwritable_log():
     fresh()
     saved, nflog.ERRLOG = nflog.ERRLOG, "/proc/nf-cannot-write/x.log"
@@ -232,6 +243,21 @@ def t_layout_backdrop():
         check("layout: unreadable keeps the previous regions", len(lay.segs) == 1)
     keeps_last_layout()
 
+    def hung_backoff():
+        lay = nfpty.Layout("%0")
+        lay.MIN_INTERVAL = 0
+
+        def slow(*a, **k):
+            time.sleep(0.35)
+            return (None, False)
+        undo = stub(mklayout, "build_ex", slow)
+        try:
+            lay.refresh()
+        finally:
+            undo()
+        check("layout: a hung tmux (slow AND unreadable) engages the 5 s backoff", lay.paused)
+    hung_backoff()
+
     def backdrop_tmux():
         bd = nfpty.Backdrop("%0", shadow=None)
         undo = stub(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("tmux", 1)))
@@ -354,6 +380,7 @@ def t_nfpty():
 
 def main():
     t_rate()
+    t_encoding()
     t_unwritable_log()
     t_shadow()
     t_layout_backdrop()

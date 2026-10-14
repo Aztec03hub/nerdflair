@@ -122,7 +122,7 @@ def socket_paths():
     kernel, which still names a path whose directory has been deleted. A
     failure of ss, or a change of its format, is reported (see transition)."""
     try:
-        r = subprocess.run(["ss", "-xlnp"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["ss", "-xlnp"], capture_output=True, encoding="utf-8", errors="replace", timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
         transition("ss", f"cannot run ss: {e}")
         return []
@@ -149,7 +149,7 @@ def suspects():
     parent, its siblings and whatever launched it often are not."""
     try:
         out = subprocess.run(["ps", "-eo", "pid=,ppid=,etimes=,user=,args="],
-                             capture_output=True, text=True, timeout=5).stdout
+                             capture_output=True, encoding="utf-8", errors="replace", timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return ["(ps failed)"]
     keep = []
@@ -210,7 +210,7 @@ class Watcher:
         self.heals.append(now)
         time.sleep(0.2)          # let whatever is deleting finish before recreating
         try:
-            r = subprocess.run([HEAL], capture_output=True, text=True, timeout=30)
+            r = subprocess.run([HEAL], capture_output=True, encoding="utf-8", errors="replace", timeout=30)
         except (OSError, subprocess.SubprocessError) as e:
             transition("heal", f"could not run {HEAL}: {e}")
             return

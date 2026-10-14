@@ -20,6 +20,7 @@ import type { Hook, Register } from 'claude-code'
 // the first render. It used to be a hardcoded path, which made the band work
 // on exactly one machine.
 let HOME = ''
+let homeTriedAt = -Infinity // when the HOME lookup last ran: a failing one is retried every 30 s, not every render
 const BIN = () => `${HOME}/.local/bin/nerdflair-statusline`
 // The popup helper, installed beside this file. tmux draws it, because the
 // engine cannot float anything here; see the note above the width budget.
@@ -298,6 +299,7 @@ let inflight: Promise<Seg[] | null> | null = null
 // file would see each other's cache and errors. The engine never calls this.
 export function resetStateForTests(): void {
   HOME = ''
+  homeTriedAt = -Infinity
   cache = null
   lastError = ''
   inflight = null
@@ -346,7 +348,8 @@ export const register: Register = on => {
 
 async function band($: RenderArgs[0], e: RenderArgs[1]) {
   const now = await $.clock.now()
-  if (!HOME) {
+  if (!HOME && now - homeTriedAt > 30000) {
+    homeTriedAt = now
     // No home, no renderer path. Say so in the band (red, with the reason)
     // instead of silently handing the screen back to the engine, which
     // would repeat every render forever with no explanation.
@@ -671,7 +674,8 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   const popup = (title: string, bodyText: string, x: number) => {
     const fail = (why: string) => {
       const msg = note($, 'popup', why)
-      void $.ui.toast(`nerdflair-band: ${msg}`)
+      // A toast that cannot be shown is itself reported (the cause is already logged by note).
+      void Promise.resolve($.ui.toast(`nerdflair-band: ${msg}`)).catch(err => note($, 'toast', `could not show: ${err}`))
     }
     void (async () => {
       try {

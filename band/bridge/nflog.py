@@ -37,9 +37,9 @@ def _write(line):
                 os.replace(ERRLOG, ERRLOG + ".1")      # one generation: this is a diagnostic
         except OSError:
             pass
-        with open(ERRLOG, "a") as f:
+        with open(ERRLOG, "a", encoding="utf-8", errors="replace") as f:
             f.write(line)
-    except OSError as e:
+    except (OSError, ValueError) as e:      # ValueError: an encoding problem must not escape a "never raises" logger
         try:
             sys.stderr.write(f"nfpty: cannot write {ERRLOG} ({e}); {line}")
         except (OSError, ValueError):
