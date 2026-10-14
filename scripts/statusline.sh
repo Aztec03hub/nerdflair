@@ -9,13 +9,73 @@ input=$(cat)
 # atomically — prevents partial first-render from locking statusline height.
 _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX")
 exec 3>&1 1>"$_SL_BUF"
-trap 'cat "$_SL_BUF" >&3; rm -f "$_SL_BUF"' EXIT
+trap '_nf_rc=$?; cat "$_SL_BUF" >&3; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
 
 # ── Shared library ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 _nf_require_jq
+
+# ── Absorbed-failure helpers (_nf_err and friends live in lib.sh) ──
+# Everything below logs to ~/.claude/nerdflair-errors.log and NEVER to stdout,
+# which is the status line. `$_SL_BUF.err` is this render's scratch file for a
+# command's stderr (removed by the EXIT trap).
+#
+# Wall-clock guard for child processes: a git on a hung filesystem would block
+# the render until the host kills it, leaving no trace.
+_NF_TCMD=(); _NF_TMO=""
+if command -v timeout >/dev/null 2>&1; then
+  _nf_ms=${NERDFLAIR_PROC_TIMEOUT_MS:-10000}
+  [[ "$_nf_ms" =~ ^[0-9]+$ ]] || _nf_ms=10000
+  printf -v _NF_TMO '%d.%03d' $(( _nf_ms / 1000 )) $(( _nf_ms % 1000 ))
+  _NF_TCMD=(timeout -k 1 "$_NF_TMO")
+fi
+# _nf_cmd LABEL QUIET_ERE cmd args...   stdout -> $_NF_OUT, returns the command's rc.
+# Cannot-run (126/127) and timeout (124) are always logged. A plain non-zero exit
+# is logged as LABEL:rc with stderr's first line, unless LABEL is "-" (a probe
+# whose failure just means "no") or stderr matches QUIET_ERE (a documented "no").
+_nf_cmd() {
+  local _l="$1" _q="$2" _rc _e
+  shift 2
+  _NF_OUT=$("${_NF_TCMD[@]+"${_NF_TCMD[@]}"}" "$@" 2>"$_SL_BUF.err"); _rc=$?
+  if (( _rc != 0 )); then
+    _e=$(< "$_SL_BUF.err")
+    if (( _rc == 126 || _rc == 127 )); then
+      _nf_err "spawn:$1" "cannot run $1 (rc=$_rc): ${_e%%$'\n'*}"
+    elif (( _rc == 124 )); then
+      _nf_err "timeout:${_l/#-/$1}" "$* still running after ${_NF_TMO}s, killed"
+    elif [[ "$_l" != "-" ]] && { [[ -z "$_q" ]] || [[ ! "$_e" =~ $_q ]]; }; then
+      _e="${_e%%$'\n'*}"
+      _nf_err "$_l:$_rc" "$* failed: ${_e:-(no stderr)}"
+    fi
+  fi
+  return $_rc
+}
+# _nf_jq KEY jq-args...   stdout -> $_NF_JQ_OUT; a failure is logged under KEY.
+_nf_jq() {
+  local _k="$1" _rc
+  shift
+  _NF_JQ_OUT=$(jq "$@" 2>"$_SL_BUF.err"); _rc=$?
+  if (( _rc != 0 )); then
+    _nf_err "$_k" "jq failed on ${!#} (rc=$_rc): $(head -n 1 "$_SL_BUF.err" 2>/dev/null)"
+  fi
+  return $_rc
+}
+# A NERDFLAIR_* tunable that is set but not an integer silently loses to its
+# default (the Rust build) or aborts the render (bash arithmetic). Either way
+# it is a configuration mistake the owner must be able to see.
+for _nf_v in NERDFLAIR_BURN_MIN_SPAN NERDFLAIR_BURN_STALE_AFTER NERDFLAIR_BURN_WINDOW \
+  NERDFLAIR_COMPACT_AT_TENTHS NERDFLAIR_ETA_IDLE_GAP NERDFLAIR_LEDGER_COMPACT_EVERY \
+  NERDFLAIR_LEDGER_FULL_DAYS NERDFLAIR_LEDGER_TAIL_BYTES NERDFLAIR_MCP_HEALTH_TTL \
+  NERDFLAIR_MCP_NAMES NERDFLAIR_REPO_COST_DAYS NERDFLAIR_REPO_COST_MAX \
+  NERDFLAIR_REPO_COST_MAXBYTES NERDFLAIR_REPO_COST_TTL NERDFLAIR_SAMPLES \
+  NERDFLAIR_TRANSCRIPT_TAIL_BYTES NERDFLAIR_WIDTH_INSET; do
+  _nf_val="${!_nf_v:-}"
+  [[ -z "$_nf_val" || "$_nf_val" =~ ^-?[0-9]+$ ]] \
+    || _nf_err "env-bad:$_nf_v" "$_nf_v=\"$_nf_val\" is not an integer; the default is ignored or the render aborts"
+done
+unset _nf_v _nf_val
 
 # ── Layout mode & width from state file ──────────────────────────
 _nf_read_state
@@ -36,7 +96,18 @@ _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 _sanitize() { printf '%s' "${1//\\/}"; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
-IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest < <(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")' 2>/dev/null)
+_nf_fields=$(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")' 2>"$_SL_BUF.err")
+_nf_jrc=$?
+# A bad payload still renders (as an empty one), but "the host changed its
+# schema" must not look like a quiet, slightly degraded bar.
+if [[ -z "${input//[[:space:]]/}" ]]; then
+  _nf_err payload-empty "empty status payload on stdin"
+elif (( _nf_jrc == 5 )); then
+  _nf_err payload-shape "unexpected payload shape; ALL payload fields blanked: $(head -n 1 "$_SL_BUF.err")"
+elif (( _nf_jrc != 0 )); then
+  _nf_err payload-parse "$(head -n 1 "$_SL_BUF.err"); first 200 chars: ${input:0:200}"
+fi
+IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duration_ms total_api_ms output_style effort_level thinking_enabled fast_mode session_id used_pct input_tokens output_tokens ctx_size rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset _nfrest <<< "$_nf_fields"
 
 
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
@@ -102,9 +173,10 @@ _claude_json="$HOME/.claude.json"
 # Project-level disabled servers (from ~/.claude.json .projects[project_dir].disabledMcpServers)
 _proj_disabled_names=()
 if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
+  _nf_jq claude-json -r --arg p "$project_dir" '.projects[$p].disabledMcpServers // [] | .[]' "$_claude_json"
   while IFS= read -r _dname; do
     [[ -n "$_dname" ]] && _proj_disabled_names+=("$_dname")
-  done < <(jq -r --arg p "$project_dir" '.projects[$p].disabledMcpServers // [] | .[]' "$_claude_json" 2>/dev/null)
+  done <<< "$_NF_JQ_OUT"
 fi
 _is_proj_disabled() {
   local _n="$1"
@@ -115,6 +187,8 @@ _is_proj_disabled() {
 }
 for mcp_file in "$_claude_json" "${project_dir}/.mcp.json" "${cwd}/.mcp.json"; do
   if [[ -f "$mcp_file" ]]; then
+    _mcp_key=mcp-json; [[ "$mcp_file" == "$_claude_json" ]] && _mcp_key=claude-json
+    _nf_jq "$_mcp_key" -r '[.mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$mcp_file"
     while IFS= read -r _name; do
       if [[ -n "$_name" ]]; then
         if [[ "$mcp_file" == "$_claude_json" ]] && _is_proj_disabled "$_name"; then
@@ -123,17 +197,18 @@ for mcp_file in "$_claude_json" "${project_dir}/.mcp.json" "${cwd}/.mcp.json"; d
         mcp_names+=("$(_sanitize "$_name")")
         (( mcp_enabled++ ))
       fi
-    done < <(jq -r '[.mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$mcp_file" 2>/dev/null)
+    done <<< "$_NF_JQ_OUT"
   fi
 done
 # Also read project-scoped MCP servers from ~/.claude.json .projects[project_dir].mcpServers
 if [[ -n "$project_dir" && -f "$_claude_json" ]]; then
+  _nf_jq claude-json -r --arg p "$project_dir" '[.projects[$p].mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$_claude_json"
   while IFS= read -r _name; do
     if [[ -n "$_name" ]] && ! _is_proj_disabled "$_name"; then
       mcp_names+=("$(_sanitize "$_name")")
       (( mcp_enabled++ ))
     fi
-  done < <(jq -r --arg p "$project_dir" '[.projects[$p].mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$_claude_json" 2>/dev/null)
+  done <<< "$_NF_JQ_OUT"
 fi
 mcp_total=$mcp_enabled
 # The config-file scan above sees ONLY ~/.claude.json mcpServers and project
@@ -150,7 +225,11 @@ _mcp_probe_names=""
 # exactly the disagreement between the two that the probe exists to prevent.
 _MCP_CACHE="${NERDFLAIR_MCP_CACHE:-/tmp/nerdflair-mcphealth-${UID}}"
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
-  IFS=$'\x1f' read -r _ _ _ _mcp_probe_names < "$_MCP_CACHE" 2>/dev/null || true
+  # `read` exits 1 at EOF without a trailing newline and the probe writes none:
+  # the variables ARE set, so the `|| true` is correct, not an absorbed error.
+  IFS=$'\x1f' read -r _ _ _ _mcp_probe_names < "$_MCP_CACHE" || true
+elif [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -e "$_MCP_CACHE" ]]; then
+  _nf_err mcp-cache-read "$_MCP_CACHE exists but is not readable"
 fi
 if [[ -n "${_mcp_probe_names:-}" ]]; then
   IFS=$'\x1e' read -ra _probe_arr <<< "$_mcp_probe_names"
@@ -256,7 +335,9 @@ _multi_git_subs=()
 _adopted_repo_name=""
 if [[ -n "$cwd" ]]; then
   cd "$cwd" 2>/dev/null
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # "not a git repository" is the normal answer for a plain directory: silent.
+  # Any other failure (dubious ownership, corrupt repo) drops the whole git UI.
+  if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree; then
     git_dir="$cwd"
   else
     # Look one level deep for git repos (wrapper folder pattern).
@@ -294,36 +375,59 @@ if [[ -n "$git_dir" ]]; then
   fi
   if [[ "$_git_cache_fresh" == "false" ]]; then
     cd "$git_dir" 2>/dev/null
-    _gc_dirty=$(git -c core.useBuiltinFSMonitor=false status --porcelain --ignore-submodules=dirty 2>/dev/null | wc -l | tr -d ' ')
+    _nf_cmd git:status '' git -c core.useBuiltinFSMonitor=false status --porcelain --ignore-submodules=dirty
+    _gc_dirty=0
+    [[ -n "$_NF_OUT" ]] && _gc_dirty=$(printf '%s\n' "$_NF_OUT" | wc -l | tr -d ' ')
     _gc_added=0
     _gc_removed=0
     if (( _gc_dirty > 0 )); then
+      # A repo with no commits has no HEAD, so the fallback is expected there.
+      _nf_cmd git:diff-head "ambiguous argument 'HEAD'|bad revision 'HEAD'" git diff --numstat HEAD \
+        || _nf_cmd git:diff '' git diff --numstat
       while IFS=$'\t' read -r added removed _; do
+        # a here-string always yields one line, even for empty output
+        [[ -z "$added" ]] && continue
         [[ "$added" == "-" ]] && continue
         (( _gc_added += added ))
         (( _gc_removed += removed ))
-      done < <(git diff --numstat HEAD 2>/dev/null || git diff --numstat 2>/dev/null)
+      done <<< "$_NF_OUT"
       _ucount=0
+      _nf_cmd git:ls-files '' git ls-files --others --exclude-standard
       while IFS= read -r ufile; do
+        [[ -z "$ufile" ]] && continue
         (( _ucount++ ))
         (( _ucount > 100 )) && break
+        # a file listed then gone is a race and normal; unreadable is not
+        if [[ -e "$ufile" && ! -r "$ufile" ]]; then _nf_err git-untracked-read "cannot read $ufile"; fi
         ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
         (( _gc_added += ${ulines:-0} ))
-      done < <(git ls-files --others --exclude-standard 2>/dev/null)
+      done <<< "$_NF_OUT"
     fi
-    _gc_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
+    # symbolic-ref exits 1 quietly on a detached HEAD; both failing is not normal.
+    if _nf_cmd - '' git symbolic-ref --quiet --short HEAD; then
+      _gc_branch="$_NF_OUT"
+    else
+      _nf_cmd git:rev-parse-head '' git rev-parse --short HEAD \
+        || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $git_dir"
+      _gc_branch="$_NF_OUT"
+    fi
     # In a linked worktree --git-dir and --git-common-dir differ; in the main checkout they match.
     _gc_worktree=0
-    if [[ "$(git rev-parse --git-common-dir 2>/dev/null)" != "$(git rev-parse --git-dir 2>/dev/null)" ]]; then
+    _nf_cmd git:common-dir '' git rev-parse --git-common-dir; _gc_common="$_NF_OUT"
+    _nf_cmd git:git-dir '' git rev-parse --git-dir
+    if [[ "$_gc_common" != "$_NF_OUT" ]]; then
       _gc_worktree=1
     fi
     # Remote URL for clickable links (convert SSH → HTTPS)
-    _gc_remote=$(git remote get-url origin 2>/dev/null || true)
+    # No origin is normal (exit 2, "No such remote"): a probe, silent.
+    _nf_cmd - '' git remote get-url origin; _gc_remote="$_NF_OUT"
     _gc_remote=$(printf '%s' "$_gc_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|^git@\([^:]*\):|https://\1/|' | sed 's|\.git$||')
     # Divergence from upstream. One rev-list, only on a cache miss. Empty when
     # there is no upstream configured, which is the common case for a fresh branch.
     _gc_ahead=0; _gc_behind=0
-    if _gc_ud=$(git rev-list --count --left-right '@{upstream}...HEAD' 2>/dev/null); then
+    # No upstream is the common case for a fresh branch: a probe, silent.
+    if _nf_cmd - '' git rev-list --count --left-right '@{upstream}...HEAD'; then
+      _gc_ud="$_NF_OUT"
       _gc_behind="${_gc_ud%%[!0-9]*}"
       _gc_ahead="${_gc_ud##*[!0-9]}"
       : "${_gc_behind:=0}" "${_gc_ahead:=0}"
@@ -331,7 +435,8 @@ if [[ -n "$git_dir" ]]; then
     # \x1f, not \t: tab is IFS-whitespace, so `IFS=$'\t' read` collapses runs of
     # separators and empty fields vanish -- a repo with no `origin` would shift
     # every field after _gc_remote by one. \x1f is not IFS-whitespace.
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file" \
+      || _nf_err tmp-write "cannot write $_git_cache_file (git re-runs every render)"
   fi
   IFS=$'\x1f' read -r _gc_dirty _gc_added _gc_removed _gc_branch _gc_remote _gc_worktree _gc_ahead _gc_behind < "$_git_cache_file"
 fi
@@ -381,7 +486,13 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
     _mb_list=""
     _mb_off=0
     for _sub in "${_multi_git_subs[@]}"; do
-      _sub_branch=$(git -C "$_sub" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$_sub" rev-parse --short HEAD 2>/dev/null)
+      if _nf_cmd - '' git -C "$_sub" symbolic-ref --quiet --short HEAD; then
+        _sub_branch="$_NF_OUT"
+      else
+        _nf_cmd git:multi-branch '' git -C "$_sub" rev-parse --short HEAD \
+          || _nf_err git-branch "neither symbolic-ref nor rev-parse HEAD worked in $_sub"
+        _sub_branch="$_NF_OUT"
+      fi
       [[ -z "$_sub_branch" ]] && continue
       if [[ "$_sub_branch" == "main" || "$_sub_branch" == "master" ]]; then
         continue
@@ -391,7 +502,8 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
       _mb_list+="$(basename "$_sub"):${_sub_branch}"
     done
     # Cache: off-count on line 1, joined list on line 2 (list may be empty).
-    printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file"
+    printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file" \
+      || _nf_err tmp-write "cannot write $_multi_cache_file"
   fi
   IFS= read -r _multi_off_count < "$_multi_cache_file"
   _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file")
@@ -689,7 +801,8 @@ else
     # last one is a few KB from the end in practice.
     _tcap=${NERDFLAIR_TRANSCRIPT_TAIL_BYTES:-1048576}
     _tbytes=$(stat -c %s "$transcript" 2>/dev/null || stat -f %z "$transcript" 2>/dev/null || echo 0)
-    _ttail=$(tail -c "$_tcap" "$transcript" 2>/dev/null || true)
+    _ttail=$(tail -c "$_tcap" "$transcript" 2>"$_SL_BUF.err") \
+      || _nf_err ctx-transcript-read "cannot read $transcript: $(head -n 1 "$_SL_BUF.err")"
     if (( _tbytes > _tcap )); then
       if [[ "$_ttail" == *$'\n'* ]]; then _ttail="${_ttail#*$'\n'}"; else _ttail=""; fi
     fi
@@ -701,7 +814,8 @@ else
     if (( _tbytes > _tcap )) && [[ "$_ttail" != *'"usage"'* ]]; then
       _twide=$(( _tcap * 16 ))
       (( _twide > 67108864 )) && _twide=67108864
-      _ttail=$(tail -c "$_twide" "$transcript" 2>/dev/null || true)
+      _ttail=$(tail -c "$_twide" "$transcript" 2>"$_SL_BUF.err") \
+        || _nf_err ctx-transcript-read "cannot read $transcript: $(head -n 1 "$_SL_BUF.err")"
       if (( _tbytes > _twide )); then
         if [[ "$_ttail" == *$'\n'* ]]; then _ttail="${_ttail#*$'\n'}"; else _ttail=""; fi
       fi
@@ -724,8 +838,15 @@ else
       u_output=$(echo "$last_usage" | jq -r '.output_tokens // 0')
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
-      (( pct > 100 )) && pct=99
+      (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
+    elif [[ "$_ttail" == *'"usage"'* ]]; then
+      _nf_err ctx-no-usage "no parseable message.usage in the last usage lines of $transcript; gauge reads 0%"
     fi
+  elif [[ -n "$transcript" ]]; then
+    # The payload had no usage figures AND the transcript it names is missing,
+    # so the gauge reads 0% with nothing behind it. Expected only on the very
+    # first render of a new session.
+    _nf_err ctx-transcript-missing "transcript_path $transcript is not a file; context gauge reads 0%"
   fi
 fi
 
@@ -744,7 +865,8 @@ _session_chime=""
 if [[ -n "$session_id" ]]; then
   _session_file="$_SESSION_DIR/${session_id}"
   if [[ -f "$_session_file" ]]; then
-    _session_chime=$(jq -r '.chime // empty' "$_session_file" 2>/dev/null || true)
+    _nf_jq session-file -r '.chime // empty' "$_session_file"
+    _session_chime="$_NF_JQ_OUT"
   fi
 fi
 
@@ -834,7 +956,19 @@ _WIDTH_INSET=${NERDFLAIR_WIDTH_INSET:-4}
 if [[ "$_SL_WIDTH" != "auto" && "$_SL_WIDTH" =~ ^[0-9]+$ ]]; then
   ROW_WIDTH=$_SL_WIDTH
 else
-  ROW_WIDTH=$(( ${COLUMNS:-$(tput cols 2>/dev/null || echo 80)} - _WIDTH_INSET ))
+  if [[ "$_SL_WIDTH" != "auto" && -n "$_SL_WIDTH" ]]; then
+    _nf_err width-bad "configured width \"$_SL_WIDTH\" is neither \"auto\" nor a number; measuring the terminal"
+  fi
+  if [[ -n "${COLUMNS:-}" ]]; then
+    [[ "$COLUMNS" =~ ^[0-9]+$ ]] || _nf_err columns-bad "COLUMNS=\"$COLUMNS\" is not an integer"
+    _nf_cols="$COLUMNS"
+  elif _nf_cols=$(tput cols 2>"$_SL_BUF.err"); then
+    :
+  else
+    _nf_err tput "tput cols failed: $(head -n 1 "$_SL_BUF.err" 2>/dev/null)"
+    _nf_cols=80
+  fi
+  ROW_WIDTH=$(( _nf_cols - _WIDTH_INSET ))
 fi
 (( ROW_WIDTH < 50 )) && ROW_WIDTH=50
 (( ROW_WIDTH > 150 )) && ROW_WIDTH=150
@@ -1191,20 +1325,37 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # re-entering through the migration. rmdir only succeeds on an empty dir.
     [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
     if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
+      # Exit 75 = lock held by the compactor: contention, silent (the next
+      # sample carries the total). 76 = the append itself failed. Anything else
+      # is the lock redirect failing. The first two redirections are ordered
+      # `2>&1` FIRST so a failing redirect's own message is captured too.
       if (( _HAVE_FLOCK )); then
-        ( flock -s -n 9 || exit 1
-          printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
-        ) 9>>"$_RC_LOCK" 2>/dev/null
+        _rc_aperr=$( ( flock -s -n 9 || exit 75
+          printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" || exit 76
+        ) 2>&1 9>>"$_RC_LOCK" )
+        _rc_aprc=$?
       else
-        printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" 2>/dev/null
+        _rc_aperr=$( { printf '%s\t%s\t%s\t%s\n' "$EPOCHSECONDS" "$session_id" "$_rc_slug" "$cost" >> "$_REPO_COST_FILE" || exit 76; } 2>&1 )
+        _rc_aprc=$?
       fi
+      _rc_fullre='[Nn]o space|write error|Input/output|quota'
+      case "$_rc_aprc" in
+        0)  _nf_ok ledger-open; _nf_ok ledger-write ;;
+        75) : ;;   # lock contention: correct to stay silent
+        76) if [[ "$_rc_aperr" =~ $_rc_fullre ]]; then
+              _nf_err ledger-write "append to $_REPO_COST_FILE failed: ${_rc_aperr%%$'\n'*}; burn, block and repo totals will go stale"
+            else
+              _nf_err ledger-open "cannot append to $_REPO_COST_FILE: ${_rc_aperr%%$'\n'*}; burn, block and repo totals will go stale"
+            fi ;;
+        *)  _nf_err flock-open "cannot open lock $_RC_LOCK (rc=$_rc_aprc): ${_rc_aperr%%$'\n'*}; ledger appends and compaction are skipped" ;;
+      esac
       # Stamped whether or not the append happened, including on a missed lock.
       # The stamp rate-limits the ATTEMPT; it is not a record of success.
       # Leaving it unwritten kept _rc_due true, so every render re-read the
       # whole ledger for as long as a compaction held the lock: the per-refresh
       # cost scaling with a file that grows on its own, which is the incident
       # pattern. A skipped sample costs nothing, the column being cumulative.
-      : > "$_rc_stamp" 2>/dev/null || true
+      : > "$_rc_stamp" 2>/dev/null || _nf_err tmp-write "cannot write $_rc_stamp"
       # Compact when the log gets big AND the cooldown has expired, writing via
       # a temp file so a reader without the lock never sees a partial.
       #
@@ -1239,7 +1390,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
           # rewrite holding the exclusive lock and starving every appender.
           # Stamping OUTSIDE the lock was worse still: a process that merely
           # lost the race stamped, blocking compaction for the full interval.
-          : > "$_RC_DONE" 2>/dev/null || true
+          : > "$_RC_DONE" 2>/dev/null || _nf_err ledger-compact-stamp "cannot write $_RC_DONE (cooldown cannot hold)"
           # Dropping only rows older than _REPO_COST_DAYS is not a bound: at 14
           # live sessions a 30-day window is ~400k rows and ~30 MB, so the 2 MB
           # trigger fired on every refresh and rewrote 30 MB each time. Bound it
@@ -1275,7 +1426,8 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
               }
               for (i = 1; i <= n; i++) print ln[i]
               for (i = 1; i <= r; i++) print recent[i]
-            }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>/dev/null
+            }' "$_REPO_COST_FILE" > "${_REPO_COST_FILE}.tmp" 2>"$_SL_BUF.err"
+          _rc_awkrc=$?
           # Refuse to replace a ledger that HAD rows with one that has none. A
           # clock jumping past the retention window makes cutoff exceed every
           # row, so the filter keeps nothing and the rename would wipe the
@@ -1285,11 +1437,28 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
           # atomic in the directory but the DATA need not have reached disk.
           _rc_in=$(awk -F'\t' 'NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0' "$_REPO_COST_FILE" 2>/dev/null | wc -l)
           _rc_out=$(wc -l < "${_REPO_COST_FILE}.tmp" 2>/dev/null || echo 0)
-          if (( _rc_in > 0 && _rc_out == 0 )); then
-            rm -f "${_REPO_COST_FILE}.tmp" 2>/dev/null || true
+          _rc_all=$(grep -c . "$_REPO_COST_FILE" 2>/dev/null || true)
+          if (( _rc_awkrc != 0 )); then
+            _nf_err ledger-compact-write "awk compaction of $_REPO_COST_FILE failed (rc=$_rc_awkrc): $(head -n 1 "$_SL_BUF.err"); old ledger kept"
+            rm -f "${_REPO_COST_FILE}.tmp" 2>/dev/null
+          elif (( _rc_in > 0 && _rc_out == 0 )); then
+            # The refusal is right, but a ledger stuck over its size cap with the
+            # time gate retrying hourly is something the owner must be told.
+            _nf_err ledger-compact-refused "$_rc_in valid rows but none survive the cutoff; refusing to wipe $_REPO_COST_FILE (clock jump?)"
+            rm -f "${_REPO_COST_FILE}.tmp" 2>/dev/null
           else
-            sync "${_REPO_COST_FILE}.tmp" 2>/dev/null || true
-            mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE"
+            # Compaction deletes rows for good: say how many were not even
+            # well-formed (the readers skip those silently on the hot path).
+            (( ${_rc_all:-0} > _rc_in )) \
+              && _nf_err ledger-compact-dropped "$(( _rc_all - _rc_in )) malformed ledger rows removed from $_REPO_COST_FILE ($_rc_in valid rows seen)"
+            sync "${_REPO_COST_FILE}.tmp" 2>/dev/null \
+              || _nf_err ledger-compact-write "sync of ${_REPO_COST_FILE}.tmp failed; renaming anyway"
+            if _rc_mverr=$(mv -f "${_REPO_COST_FILE}.tmp" "$_REPO_COST_FILE" 2>&1); then
+              _nf_ok ledger-compact-write
+            else
+              _nf_err ledger-compact-write "compacting $_REPO_COST_FILE failed: ${_rc_mverr%%$'\n'*}; old ledger kept, retried after the cooldown"
+              rm -f "${_REPO_COST_FILE}.tmp" 2>/dev/null
+            fi
           fi
         ) 9>>"$_RC_LOCK" 2>/dev/null
       fi
@@ -1301,13 +1470,16 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     _rc_total=""
     if [[ "$_rc_due" == "false" && -r "$_rc_memo" ]]; then
       _rc_total=$(<"$_rc_memo")
+    elif [[ -e "$_REPO_COST_FILE" && ! -r "$_REPO_COST_FILE" ]]; then
+      _nf_err ledger-read "$_REPO_COST_FILE exists but is not readable; repo total unavailable"
     elif [[ -r "$_REPO_COST_FILE" ]]; then
       _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
                       -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" '
         NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
-      ' "$_REPO_COST_FILE" 2>/dev/null || true)
-      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || true
+      ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
+        || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
+      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || _nf_err tmp-write "cannot write $_rc_memo"
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
@@ -1325,6 +1497,10 @@ fi
 # Opt out with NERDFLAIR_MCP_HEALTH=0.
 _MCP_HEALTH_TTL=${NERDFLAIR_MCP_HEALTH_TTL:-300}
 _mcp_ok=""; _mcp_bad=""; _mcp_warn=""
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && ! command -v claude &>/dev/null; then
+  # The segment simply vanishes; say why (once an hour).
+  _nf_err mcp-no-claude "claude is not on PATH; MCP health probe disabled"
+fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; then
   _mh_cache="$_MCP_CACHE"
   _mh_lock="${_mh_cache}.lock"
@@ -1332,7 +1508,16 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
   if [[ -f "$_mh_cache" ]]; then
     _mh_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_cache" 2>/dev/null || stat -f %m "$_mh_cache" 2>/dev/null || echo 0) ))
     (( _mh_age < _MCP_HEALTH_TTL )) && _mh_fresh=true
-    IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn _mcp_probe_names < "$_mh_cache" 2>/dev/null || true
+    # `read` exits 1 at EOF without a trailing newline (the probe writes none),
+    # variables ARE set: the `|| true` is correct. Unreadable is not silent.
+    if [[ -r "$_mh_cache" ]]; then
+      IFS=$'\x1f' read -r _mcp_ok _mcp_bad _mcp_warn _mcp_probe_names < "$_mh_cache" || true
+      if [[ -s "$_mh_cache" ]] && { [[ ! "$_mcp_ok" =~ ^[0-9]+$ ]] || [[ ! "$_mcp_bad" =~ ^[0-9]+$ ]] || [[ ! "$_mcp_warn" =~ ^[0-9]+$ ]]; }; then
+        _nf_err mcp-cache-garbled "$_mh_cache does not hold three integers; health shows 0/0"
+      fi
+    else
+      _nf_err mcp-cache-read "$_mh_cache exists but is not readable"
+    fi
   fi
   # A leftover DIRECTORY from the previous mkdir-lock scheme would make the
   # `9>>` redirect below fail forever. rmdir only succeeds on an empty one.
@@ -1354,9 +1539,11 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
   # runs forever.
   if [[ "$_mh_fresh" == "false" ]]; then
     (
-      exec 9>>"$_mh_lock" 2>/dev/null || exit 0
-      flock -n 9 || exit 0
-      _out=$(timeout -k 5 30 claude mcp list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)
+      exec 9>>"$_mh_lock" 2>/dev/null \
+        || { _nf_err flock-open "cannot open MCP probe lock $_mh_lock; probe never runs"; exit 0; }
+      flock -n 9 || exit 0   # a probe already running: normal, silent
+      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 2>"${_mh_cache}.err"); _rc=$?
+      _out=$(printf '%s\n' "$_raw" | sed 's/\x1b\[[0-9;]*m//g')
       _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
         case "$_ln" in
@@ -1385,9 +1572,24 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; t
       # 100% duty cycle of a command that spawns every MCP server, on a
       # machine already slow enough to have caused the failure. The TTL now
       # gates the retries and the last known values stay on screen.
+      # Why did it fail? A probe that keeps failing leaves the cache stale for
+      # days while the segment shows a healthy-looking count.
+      _why=""
+      if (( _rc != 0 )); then
+        _why="claude mcp list exited $_rc ($( (( _rc == 124 )) && echo timeout || echo failed))"
+      elif (( _o + _b + _w == 0 )) && [[ -n "$_raw" ]] && ! grep -qi 'no mcp servers' <<< "$_raw"; then
+        _why="claude mcp list printed no parseable server lines"
+      fi
+      if [[ -n "$_why" ]]; then
+        _nf_err mcp-probe "$_why; first output: $(printf '%s %s' "$_raw" "$(cat "${_mh_cache}.err" 2>/dev/null)" | head -n 1 | cut -c1-160)"
+      else
+        _nf_ok mcp-probe
+      fi
+      rm -f "${_mh_cache}.err"
       if (( _o + _b + _w == 0 )); then touch "$_mh_cache" 2>/dev/null || true; fi
-      (( _o + _b + _w > 0 )) && printf '%s\x1f%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" "$_nm" > "${_mh_cache}.tmp" \
-        && mv -f "${_mh_cache}.tmp" "$_mh_cache"
+      (( _o + _b + _w > 0 )) && { printf '%s\x1f%s\x1f%s\x1f%s' "$_o" "$_b" "$_w" "$_nm" > "${_mh_cache}.tmp" \
+        && mv -f "${_mh_cache}.tmp" "$_mh_cache" \
+        || _nf_err mcp-probe-write "cannot update $_mh_cache"; }
     ) &>/dev/null &
     disown 2>/dev/null || true
   fi
@@ -1542,7 +1744,13 @@ _ledger=""
 _ledger_cut=0   # the file was CUT: a window reaching past the cap is undercounted
 if [[ -f "$_LEDGER_FILE" ]]; then
   _lg_bytes=$(stat -c %s "$_LEDGER_FILE" 2>/dev/null || stat -f %z "$_LEDGER_FILE" 2>/dev/null || echo 0)
-  _ledger=$(tail -c "$_LEDGER_CAP" "$_LEDGER_FILE" 2>/dev/null || true)
+  if _ledger=$(tail -c "$_LEDGER_CAP" "$_LEDGER_FILE" 2>"$_SL_BUF.err"); then
+    _nf_ok ledger-read
+  else
+    # Looks exactly like "no ledger yet" downstream, so it must not be silent.
+    _ledger=""
+    _nf_err ledger-read "cannot read $_LEDGER_FILE: $(head -n 1 "$_SL_BUF.err")"
+  fi
   # A tail that did not start at byte 0 begins mid-record; that partial line
   # would parse as a row with a truncated epoch or cost.
   if (( _lg_bytes > _LEDGER_CAP )); then
@@ -1653,13 +1861,16 @@ if [[ -n "$_ledger" ]]; then
   # is simply missing, and an undercount looks like a real figure.
   _bcov=1
   (( _ledger_cut == 1 )) && { (( _bold > 0 && _bold <= EPOCHSECONDS - _bw )) || _bcov=0; }
+  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
   if (( _bspan > 0 && _bspan >= _bmin && _bcov == 1 && EPOCHSECONDS - _bnew <= _bstale )) 2>/dev/null; then
-    _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>/dev/null)
+    _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>"$_SL_BUF.err") \
+      || _nf_err burn-awk "awk burn rate failed: $(head -n 1 "$_SL_BUF.err")"
   fi
 fi
 if [[ -z "$_burn_val" && -n "$cost" && -n "$total_duration_ms" ]] \
    && (( total_duration_ms > 120000 )) 2>/dev/null; then
-  _burn_val=$(awk "BEGIN {printf \"%.2f\", ${cost:-0} / (${total_duration_ms} / 3600000)}" 2>/dev/null)
+  _burn_val=$(awk "BEGIN {printf \"%.2f\", ${cost:-0} / (${total_duration_ms} / 3600000)}" 2>"$_SL_BUF.err") \
+    || _nf_err burn-awk "awk session burn rate failed: $(head -n 1 "$_SL_BUF.err")"
 fi
 if [[ -n "$_burn_val" && "$_burn_val" != 0 && "$_burn_val" != 0.00 ]]; then
   # Threshold colours: green under $20/hr, mustard to $50, alert above.
@@ -1694,8 +1905,10 @@ if [[ -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
       # absolute amount of money, and a quietly low one is read as fact.
       _kcov=1
       (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
+      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
       if (( _kcov == 1 )); then
-        _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>/dev/null)
+        _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>"$_SL_BUF.err") \
+          || _nf_err burn-awk "awk billing block failed: $(head -n 1 "$_SL_BUF.err")"
         # The ROUNDED figure decides: under half a cent prints as 0.00, which
         # reads as money and is really nothing.
         if [[ -n "$_kfmt" && "$_kfmt" != "0.00" ]]; then
@@ -1858,7 +2071,9 @@ if [[ -n "$_smp_file" ]]; then
     {
       printf 'v2 %s\n' "${_rate_show:-0}"
       printf '%s\n' "${_smp_hist[@]}"
-    } > "${_smp_file}.tmp" 2>/dev/null && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null || true
+    } > "${_smp_file}.tmp" 2>/dev/null && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null \
+      && _nf_ok sample-write \
+      || { _nf_err sample-write "cannot write or rename ${_smp_file}.tmp; ETA/throughput history will not accumulate"; rm -f "${_smp_file}.tmp" 2>/dev/null; }
   fi
 fi
 
@@ -1878,8 +2093,12 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
     (( _tx_age < 60 )) && _tmux_name=$(<"$_tx_cache")
   fi
   if [[ -z "$_tmux_name" ]]; then
-    _tmux_name=$(tmux display-message -p '#S' 2>/dev/null || true)
-    [[ -n "$_tmux_name" ]] && printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null
+    _nf_cmd - '' tmux display-message -p '#S' \
+      || _nf_err tmux "tmux display-message failed; session name segment hidden"
+    _tmux_name="$_NF_OUT"
+    if [[ -n "$_tmux_name" ]]; then
+      printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null || _nf_err tmp-write "cannot write $_tx_cache"
+    fi
   fi
   [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
 fi
