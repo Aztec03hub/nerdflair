@@ -154,6 +154,12 @@ check "created-empty .profile is removed by uninstall" no "$([[ -e "$HOME/.profi
 # Uninstall with no login file at all must not complain about a marker.
 check "uninstall with no login file: no marker complaint" 0 "$(bash "$INSTALL" uninstall 2>&1 | grep -c unmatched)"
 
+# An EMPTY file the user already had is theirs: uninstall must not delete it.
+printf '' > "$HOME/.profile"
+bash "$INSTALL" install >/dev/null 2>&1; bash "$INSTALL" uninstall >/dev/null 2>&1
+check "a user's own empty .profile survives uninstall" yes "$([[ -e "$HOME/.profile" ]] && echo yes || echo no)"
+rm -f "$HOME/.profile"
+
 # A $HOME with a space in it: install and uninstall still work.
 SP="$ROOT/my home"; mkdir -p "$SP"; printf 'y=1\n' > "$SP/.bashrc"
 HOME="$SP" bash "$INSTALL" install >/dev/null 2>&1

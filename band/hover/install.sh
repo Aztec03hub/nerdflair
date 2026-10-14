@@ -15,6 +15,8 @@
 # Why it cannot loop or lock you out: the shim execs plain claude whenever
 # wrapping is impossible, and nothing here starts or restarts a service.
 set -euo pipefail
+# mapfile and empty-array expansion under set -u need bash 4.4+ (not macOS /bin/bash 3.2).
+(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || { echo "install.sh needs bash 4.4 or newer" >&2; exit 2; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE="$(cd "$HERE/../bridge" && pwd)"
@@ -102,7 +104,7 @@ strip() { # file: print it without our block
 # backup is removed only if it is exactly what the file is now.
 remove_block() { # file [uninstall]
   local f=$1 rc=0 tmp
-  grep -qF "$BEGIN" "$f" 2>/dev/null || { [[ -n "${2:-}" ]] && cleanup_backup "$f"; return 0; }
+  grep -qxF "$BEGIN" "$f" 2>/dev/null || return 0
   paired "$f" || rc=$?
   if (( rc == 1 )); then echo "${2:-install}: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
   (( rc == 0 )) || return 0
@@ -114,7 +116,9 @@ cleanup_backup() { # file
   if [[ -f "$f.nf-backup" ]]; then
     if cmp -s "$f.nf-backup" "$f"; then
       rm -f "$f.nf-backup"
-      [[ -s "$f" ]] || rm -f "$f"          # it was empty before we touched it: leave it as we found it, absent
+      # A file we created (recorded at install) and that is still empty goes
+      # back to absent; a file that existed, empty or not, is left alone.
+      if [[ ! -s "$f" ]] && grep -qxF "$f" "$NF/created" 2>/dev/null; then rm -f "$f"; fi
     else
       echo "uninstall: kept $f.nf-backup (it differs from $f); remove it when you no longer need it"
     fi
@@ -143,7 +147,12 @@ case "${1:-install}" in
     for f in "${old[@]}"; do   # a block an earlier version wrote there: remove it, add nothing
       remove_block "$f"
     done
-    [[ -f "$(loginfile)" ]] || : > "$(loginfile)"      # see loginfile
+    if [[ ! -f "$(loginfile)" ]]; then      # see loginfile
+      : > "$(loginfile)"
+      # Remembered, so uninstall removes only a file WE created: an empty file
+      # the user kept is theirs and stays.
+      printf '%s\n' "$(loginfile)" >> "$NF/created"
+    fi
     mapfile -t targets < <(rcfiles)
     for f in "${targets[@]}"; do
       # The block's `unalias claude` would drop a user's own alias (and its flags).
@@ -178,7 +187,7 @@ case "${1:-install}" in
       rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
       systemctl --user daemon-reload
     fi
-    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
+    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover" "$NF/created"
     rmdir "$NF/bin" "$NF" 2>/dev/null || true
     echo "hover removed"
     ;;
