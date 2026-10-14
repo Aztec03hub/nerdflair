@@ -24,11 +24,18 @@ X=${1:-0}; shift || true
 TITLE=${1:-nerdflair}; shift || true
 BODY=${*:-}
 
-command -v tmux >/dev/null 2>&1 || exit 0
-[[ -n "${TMUX:-}" ]] || exit 0   # not inside tmux: no popup, and no error either
+# Every refusal exits non-zero with ONE line on stderr, so the plugin can show
+# the reason instead of a click that silently does nothing.
+#   3 = cannot popup here (no tmux, or not inside tmux)   4 = tmux failed
+die() { printf 'popup.sh: %s\n' "$2" >&2; exit "$1"; }
+command -v tmux >/dev/null 2>&1 || die 3 "tmux is not installed; popups need tmux"
+[[ -n "${TMUX:-}" ]] || die 3 "not inside tmux; popups need a tmux session"
 
 # Width from the content, clamped so it never exceeds the client.
-cols=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 120)
+if ! cols=$(tmux display-message -p '#{client_width}' 2>&1) || [[ ! "$cols" =~ ^[0-9]+$ ]]; then
+  printf 'popup.sh: could not read the client width (%s); assuming 120 columns\n' "$cols" >&2
+  cols=120
+fi
 w=$(( ${#BODY} + 4 ))
 (( w < ${#TITLE} + 4 )) && w=$(( ${#TITLE} + 4 ))
 (( w > cols - 4 )) && w=$(( cols - 4 ))
@@ -40,7 +47,9 @@ w=$(( ${#BODY} + 4 ))
 
 # -E closes the popup when the command exits, so `read -n1` means "any key
 # dismisses". Without that the popup would persist and hold the keyboard.
-tmux display-popup -w "$w" -h 6 -x "$X" -y S -E \
+err=$(tmux display-popup -w "$w" -h 6 -x "$X" -y S -E \
   "printf '\033[1m%s\033[0m\n\n%s\n\n\033[2many key to close\033[0m' \
-     $(printf '%q' "$TITLE") $(printf '%q' "$BODY"); read -rsn1" \
-  2>/dev/null
+     $(printf '%q' "$TITLE") $(printf '%q' "$BODY"); read -rsn1" 2>&1)
+rc=$?
+# tmux's own words, not discarded: popup needs tmux 3.2+, a client, a sane size.
+(( rc == 0 )) || die 4 "tmux display-popup failed (exit $rc): ${err//$'\n'/ }"
