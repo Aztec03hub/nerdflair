@@ -21,7 +21,17 @@ fail=0
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
 printf 'export FOO=1\n' > "$HOME/.bashrc"
+# The real failure: a login shell runs .profile AFTER .bashrc, and .profile prepends ~/.local/bin.
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\necho REAL\n' > "$HOME/.local/bin/claude"; chmod +x "$HOME/.local/bin/claude"
+printf '. "$HOME/.bashrc"\nPATH="$HOME/.local/bin:$PATH"\n' > "$HOME/.profile"
 cp "$HOME/.bashrc" "$ROOT/original"
+cp "$HOME/.profile" "$ROOT/original-profile"
+
+# Control, BEFORE installing: in a login shell the PATH lookup alone finds the
+# real binary. That is the bug this installer must beat.
+ctl=$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" -lic 'echo "NF:$(type -P claude)"' 2>/dev/null | grep -a '^NF:' | tail -1)
+check "login shell, before install: PATH lookup finds the real binary" "NF:$HOME/.local/bin/claude" "$ctl"
 
 bash "$INSTALL" install >/dev/null 2>&1
 check "install: rc block present" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bashrc")"
@@ -38,6 +48,12 @@ check "PATH: shim already first" "$S:/a:/b" "$(runpath "$S:/a:/b")"
 check "PATH: shim already last" "$S:/a:/b" "$(runpath "/a:/b:$S")"
 check "PATH: shim in the middle" "$S:/a:/b" "$(runpath "/a:$S:/b")"
 
+shellq() { env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" "$1" "$2" 2>/dev/null | grep -a "^NF:" | tail -1; }
+check "login shell, after install: PATH lookup finds the shim too" "NF:$HOME/.nerdflair/bin/claude" "$(shellq -lic 'echo "NF:$(type -P claude)"')"
+for mode in "-ic" "-lic"; do
+  check "bash $mode: claude is a function (the shim's)" "NF:function" "$(shellq "$mode" 'echo "NF:$(type -t claude)"')"
+done
+
 bash "$INSTALL" install >/dev/null 2>&1
 check "reinstall: still exactly one block" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bashrc")"
 
@@ -48,6 +64,7 @@ check "status: clean after a reinstall" 0 "$(bash "$INSTALL" status 2>&1 | grep 
 
 bash "$INSTALL" uninstall >/dev/null 2>&1
 check "uninstall: rc is back to the original" "$(cat "$ROOT/original")" "$(cat "$HOME/.bashrc")"
+check "uninstall: .profile is back to the original" "$(cat "$ROOT/original-profile")" "$(cat "$HOME/.profile")"
 check "uninstall: the backup is gone" no "$([[ -e "$HOME/.bashrc.nf-backup" ]] && echo yes || echo no)"
 check "uninstall: ~/.nerdflair is gone" no "$([[ -e "$HOME/.nerdflair" ]] && echo yes || echo no)"
 

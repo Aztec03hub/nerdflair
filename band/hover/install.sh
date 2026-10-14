@@ -6,7 +6,7 @@
 # What install does, all of it reversible and none of it touching Claude Code:
 #   1. ~/.nerdflair/hover   -> link to band/bridge (the wrapper code)
 #   2. ~/.nerdflair/bin/    -> claude (the shim) and nf-tmux-heal, copied
-#   3. a marked block at the END of ~/.bashrc and ~/.zshrc (if present) that
+#   3. a marked block at the END of ~/.bashrc, ~/.zshrc, ~/.profile and ~/.zprofile (if present) that
 #      puts ~/.nerdflair/bin first on PATH and keeps tmux's socket out of /tmp
 #
 # Why this survives a Claude Code update: the shim finds the real claude on
@@ -31,6 +31,11 @@ case ":$PATH:" in *":$HOME/.nerdflair/bin:"*)
   _nf=":$PATH:"; _nf="${_nf//:$HOME\/.nerdflair\/bin:/:}"; _nf="${_nf#:}"; PATH="${_nf%:}"; unset _nf ;;
 esac
 export PATH="$HOME/.nerdflair/bin:$PATH"
+# A login shell reads .profile AFTER .bashrc, and .profile prepends ~/.local/bin
+# and friends, burying the shim. A function wins over any PATH order.
+claude() {
+  if [ -x "$HOME/.nerdflair/bin/claude" ]; then "$HOME/.nerdflair/bin/claude" "$@"; else command claude "$@"; fi
+}
 # tmux's socket lives in /tmp by default, and anything sweeping /tmp strands
 # the server. A running server keeps its current socket; this applies to the
 # next one, so it never splits an existing session off from its clients.
@@ -41,7 +46,9 @@ fi
 EOF
 }
 
-rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$f" ]] && echo "$f"; done; }
+# .profile and .zprofile too: login shells (tmux windows, WSL terminals) run
+# them last, after .bashrc/.zshrc, so the block must be at the end of those as well.
+rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.zprofile"; do [[ -f "$f" ]] && echo "$f"; done; }
 
 # A file with a BEGIN marker and no END would lose everything after it, so the
 # markers must pair up before anything is stripped.
