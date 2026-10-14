@@ -40,7 +40,8 @@ python3 "$REPO/tests/price-recount.py" --selfcheck >/dev/null || { echo "validat
 # the same bytes or a 0.1 difference is drift, not a defect. Snapshot once.
 SNAP=$(mktemp "${TMPDIR:-/tmp}/nf-validate-ledger-XXXXXX")
 ERRF="$SNAP.err"
-trap 'rm -f "$SNAP" "$ERRF"' EXIT
+COVER="$SNAP.cover"
+trap 'rm -f "$SNAP" "$ERRF" "$COVER.1" "$COVER.3" "$COVER.4.8"' EXIT
 cp "$LEDGER" "$SNAP"; LEDGER="$SNAP"
 LCAP=$(( $(stat -c %s "$LEDGER") + 1048576 ))
 fail=0
@@ -68,7 +69,9 @@ print(json.dumps({'session_id':'validate-ledger',
   bash_=$(printf '%s' "$payload" | block_of bash "$SH")
   # recount's stderr is NOT dropped: it prints UNPRICED models there, and an
   # unpriced model silently lowers the recount.
-  recount=$(python3 "$REPO/tests/price-recount.py" "$hours")
+  # Sessions that never rendered a status line cannot be in the ledger; the
+  # recount is limited to sessions that did, and the gap is printed as coverage.
+  recount=$(python3 "$REPO/tests/price-recount.py" --ledger "$LEDGER" "$hours" 2> "$COVER.$hours")
   if [[ -z "$recount" ]]; then
     echo "validate-ledger: the recount produced no figure for ${hours}h (its own failure, not a skip)" >&2
     exit 2
@@ -90,5 +93,6 @@ print(json.dumps({'session_id':'validate-ledger',
 done
 
 printf '\n'
+for hours in 1 3 4.8; do rg -N 'NOT-IN-LEDGER' "$COVER.$hours" 2>/dev/null | sed "s/^price-recount: /  coverage ${hours}h: /" || true; done
 if (( fail )); then echo "validate-ledger: FAIL"; exit 1; fi
 echo "validate-ledger: PASS"

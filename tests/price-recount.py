@@ -156,9 +156,25 @@ def main():
     if a[:1] == ["--selfcheck"]:
         selfcheck()
         return
+    ledger = None
+    if "--ledger" in a:                      # restrict to sessions that rendered at least once
+        i = a.index("--ledger")
+        ledger = a[i + 1]
+        del a[i:i + 2]
     hours = float(a[0]) if a else 3.0
     now = int(time.time())
     total, unpriced, per = recount(now - int(hours * 3600), now + 1)
+    if ledger:
+        # A session that never rendered the status line (a headless `claude -p`,
+        # a hook's run, a subagent-only session) can never reach the ledger, so
+        # its spend is a COVERAGE gap, not an error in how the ledger is computed.
+        # The gate compares like with like; the gap is reported, never hidden.
+        with open(ledger, errors="replace") as lf:
+            seen_ids = {p[1] for p in (ln.split("\t") for ln in lf) if len(p) >= 4}
+        out = {s: c for s, c in per.items() if s not in seen_ids}
+        print(f"price-recount: NOT-IN-LEDGER ${sum(out.values()):.2f} across {len(out)} session(s) that never rendered "
+              "a status line (excluded from the figure above)", file=sys.stderr)
+        total = sum(c for s, c in per.items() if s in seen_ids)
     print(f"{total:.2f}")
     if unpriced:
         print("UNPRICED " + json.dumps(unpriced), file=sys.stderr)
