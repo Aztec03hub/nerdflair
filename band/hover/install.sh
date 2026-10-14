@@ -32,7 +32,7 @@ case ":$PATH:" in *":$HOME/.nerdflair/bin:"*)
   _nf=":$PATH:"; _nf="${_nf//:$HOME\/.nerdflair\/bin:/:}"; _nf="${_nf#:}"; PATH="${_nf%:}"; unset _nf ;;
 esac
 fi
-export PATH="$HOME/.nerdflair/bin:$PATH"
+export PATH="$HOME/.nerdflair/bin${PATH:+:$PATH}"
 # A login shell reads .profile AFTER .bashrc, and .profile prepends ~/.local/bin
 # and friends, burying the shim. A function wins over any PATH order.
 unalias claude 2>/dev/null || true      # an alias would break the definition below and beat it
@@ -53,6 +53,8 @@ EOF
 # .bashrc and it prepends ~/.local/bin, so the block must end it as well. A
 # ~/.bash_profile or ~/.bash_login makes bash skip .profile, so they are covered.
 # (zsh reads .zprofile BEFORE .zshrc; .zshrc already ends last, so no .zprofile.)
+# Files an earlier version wrote a block to: stripped on install/uninstall, never added to.
+legacy() { [[ -f "$HOME/.zprofile" ]] && echo "$HOME/.zprofile"; return 0; }
 rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login"; do [[ -f "$f" ]] && echo "$f"; done; }
 
 # A file with a BEGIN marker and no END would lose everything after it, so the
@@ -90,20 +92,30 @@ case "${1:-install}" in
       systemctl --user daemon-reload
       systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
     fi
+    done=0; skipped=0
+    for f in $(legacy); do   # a block an earlier version wrote there: remove it, add nothing
+      rc=0; paired "$f" || rc=$?
+      if (( rc == 0 )); then tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"; fi
+    done
     for f in $(rcfiles); do
+      # The block's `unalias claude` would drop a user's own alias (and its flags).
+      if grep -qE '^[[:space:]]*alias[[:space:]]+claude=' "$f" 2>/dev/null; then
+        echo "install: WARNING $f defines alias claude; the block replaces it. Move its flags into settings or the shim." >&2
+      fi
       rc=0; paired "$f" || rc=$?
       if (( rc == 1 )); then echo "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there" >&2; fi
-      (( rc == 0 )) || continue
+      (( rc == 0 )) || { skipped=$((skipped + 1)); continue; }
+      done=$((done + 1))
       tmp="$f.nf.$$"
       { strip "$f"; block; } > "$tmp"
       if ! cmp -s "$tmp" "$f"; then cp -p "$f" "$f.nf-backup"; cat "$tmp" > "$f"; fi
       rm -f "$tmp"
       echo "  rc block in $f"
     done
-    echo "hover installed: new shells start claude under the wrapper (inside tmux)"
+    echo "hover installed: new shells start claude under the wrapper (inside tmux); $done rc file(s) updated, $skipped skipped"
     ;;
   uninstall)
-    for f in $(rcfiles); do
+    for f in $(rcfiles) $(legacy); do
       rc=0; paired "$f" || rc=$?
       if (( rc == 1 )); then echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
       (( rc == 0 )) || continue

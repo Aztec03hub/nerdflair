@@ -90,6 +90,18 @@ printf 'alias claude="echo ALIAS"\n' > "$HOME/.bashrc"
 bash "$INSTALL" install >/dev/null 2>&1
 check "alias claude: still the function" "NF:function" "$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" -ic 'echo "NF:$(type -t claude)"' 2>/dev/null | grep -a '^NF:' | tail -1)"
 
+# A block an earlier version put in ~/.zprofile is cleaned up by install and uninstall.
+printf 'export Z=1\n' > "$HOME/.zprofile"; cp "$HOME/.zprofile" "$ROOT/zp"
+{ cat "$ROOT/zp"; printf '# >>> nerdflair hover >>>\nold\n# <<< nerdflair hover <<<\n'; } > "$HOME/.zprofile"
+bash "$INSTALL" install >/dev/null 2>&1
+check "legacy .zprofile block removed by install" "$(cat "$ROOT/zp")" "$(cat "$HOME/.zprofile")"
+# The alias warning names the file.
+printf 'alias claude="claude --foo"\n' > "$HOME/.bashrc"
+check "alias warning printed" 1 "$(bash "$INSTALL" install 2>&1 >/dev/null | grep -c 'defines alias claude')"
+# Every file broken: say so, do not claim success silently.
+rm -f "$HOME/.profile" "$HOME/.zshrc" "$HOME/.zprofile"; printf '# >>> nerdflair hover >>>\n' > "$HOME/.bashrc"
+check "all skipped: the summary says so" 1 "$(bash "$INSTALL" install 2>&1 | grep -c '0 rc file(s) updated, 1 skipped')"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys
