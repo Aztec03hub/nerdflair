@@ -6,7 +6,7 @@
 # What install does, all of it reversible and none of it touching Claude Code:
 #   1. ~/.nerdflair/hover   -> link to band/bridge (the wrapper code)
 #   2. ~/.nerdflair/bin/    -> claude (the shim) and nf-tmux-heal, copied
-#   3. a marked block at the END of ~/.bashrc, ~/.zshrc, ~/.profile and ~/.zprofile (if present) that
+#   3. a marked block at the END of ~/.bashrc, ~/.zshrc, ~/.profile, ~/.bash_profile and ~/.bash_login (if present) that
 #      puts ~/.nerdflair/bin first on PATH and keeps tmux's socket out of /tmp
 #
 # Why this survives a Claude Code update: the shim finds the real claude on
@@ -27,12 +27,15 @@ block() {
 # Managed by nerdflair (band/hover/install.sh). Remove with: install.sh uninstall
 # Put the shim first so a bare `claude` gets hover panels, whatever else
 # has edited PATH since.
+if [ -n "${BASH_VERSION:-}${ZSH_VERSION:-}" ]; then   # the substitution below is not POSIX sh
 case ":$PATH:" in *":$HOME/.nerdflair/bin:"*)
   _nf=":$PATH:"; _nf="${_nf//:$HOME\/.nerdflair\/bin:/:}"; _nf="${_nf#:}"; PATH="${_nf%:}"; unset _nf ;;
 esac
+fi
 export PATH="$HOME/.nerdflair/bin:$PATH"
 # A login shell reads .profile AFTER .bashrc, and .profile prepends ~/.local/bin
 # and friends, burying the shim. A function wins over any PATH order.
+unalias claude 2>/dev/null || true      # an alias would break the definition below and beat it
 claude() {
   if [ -x "$HOME/.nerdflair/bin/claude" ]; then "$HOME/.nerdflair/bin/claude" "$@"; else command claude "$@"; fi
 }
@@ -46,9 +49,11 @@ fi
 EOF
 }
 
-# .profile and .zprofile too: login shells (tmux windows, WSL terminals) run
-# them last, after .bashrc/.zshrc, so the block must be at the end of those as well.
-rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.zprofile"; do [[ -f "$f" ]] && echo "$f"; done; }
+# .profile too: a bash login shell (tmux windows, WSL terminals) runs it AFTER
+# .bashrc and it prepends ~/.local/bin, so the block must end it as well. A
+# ~/.bash_profile or ~/.bash_login makes bash skip .profile, so they are covered.
+# (zsh reads .zprofile BEFORE .zshrc; .zshrc already ends last, so no .zprofile.)
+rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login"; do [[ -f "$f" ]] && echo "$f"; done; }
 
 # A file with a BEGIN marker and no END would lose everything after it, so the
 # markers must pair up before anything is stripped.
@@ -86,7 +91,7 @@ case "${1:-install}" in
       systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
     fi
     for f in $(rcfiles); do
-      paired "$f"; rc=$?
+      rc=0; paired "$f" || rc=$?
       if (( rc == 1 )); then echo "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there" >&2; fi
       (( rc == 0 )) || continue
       tmp="$f.nf.$$"
@@ -99,7 +104,7 @@ case "${1:-install}" in
     ;;
   uninstall)
     for f in $(rcfiles); do
-      paired "$f"; rc=$?
+      rc=0; paired "$f" || rc=$?
       if (( rc == 1 )); then echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
       (( rc == 0 )) || continue
       tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"

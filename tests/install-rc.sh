@@ -75,6 +75,21 @@ out=$(bash "$INSTALL" uninstall 2>&1)
 check "uninstall: a differing backup is kept" yes "$([[ -e "$HOME/.bashrc.nf-backup" ]] && echo yes || echo no)"
 check "uninstall: and its path is printed" 1 "$(grep -c 'kept .*nf-backup' <<<"$out")"
 
+# A broken block in ONE file must not stop the install or uninstall of the rest
+# (it used to exit silently under set -e), and must be named.
+bash "$INSTALL" uninstall >/dev/null 2>&1
+printf 'export B=1\n# >>> nerdflair hover >>>\nno end marker\n' > "$HOME/.profile"
+out=$(bash "$INSTALL" install 2>&1); rc=$?
+check "broken .profile: install still finishes" 0 "$rc"
+check "broken .profile: and names the file" 1 "$(grep -c 'profile has an unmatched' <<<"$out")"
+check "broken .profile: the other files still got the block" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bashrc")"
+bash "$INSTALL" uninstall >/dev/null 2>&1; check "broken .profile: uninstall finishes and removes the shim" no "$([[ -e "$HOME/.nerdflair/bin/claude" ]] && echo yes || echo no)"
+
+# An alias of the same name must not break the function or the file.
+printf 'alias claude="echo ALIAS"\n' > "$HOME/.bashrc"
+bash "$INSTALL" install >/dev/null 2>&1
+check "alias claude: still the function" "NF:function" "$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" -ic 'echo "NF:$(type -t claude)"' 2>/dev/null | grep -a '^NF:' | tail -1)"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys
