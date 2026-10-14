@@ -46,6 +46,7 @@ class Panel:
         # the bug where whichever readout you were not hovering sat there as
         # a black rectangle.
         self.backdrop = backdrop
+        self.warn = lambda kind, msg: None    # set by the owner to a logger: absorbed degradations are reported through it
         # keeps: `write` accepts keep=True, which marks a write (an erase) that
         # a queue must never drop. Off by default so a plain callable works.
         self.keeps = keeps
@@ -102,6 +103,9 @@ class Panel:
         w = max(w, 12)
         # Clipped to the card, not left to run over its right edge: on a
         # terminal narrower than the text the border would otherwise break.
+        if len(title) > max(1, w - 6) or any(len(b) > w - 4 for b in body):
+            self.warn("card-clipped", f"card '{sid}' clipped to {w} columns (terminal is {self.cols} wide): "
+                                      "some of its text is cut off")
         title = title[:max(1, w - 6)]
         body = [b[:w - 4] for b in body]
         h = len(body) + 2
@@ -173,7 +177,10 @@ class Panel:
         if under is None:
             # No snapshot: blanking is all that is left. This leaves a hole
             # until the program underneath repaints, so it is the fallback,
-            # not the design.
+            # not the design (and is reported: the cause is logged where the
+            # snapshot failed, this says what the user saw).
+            self.warn("erase-blank", "no backdrop snapshot: blanked the card area; there is a hole in the status "
+                                     "line until the engine repaints")
             under = "".join(f"{ESC}[{r};{x}H{' ' * w}"
                             for r in range(y, y + h))
         text = f"{ESC}[s{ESC}[?25l" + under + self._show_cursor() + f"{ESC}[u"

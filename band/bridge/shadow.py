@@ -27,6 +27,8 @@ import subprocess
 import tempfile
 import time
 
+import nflog
+
 ESC = "\033"
 MAX_BACKLOG = 4 * 1024 * 1024       # past this the shadow has fallen too far behind to trust
 
@@ -48,6 +50,9 @@ class Shadow:
         self.cool = 0.0         # no captures before this time after a failed sync
         try:
             base = os.environ.get("XDG_RUNTIME_DIR")
+            if not (base and os.path.isdir(base)):
+                nflog.note_once("shadow-tmpdir", "XDG_RUNTIME_DIR unset or not a directory: the shadow screen's "
+                                                 "private directory goes under the default temp dir")
             # mkdtemp is private (0700) and ours alone; the socket and fifo live in it.
             self.dir = tempfile.mkdtemp(prefix="nf-shadow-",
                                         dir=base if base and os.path.isdir(base) else None)
@@ -67,11 +72,20 @@ class Shadow:
             self.ok = r.returncode == 0
             if not self.ok:
                 self.why = " ".join((r.stderr or f"tmux exit {r.returncode}").split())   # one line, for the log
-        except (OSError, subprocess.SubprocessError) as e:
+        except Exception as e:      # any failure here must not stop the session from starting
             self.ok = False
             self.why = f"{type(e).__name__}: {e}"
         if not self.ok:
             self.close()
+
+    def _off(self, why):
+        """The one way the shadow is turned off after startup. Always logged:
+        from here on the session runs the OLD behaviour (stale restores, covered
+        rows skipped) and that must be traceable."""
+        if self.ok:
+            self.ok = False
+            self.why = why
+            nflog.note_once("shadow-off", f"shadow screen disabled mid-session: {why}; reading the live pane from now on")
 
     # ── feeding ──────────────────────────────────────────────────────────────
     def feed(self, data, clean=True):
@@ -83,7 +97,7 @@ class Shadow:
         self.pending += data
         self._drain()
         if len(self.pending) > MAX_BACKLOG:
-            self.ok = False          # callers fall back to the live pane
+            self._off(f"fell more than {MAX_BACKLOG} bytes behind")
             self.pending = b""
 
     def _drain(self):
@@ -92,8 +106,8 @@ class Shadow:
                 n = os.write(self.fd, self.pending)
             except BlockingIOError:
                 return
-            except OSError:
-                self.ok = False
+            except OSError as e:
+                self._off(f"write to its fifo failed: {e}")
                 self.pending = b""
                 return
             self.pending = self.pending[n:]
@@ -113,16 +127,21 @@ class Shadow:
             self._drain()
             try:
                 r = _tmux(self.sock, "display-message", "-p", "-t", "s", "#{pane_title}")
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, subprocess.SubprocessError) as e:
                 self.cool = time.monotonic() + 2.0      # tmux hung: do not wait on it every time
+                nflog.note_rate("shadow-sync-tmux", f"shadow sync: tmux did not answer ({type(e).__name__}: {e}); "
+                                                    "reading the live pane for 2 s")
                 return False
             if r.returncode != 0:
-                self.ok = False         # the server is gone: stop paying for it
+                self._off(f"its tmux server stopped answering (display-message exit {r.returncode}: "
+                          f"{r.stderr.strip() or 'no output'})")      # the server is gone: stop paying for it
                 return False
             if r.stdout.strip() == mark:
                 return True
             time.sleep(0.005)
         self.cool = time.monotonic() + 2.0      # stalled: stop asking for a while
+        nflog.note_rate("shadow-sync-stall", f"shadow sync stalled (the mark did not appear within "
+                                             f"{budget * 1000:.0f} ms); reading the live pane for 2 s")
         return False
 
     def capture(self, *args, timeout=0.5):
@@ -134,19 +153,26 @@ class Shadow:
             return None             # a screen that may lack the latest bytes is not the truth
         try:
             r = _tmux(self.sock, "capture-pane", "-p", *args, "-t", "s", timeout=timeout)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as e:
             self.cool = time.monotonic() + 2.0
+            nflog.note_rate("shadow-capture-tmux", f"shadow capture: tmux did not answer ({type(e).__name__}: {e}); "
+                                                   "reading the live pane for 2 s")
             return None
-        return r if r.returncode == 0 else None
+        if r.returncode != 0:
+            nflog.note_rate("shadow-capture-rc", f"shadow capture-pane exit {r.returncode}: "
+                                                 f"{r.stderr.strip() or 'no output'}; reading the live pane")
+            return None
+        return r
 
     def resize(self, rows, cols):
         if not self.ok:
             return
         try:
-            if _tmux(self.sock, "resize-window", "-t", "s", "-x", str(cols), "-y", str(rows)).returncode != 0:
-                self.ok = False
-        except (OSError, subprocess.SubprocessError):
-            self.ok = False
+            r = _tmux(self.sock, "resize-window", "-t", "s", "-x", str(cols), "-y", str(rows))
+            if r.returncode != 0:
+                self._off(f"resize to {cols}x{rows} failed (exit {r.returncode}: {r.stderr.strip() or 'no output'})")
+        except (OSError, subprocess.SubprocessError) as e:
+            self._off(f"resize to {cols}x{rows} failed ({type(e).__name__}: {e})")
 
     # ── teardown ─────────────────────────────────────────────────────────────
     def close(self):
@@ -154,32 +180,41 @@ class Shadow:
         self.ok = False
         if getattr(self, "sock", None) and self.dir:
             try:
-                _tmux(self.sock, "kill-server", timeout=2)
-            except (OSError, subprocess.SubprocessError):
-                pass
+                r = _tmux(self.sock, "kill-server", timeout=2)
+                # "no server running"/"error connecting" is the normal answer when
+                # it never started or has already gone; anything else is not.
+                if r.returncode != 0 and not any(s in r.stderr for s in ("no server running", "error connecting", "No such file")):
+                    nflog.note_once("shadow-kill", f"shadow tmux kill-server exit {r.returncode}: {r.stderr.strip()}; "
+                                                   f"a private tmux server may still be running at {self.sock}")
+            except (OSError, subprocess.SubprocessError) as e:
+                nflog.note_once("shadow-kill", f"shadow tmux kill-server failed ({type(e).__name__}: {e}); "
+                                               f"a private tmux server may still be running at {self.sock}")
         if self.fd >= 0:
             try:
                 os.close(self.fd)
-            except OSError:
-                pass
+            except OSError as e:
+                nflog.note_once("shadow-close-fd", f"shadow fifo close failed: {e}")
             self.fd = -1
         # Only the three names we made, in the directory mkdtemp made.
         if self.dir:
             for name in ("in", "s"):
                 try:
                     os.unlink(os.path.join(self.dir, name))
-                except OSError:
-                    pass
+                except FileNotFoundError:
+                    pass            # the socket goes with the server: expected
+                except OSError as e:
+                    nflog.note_once("shadow-cleanup", f"shadow cleanup: cannot remove {os.path.join(self.dir, name)}: {e}")
             try:
                 os.rmdir(self.dir)
-            except OSError:
-                pass
+            except OSError as e:
+                nflog.note_once("shadow-cleanup-dir", f"shadow cleanup: directory {self.dir} not removed: {e}")
             self.dir = None
 
 
 def _umask_check():
     """Under the tmux server's umask (0117) the shadow must still come up. Falsifiable:
     without the chmod its directory is 0600 and tmux reports Permission denied."""
+    nflog.ERRLOG = os.devnull           # a selfcheck must not write the real log
     old = os.umask(0o117)
     try:
         hostile = Shadow(5, 20)

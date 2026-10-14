@@ -59,6 +59,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mklayout  # noqa: E402
 from panel import FRAME, Panel  # noqa: E402
 from shadow import Shadow  # noqa: E402
+import nflog  # noqa: E402
+from nflog import note_once, note_rate  # noqa: E402
 
 ESC = "\033"
 
@@ -109,8 +111,11 @@ def winsize(fd):
     try:
         b = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
         rows, cols = struct.unpack("HHHH", b)[:2]
-    except OSError:
+    except (OSError, ValueError) as e:      # ValueError: an fd that is already closed
+        note_once("winsize", f"TIOCGWINSZ failed on fd {fd} ({e}): assuming a 50x200 terminal")
         rows, cols = 50, 200
+    if not rows or not cols:
+        note_once("winsize-zero", f"the terminal reports {rows}x{cols}: assuming 50 rows / 200 columns where it says 0")
     return (rows or 50), (cols or 200)
 
 
@@ -118,8 +123,8 @@ def set_winsize(fd, rows, cols):
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ,
                     array.array("h", [rows, cols, 0, 0]))
-    except OSError:
-        pass
+    except (OSError, ValueError) as e:
+        note_once("set-winsize", f"TIOCSWINSZ failed on fd {fd} ({e}): the pty size was not applied")
 
 
 class Backdrop:
@@ -161,6 +166,9 @@ class Backdrop:
         # what is saved is what the engine last drew, and restoring it later
         # shows the CURRENT status line, not the one from when the card opened.
         r = self.shadow.capture(*span) if self.shadow is not None else None
+        if r is None and self.shadow is not None and self.shadow.ok:
+            note_rate("backdrop-live-fallback", "backdrop: the shadow screen could not answer, reading the live pane "
+                                                "(a card may restore leftovers of an earlier card)")
         if r is None:
             if not self.settled():
                 # The live pane may still show a card whose erase is queued, and
@@ -172,8 +180,13 @@ class Backdrop:
                 r = subprocess.run(
                     ["tmux", "capture-pane", "-p", *span, "-t", self.pane],
                     capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, subprocess.SubprocessError) as e:
+                note_rate("backdrop-save-tmux", f"backdrop: tmux capture-pane failed ({type(e).__name__}: {e}); "
+                                                "the card will blank its area when it closes")
                 return
+        if r.returncode != 0:
+            note_rate("backdrop-save-rc", f"backdrop: tmux capture-pane exit {r.returncode}: "
+                                          f"{r.stderr.strip() or 'no output'}; the card will blank its area when it closes")
         if r.returncode == 0:
             self.rows = r.stdout.split("\n")[:h]
             self.top = y
@@ -193,6 +206,9 @@ class Backdrop:
                           f"clean={self.shadow.clean} rows={None if r is None else len(r.stdout.split(chr(10))[:h])}")
             if r is not None:
                 self.rows = r.stdout.split("\n")[:h]
+            else:
+                note_rate("restore-stale", "backdrop: the shadow screen could not answer at erase time; restored the rows "
+                                           "saved when the card opened (the status line may show an old value until it repaints)")
         out = []
         for i, line in enumerate(self.rows):
             # Clear to end of line first: the captured text stops at the last
@@ -243,10 +259,14 @@ class Layout:
             return
         self.at = now
         fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow)
+        if fresh is None:
+            return              # unreadable, not empty: keep what we knew (already logged by mklayout)
         # tmux is read on the relay loop, so a slow answer is typing lag. If
         # it took long, stop asking for a while rather than stall again.
         if time.monotonic() - now > 0.3:
             self.backoff_until = time.monotonic() + 5.0
+            note_rate("layout-slow", f"layout: the screen read took {time.monotonic() - now:.2f}s on the relay loop; "
+                                     "hover is paused for 5 s")
         # An EMPTY read is an answer, not a failure to keep the old layout
         # through: it means something (a permission prompt, a dialog) is
         # drawn over the status line. Keeping the last good layout there made
@@ -402,6 +422,9 @@ class Stream:
         # A sequence longer than 4096 bytes is not one a terminal emits in
         # practice; past that we call the stream clean rather than hold every
         # paint behind an escape that may never end.
+        if n > 4096:
+            note_once("seq-cap", "the engine's output held an unfinished escape sequence over 4096 bytes: "
+                                 "treated as clean so our paints are not held back (they may land inside it)")
         self.carry = buf[-n:] if 0 < n <= 4096 else b""
         return n == 0 or n > 4096
 
@@ -431,6 +454,7 @@ def selfcheck():
     """The two stream transforms, which are the only logic that can be wrong
     without a terminal to look at. Both are falsifiable in both directions:
     a hover must be taken AND a click must survive."""
+    nflog.ERRLOG = os.devnull           # a selfcheck must not write the real log
     e = ESC.encode()
     # Motion is noted and still forwarded, so the engine's own hover keeps
     # working; a press is noted as no hover.
@@ -535,8 +559,7 @@ def selfcheck():
     assert b"".join(sent) == b"abcdefgh", sent
     # L9: a bug in hover code is absorbed ONCE, loudly, and disables hover; the
     # relay (the caller) keeps going. Control: without the guard it raises.
-    global ERRLOG
-    saved_log, ERRLOG = ERRLOG, os.devnull
+    saved_log, nflog.ERRLOG = nflog.ERRLOG, os.devnull
     try:
         hits, cleaned = [], []
         g = Guard(lambda: None, lambda: cleaned.append(1))
@@ -549,7 +572,7 @@ def selfcheck():
         except ZeroDivisionError:
             pass
     finally:
-        ERRLOG = saved_log
+        nflog.ERRLOG = saved_log
     # Cursor hide/show split across reads is still seen (the per-chunk scan
     # it replaced missed both halves), and the last one wins.
     st = Stream()
@@ -588,30 +611,6 @@ def selfcheck():
     print("nfpty ok")
 
 
-ERRLOG = os.path.expanduser("~/.local/state/nerdflair/nfpty-error.log")
-
-
-_NOTED = set()
-
-
-def note_once(kind, msg, dbg=None):
-    """Record a degraded-but-continuing condition, ONCE per kind per process, in
-    the durable error log (and NFPTY_LOG when set). The rule for this file: a
-    failure that is absorbed must leave a trace somewhere; silence is a bug."""
-    if kind in _NOTED:
-        return
-    _NOTED.add(kind)
-    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {msg}\n"
-    try:
-        os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
-        with open(ERRLOG, "a") as f:
-            f.write(line)
-    except OSError as e:
-        sys.stderr.write(f"nfpty: cannot write {ERRLOG} ({e}); {msg}\n")    # last resort: the user's terminal
-    if dbg:
-        dbg.write(line)
-
-
 def degrade(where, dbg=None):
     """A bug in hover or panel code must not end the user's claude session.
     This is the one place an exception is absorbed, and it is loud: the
@@ -620,14 +619,20 @@ def degrade(where, dbg=None):
     repeat 28 times a second. Relaying the engine's output carries on."""
     import traceback
     text = f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {where} failed, hover disabled\n{traceback.format_exc()}"
-    try:
-        os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
-        with open(ERRLOG, "a") as f:
-            f.write(text)
-    except OSError:
-        pass
+    nflog._write(text)          # to the log, or to stderr if the log cannot be written: never nowhere
     if dbg:
         dbg.write(text)
+
+
+def kill_child(pid, sig):
+    """Signal the child. ESRCH (already gone) is the normal race and silent;
+    anything else (EPERM...) means the signal did not arrive and is logged."""
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+    except OSError as e:
+        note_once(f"kill-{sig}", f"could not send signal {sig} to child {pid}: {e}")
 
 
 class Guard:
@@ -649,7 +654,7 @@ class Guard:
             try:
                 self.cleanup()
             except Exception:
-                pass
+                degrade(f"{what} cleanup (a card may be left painted)", self.get_dbg())
 
 
 def main():
@@ -659,7 +664,11 @@ def main():
         return
     # Popped, not read: the shim hands the real path over by environment, and
     # every tool claude launches would otherwise inherit it.
-    claude = os.environ.pop("CLAUDE_BIN", None) or "claude"
+    claude = os.environ.pop("CLAUDE_BIN", None) or ""
+    if not claude:
+        claude = "claude"
+        note_once("claude-bin-default", "CLAUDE_BIN not set: running 'claude' from PATH "
+                                        f"({__import__('shutil').which('claude') or 'not found'})")
 
     # Say so BEFORE the TUI owns the screen if tmux cannot be reached: layout
     # and backdrop both depend on it, and without it hover fails silently.
@@ -677,17 +686,20 @@ def main():
     stdin_fd = sys.stdin.fileno()
     pane0 = os.environ.get("TMUX_PANE")
     rows, cols = winsize(stdin_fd)
+    if not pane0:
+        # No pane means no layout and no backdrop: hover cannot work at all.
+        msg = "TMUX_PANE is not set: hover panels are disabled (nfpty is not running inside a tmux pane)"
+        note_once("no-tmux-pane", msg)
+        sys.stderr.write(f"nfpty: {msg}\n")          # startup: the TUI does not own the screen yet
+    if os.environ.get("NFPTY_SHADOW", "1") == "0":
+        note_once("shadow-env-off", "NFPTY_SHADOW=0: the shadow screen is disabled by the environment; cards read the live pane")
     shadow = Shadow(rows, cols) if pane0 and os.environ.get("NFPTY_SHADOW", "1") != "0" else None
     if shadow is not None and not shadow.ok:
         # Not silent: without it cards restore stale rows again, and that is
         # otherwise indistinguishable from "working".
-        try:
-            os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
-            with open(ERRLOG, "a") as f:
-                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: shadow screen unavailable "
-                        f"({shadow.why or 'unknown'}); reading the live pane\n")
-        except OSError:
-            pass
+        msg = f"shadow screen unavailable ({shadow.why or 'unknown'}); reading the live pane"
+        note_once("shadow-start", msg)
+        sys.stderr.write(f"nfpty: {msg}\n")          # startup: visible before the TUI starts
         shadow = None                  # no private tmux: read the live pane as before
     resized = [True]            # read the size once after the handler exists, so a resize in the gap is not lost
 
@@ -700,10 +712,7 @@ def main():
     pid, master = pty.fork()
     if pid == 0:                                    # child: become claude
         os.environ["NFPTY"] = "1"
-        try:
-            set_winsize(0, rows, cols)      # before exec: it must never read 0x0
-        except OSError:
-            pass
+        set_winsize(0, rows, cols)          # before exec: it must never read 0x0 (logs by itself if it fails)
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # Python ignores it; the child must not inherit that
         try:
             os.execvp(claude, [claude] + argv)
@@ -738,13 +747,18 @@ def main():
 
     dbg = None
     if os.environ.get("NFPTY_LOG"):
-        dbg = open(os.environ["NFPTY_LOG"], "a", buffering=1)
+        try:
+            dbg = open(os.environ["NFPTY_LOG"], "a", buffering=1)
+            nflog.set_debug_sink(dbg)
+        except OSError as e:
+            note_once("nfpty-log", f"cannot open NFPTY_LOG={os.environ['NFPTY_LOG']} ({e}): debug logging off")
 
     pane = os.environ.get("TMUX_PANE")
     panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
     layout = Layout(pane, shadow)
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
     panel.backdrop.settled = lambda: not pending
+    panel.warn = note_once
 
     old = None
     try:
@@ -766,10 +780,7 @@ def main():
         if quit_sig[0] is None:           # the FIRST signal starts the clock
             quit_at[0] = time.monotonic()
         quit_sig[0] = sig
-        try:
-            os.kill(pid, sig)            # the child decides how to die
-        except OSError:
-            pass
+        kill_child(pid, sig)             # the child decides how to die
 
     for sg in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sg, on_term)
@@ -779,6 +790,7 @@ def main():
     last_motion = [0.0]         # when the pointer last reported; the watchdog below uses it
     on_card = [False]           # whether that last report was on the card OR on the readout that opens it
     retry = [None]              # (col, row, t) of a hover whose card was deferred
+    drops: dict = {}            # deliberate degradations, counted and reported once at exit
     at_edge = [False]           # last report was on an edge row/column: the pointer is probably leaving
 
     def _drop_card():
@@ -885,7 +897,7 @@ def main():
                     raise
                 if not data:
                     break
-                note_modes(data, dbg)
+                guarded("note_modes", note_modes, data, dbg)
                 out.write(data)
                 out.flush()
                 clean[0] = stream.feed(data)
@@ -922,6 +934,7 @@ def main():
                 except OSError as e:
                     if e.errno in (errno.EAGAIN, errno.EINTR):
                         continue          # a shared non-blocking tty is not end of input
+                    note_once("stdin-read", f"stdin read failed ({e}): treating it as the terminal going away and ending the session")
                     break
                 if not data:
                     break
@@ -957,6 +970,7 @@ def main():
             # A held fragment that never completes is not a mouse report, and
             # is dropped rather than typed into the engine as stray text.
             if tail and now - tail_since[0] > 0.3:
+                drops["held input fragment dropped (never became a mouse report)"] = drops.get("held input fragment dropped (never became a mouse report)", 0) + 1
                 tail = b""
 
             # An engine that stalls inside a sequence must not hold our paints
@@ -964,18 +978,19 @@ def main():
             if pending and not clean[0] and unclean_since[0] and now - unclean_since[0] > 0.5:
                 clean[0] = True
                 unclean_since[0] = 0.0
+                drops["forced 'clean' after a 0.5 s unfinished sequence"] = drops.get("forced 'clean' after a 0.5 s unfinished sequence", 0) + 1
                 flush_pending()
             if len(pending) > 64:
                 # Drop old frames, never the writes that put rows back: an
                 # erase lost here leaves a ghost the panel thinks is gone.
+                before = len(pending)
                 trim_pending(pending)
+                drops["animation frames trimmed from a backed-up queue"] = drops.get("animation frames trimmed from a backed-up queue", 0) + before - len(pending)
 
             # A forwarded signal the child ignores must not trap us here.
             if quit_sig[0] is not None and status_box[0] is None and now - quit_at[0] > 2.0:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+                note_once("sigkill", f"child {pid} ignored signal {quit_sig[0]} for 2 s: sent SIGKILL")
+                kill_child(pid, signal.SIGKILL)
 
             # Watchdog: a card up with no pointer report for WATCHDOG seconds (the
             # pointer left the window, so no more reports come) is taken down.
@@ -1002,19 +1017,28 @@ def main():
             flush_pending()
             out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
             out.flush()
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as e:
+            # EIO/EPIPE here is the terminal having hung up (the window was closed):
+            # the normal way a session ends, and nothing is left to reset.
+            if getattr(e, "errno", None) not in (errno.EIO, errno.EPIPE):
+                note_once("exit-reset-write", f"could not write the terminal reset on exit ({e}): mouse reporting/cursor may be left on")
         if old is not None:
             try:
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
-            except (termios.error, OSError):
-                pass                  # the terminal is gone; the reap below still must run
+            except (termios.error, OSError) as e:
+                # The reap below still must run. EIO is the terminal having gone
+                # (nothing to restore); anything else may leave it in raw mode.
+                if (e.args[0] if e.args else None) not in (errno.EIO, errno.EBADF):
+                    note_once("exit-tcsetattr", f"could not restore the terminal mode on exit ({e}): the terminal may be left in raw mode")
         try:
             os.close(master)
-        except OSError:
-            pass
+        except OSError as e:
+            note_once("exit-close-master", f"closing the pty master failed ({e})")
         if shadow is not None:
             shadow.close()
+        for what, n in drops.items():
+            if n:
+                note_once("drops-" + what[:20], f"{n} x {what} this session")
 
     # The loop is over: a late TERM/HUP must not reach a pid we are about to
     # (or already did) reap, so the handlers go back to their defaults.
@@ -1033,10 +1057,8 @@ def main():
             else:
                 time.sleep(0.05)
         if status is None:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            note_once("sigkill-final", f"child {pid} did not exit within 2 s of the terminal going away: sent SIGKILL")
+            kill_child(pid, signal.SIGKILL)
             _, status = os.waitpid(pid, 0)
             status_box[0] = status
     code = os.waitstatus_to_exitcode(status)

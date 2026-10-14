@@ -24,6 +24,8 @@ import subprocess
 import sys
 import unicodedata
 
+import nflog
+
 ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 GAP = re.compile(r"\s{3,}")
 SEP = " · "
@@ -232,13 +234,17 @@ CONTEXT_ROW = re.compile(CARDS[[c[0] for c in CARDS].index("context")][1])
 def build(target, skip=(), shadow=None):
     """Every readout on the status line of `target`, or [] if there is none.
     See build_ex; this is the list alone."""
-    return build_ex(target, skip, shadow)[0]
+    return build_ex(target, skip, shadow)[0] or []
 
 
 def build_ex(target, skip=(), shadow=None):
     """(segments, truth): every readout on the status line, and whether they
     were read from the engine's own screen (`shadow`), in which case no row is
     ever covered by a card and `skip` is not applied.
+
+    segments is None (not []) when the screen could not be READ at all (tmux
+    missing, hung or answering an error): "unreadable" is not "no readouts",
+    and the caller must not treat it as a dialog covering the status line.
 
     Every readout on the status line of `target`, or [] if there is none.
 
@@ -257,8 +263,14 @@ def build_ex(target, skip=(), shadow=None):
         try:
             r = subprocess.run(["tmux", "capture-pane", "-p", "-t", target],
                                capture_output=True, encoding="utf-8", errors="replace", timeout=0.5)
-        except (OSError, subprocess.SubprocessError):
-            return [], False
+        except (OSError, subprocess.SubprocessError) as e:
+            nflog.note_rate("layout-tmux", f"layout: tmux capture-pane failed ({type(e).__name__}: {e}); "
+                                           "hover keeps its last layout until tmux answers")
+            return None, False
+        if r.returncode != 0:
+            nflog.note_rate("layout-rc", f"layout: tmux capture-pane exit {r.returncode}: "
+                                         f"{r.stderr.strip() or 'no output'}; hover keeps its last layout")
+            return None, False
     if truth:
         skip = ()               # the shadow never has a card on it
     raw = r.stdout.split("\n")

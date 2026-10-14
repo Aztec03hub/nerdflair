@@ -16,6 +16,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = "nf-linger"
+ERRLOG = "/tmp/nf-linger.errlog"
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
@@ -25,6 +26,18 @@ sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
 while True:
     time.sleep(1)
 '''
+
+
+def errlog_must_be_empty():
+    """A healthy run absorbs nothing: the bridge's error log must not exist or be empty.
+    Anything in it is a degradation that happened, and the e2e treats it as a failure."""
+    try:
+        with open(ERRLOG) as f:
+            text = f.read().strip()
+    except FileNotFoundError:
+        text = ""
+    print(f"  {'PASS' if not text else 'FAIL'}  healthy run logged no degradation" + ("" if not text else "\n" + text))
+    return bool(text)
 
 
 def tmux(*a):
@@ -44,7 +57,7 @@ def scenario(name):
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)
-    tmux("new-window", "-d", "-n", WIN, f"CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+    tmux("new-window", "-d", "-n", WIN, f"NFPTY_ERRLOG={ERRLOG} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     try:
         time.sleep(2)
@@ -88,6 +101,10 @@ def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     fails = 0
+    try:
+        os.unlink(ERRLOG)
+    except FileNotFoundError:
+        pass
     for name, (lo, hi) in EXPECT.items():
         got = scenario(name)
         if got.startswith(">8s"):
@@ -101,6 +118,7 @@ def main():
                 ok = False
         fails += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {name:10s} card gone after {got} (allowed {lo}-{hi}s; >8s means still up)")
+    fails += errlog_must_be_empty()
     print(f"\nhover-linger: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
 

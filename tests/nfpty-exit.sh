@@ -10,6 +10,8 @@
 # Needs no tmux and no terminal. stdin is an OPEN pipe, as a terminal is: with
 # stdin at EOF nfpty correctly treats it as a hangup and takes the child down.
 set -uo pipefail
+# These tests kill and hang up children on purpose: keep their expected log lines out of the real log.
+export NFPTY_ERRLOG="${TMPDIR:-/tmp}/nfpty-exit.errlog"
 
 NFPTY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/band/bridge/nfpty.py"
 fail=0

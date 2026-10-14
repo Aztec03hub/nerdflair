@@ -21,6 +21,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = "nf-covered"
+ERRLOG = "/tmp/nf-covered.errlog"
 
 FAKE = r'''
 import os, sys, time
@@ -54,6 +55,10 @@ def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     flag = "/tmp/nf-covered.flag"
+    try:
+        os.unlink(ERRLOG)
+    except FileNotFoundError:
+        pass
     with open(flag, "w") as f:
         f.write("status")
     fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
@@ -62,7 +67,7 @@ def main():
     fake.close()
     tmux("kill-window", "-t", WIN)
     tmux("new-window", "-d", "-n", WIN,
-         f"CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+         f"NFPTY_ERRLOG={ERRLOG} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     fails = 0
 
@@ -92,6 +97,13 @@ def main():
         tmux("kill-window", "-t", target)
         os.unlink(fake.name)
         os.unlink(flag)
+    try:
+        with open(ERRLOG) as f:
+            logged = f.read().strip()
+    except FileNotFoundError:
+        logged = ""
+    print(f"  {'PASS' if not logged else 'FAIL'}  healthy run logged no degradation" + ("" if not logged else "\n" + logged))
+    fails += bool(logged)
     print(f"\nhover-covered-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
 
