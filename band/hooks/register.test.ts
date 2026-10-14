@@ -89,6 +89,27 @@ test('printenv rejecting (spawn failure or timeout) is reported, not thrown thro
   expect(w.logs.some(l => l.includes('HOME lookup') && l.includes('ENOENT'))).toBe(true)
 })
 
+test('an aborted printenv (superseded render) is retried on the next render, never drawn red or backed off', async ($, on) => {
+  let n = 0
+  const { w } = world(on, argv => (argv[0] === 'printenv' && ++n === 1 ? { deny: 'HooksError: $.process.run(printenv) aborted' } : ok(argv)))
+
+  const a = textOf(await $.ui.render(BAND as never))
+  const b = textOf(await $.ui.render(BAND as never))
+
+  expect(a).not.toContain('HOME lookup')
+  expect(b).not.toContain('HOME lookup')
+  expect(n, 'second render looked HOME up again, no 30 s wait').toBe(2)
+  expect(w.logs.some(l => l.includes('HOME lookup'))).toBe(false)
+})
+
+test('printenv aborted on five renders in a row is reported, so a permanently cut-off render is not silent', async ($, on) => {
+  const { w } = world(on, argv => (argv[0] === 'printenv' ? { deny: 'HooksError: $.process.run(printenv) aborted' } : ok(argv)))
+
+  for (let i = 0; i < 5; i++) await $.ui.render(BAND as never)
+
+  expect(w.logs.filter(l => l.includes('HOME lookup') && l.includes('5 renders in a row')).length).toBe(1)
+})
+
 test('renderer exit 1 shows the exit code and stderr and is logged', async ($, on) => {
   const { w } = world(on, argv => (argv[0] === 'printenv' ? ok(argv) : result(1, '', 'no such flag --json')))
 

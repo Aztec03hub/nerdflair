@@ -21,6 +21,14 @@ import type { Hook, Register } from 'claude-code'
 // on exactly one machine.
 let HOME = ''
 let homeLookup: Promise<void> | null = null // the lookup in flight: overlapping renders share it instead of seeing HOME empty
+// The engine aborts a hook's in-flight $.process.run when that render is superseded. That is
+// not a failure of the lookup or the renderer: it is retried on the next render, not backed
+// off and not drawn red. Only a run of consecutive aborts is reported (it would mean every
+// render is being cut off, which the user must be told).
+const isAbort = (err: unknown) => /abort/i.test(String(err))
+const ABORT_REPORT_AFTER = 5
+let abortStreak = 0
+let runAborted = false // the refresh that just ended was aborted, not failed
 let homeTriedAt = -Infinity // when the HOME lookup last ran: a failing one is retried every 30 s, not every render
 const BIN = () => `${HOME}/.local/bin/nerdflair-statusline`
 // The popup helper, installed beside this file. tmux draws it, because the
@@ -304,6 +312,8 @@ export function resetStateForTests(): void {
   HOME = ''
   homeTriedAt = -Infinity
   homeLookup = null
+  abortStreak = 0
+  runAborted = false
   cache = null
   lastError = ''
   inflight = null
@@ -364,10 +374,16 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
         HOME = h.exitCode === 0 ? h.stdout.trim() : ''
         if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
+        abortStreak = 0
       } catch (err) {
-        why = `printenv HOME failed: ${err}`
+        if (isAbort(err)) {
+          homeTriedAt = -Infinity // retry on the very next render
+          if (++abortStreak >= ABORT_REPORT_AFTER) why = `printenv HOME aborted ${abortStreak} renders in a row: ${err}`
+        } else {
+          why = `printenv HOME failed: ${err}`
+        }
       }
-      if (!HOME) report($, 'HOME lookup', why)
+      if (!HOME && why) report($, 'HOME lookup', why)
     })().finally(() => {
       homeLookup = null
     })
@@ -521,7 +537,10 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         // drew nothing with no way to find out why. It is reported, with the
         // step that failed, to the debug log and into the band.
         const msg = String(err)
-        if (stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) {
+        if (isAbort(err)) {
+          runAborted = true
+          if (++abortStreak >= ABORT_REPORT_AFTER) report($, `refresh aborted ${abortStreak} renders in a row at ${stage}`, msg)
+        } else if (stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) {
           report($, `renderer not found at ${BIN()}; run the installer`, msg)
         } else if (stage === 'run' && /time(d)? ?out/i.test(msg)) {
           report($, 'renderer timed out (5 s)', msg)
@@ -546,16 +565,20 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       if (lastError) seen.delete(lastError)
       lastError = ''
       lastFailAt = 0
+      abortStreak = 0
     } else {
       // A renderer that keeps failing must not leave figures frozen as if
       // they were live: until 30 s pass the old ones stay, marked `stale`
       // below with the reason; after that they go and the red error shows.
       // Back off: a renderer that fails is not re-run on every render. Stamped AFTER the
       // refresh settled (a 5 s timeout would otherwise leave a stamp 5 s old, no back-off).
-      lastFailAt = await $.clock.now().catch((err: unknown) => {
-        note($, 'clock', `clock.now() rejected after a failed refresh; using the earlier time: ${err}`)
-        return now
-      })
+      if (runAborted) runAborted = false // superseded, not failed: no back-off, the next render retries
+      else {
+        lastFailAt = await $.clock.now().catch((err: unknown) => {
+          note($, 'clock', `clock.now() rejected after a failed refresh; using the earlier time: ${err}`)
+          return now
+        })
+      }
       if (cache && now - cache.at > STALE_MS) cache = null
     }
   }
