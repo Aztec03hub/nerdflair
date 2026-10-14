@@ -27,11 +27,18 @@ cp -rf "$HERE/.claude-plugin/types" "$DEST/.claude-plugin/"
 cp -f "$HERE/hooks/hooks.json" "$HERE/hooks/register.tsx" "$DEST/hooks/"
 cp -f "$HERE/popup.sh" "$HERE/tsconfig.json" "$DEST/"
 
-if claude plugin list --json | python3 -c '
+# Not `if claude plugin list | python3 ...`: inside an if condition set -e and
+# pipefail are off, so a failing `claude plugin list` (crash, not logged in, bad
+# JSON) would read as "not installed" and run install. Fail loudly instead.
+list=$(claude plugin list --json) || { echo "sync: 'claude plugin list --json' failed; not guessing whether the plugin is installed" >&2; exit 1; }
+if present=$(python3 -c '
 import sys, json
-sys.exit(0 if any(p["id"] == "nerdflair-band@local" for p in json.load(sys.stdin)) else 1)'; then
+sys.exit(0 if any(p["id"] == "nerdflair-band@local" for p in json.load(sys.stdin)) else 1)' <<<"$list" 2>&1); then
   claude plugin update nerdflair-band@local
 else
+  rc=$?
+  # python's exit 1 is "not in the list"; anything else (a traceback, bad JSON) is a failure
+  if (( rc != 1 )) || [[ -n "$present" ]]; then echo "sync: could not read the plugin list: ${present##*$'\n'}" >&2; exit 1; fi
   claude plugin install nerdflair-band@local
 fi
 

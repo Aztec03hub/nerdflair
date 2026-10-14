@@ -18,10 +18,12 @@ check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf ' 
 for label in unset empty; do
   rm -rf -- "$WORK/run"; mkdir "$WORK/run"
   if [[ $label == unset ]]; then
-    (cd "$WORK/run" && env -i PATH=/usr/bin:/bin "$BIN" < "$PAYLOAD" >/dev/null 2>&1)
+    (cd "$WORK/run" && env -i PATH=/usr/bin:/bin "$BIN" < "$PAYLOAD" >"$WORK/out" 2>"$WORK/err"); rc=$?
   else
-    (cd "$WORK/run" && env -i PATH=/usr/bin:/bin HOME= "$BIN" < "$PAYLOAD" >/dev/null 2>&1)
+    (cd "$WORK/run" && env -i PATH=/usr/bin:/bin HOME= "$BIN" < "$PAYLOAD" >"$WORK/out" 2>"$WORK/err"); rc=$?
   fi
+  # A binary that crashed at start writes nothing either, so assert it ran.
+  check "HOME $label: the renderer ran (exit 0, non-empty output)" "0 yes" "$rc $([[ -s "$WORK/out" ]] && echo yes || echo no; [[ $rc != 0 ]] && head -3 "$WORK/err" >&2)"
   check "HOME $label: nothing written to the working directory" 0 "$(find "$WORK/run" -mindepth 1 | wc -l)"
 done
 

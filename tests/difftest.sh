@@ -122,7 +122,12 @@ trap _cleanup EXIT
 FIXROOT="/tmp/nerdflair-difftest-fixtures"
 FIX_STAMP="$FIXROOT/.built-v3"
 
-_gitq() { git -c protocol.file.allow=always "$@" >/dev/null 2>&1; }
+# A failed fixture step aborts the build: both sides would otherwise read the same
+# broken fixture, compare equal and pass vacuously.
+_gitq() {
+  local out
+  out=$(git -c protocol.file.allow=always "$@" 2>&1) || { echo "difftest: fixture step failed: git $*: $out" >&2; exit 2; }
+}
 
 build_fixtures() {
   rm -rf "$FIXROOT"; mkdir -p "$FIXROOT"
@@ -448,7 +453,7 @@ maybe_normalize() {
 # the whole run: a corpus-wide epoch decays as the run proceeds and eventually
 # lets a rate-limit countdown tick over a minute boundary BETWEEN the two sides.
 PINNED_NOW=$EPOCHSECONDS
-TOTAL=0; SAME=0; FAILED=(); NOISY=(); UNSTABLE=(); SKIPPED=0
+TOTAL=0; SAME=0; FAILED=(); NOISY=(); UNSTABLE=(); SKIPPED=0; BOTHFAIL=()
 
 printf '%s╭─ difftest: %s%s\n' "$C_DIM" "$MODE" "$C_RST"
 printf '%s│  A = %s%s\n' "$C_DIM" "$SIDE_A" "$C_RST"
@@ -545,6 +550,9 @@ for id in "${CASES[@]}"; do
   # stderr: compare EMPTINESS PARITY, not byte equality. A Rust diagnostic will
   # never match jq's wording, but "one side is silent and the other is not" is a
   # real behavioural difference and must fail. Both noisy is reported, not failed.
+  # Both sides failing the same way is "identical" but may be a shared fixture
+  # problem rather than the behaviour under test: surfaced as a note, below.
+  [[ "$rcA" == "$rcB" && "$rcA" != 0 ]] && BOTHFAIL+=("$id=$rcA")
   if (( (errA > 0) != (errB > 0) )); then
     problems+=("stderr emptiness differs: A=${errA}B B=${errB}B")
   elif (( errA > 0 )); then
@@ -584,6 +592,8 @@ for u in ${UNSTABLE[@]+"${UNSTABLE[@]}"}; do
 done
 (( ${#_only_unstable[@]} )) && printf '%sUNSTABLE (differed once, matched on retry): %s%s\n' \
   "$C_YEL" "${_only_unstable[*]}" "$C_RST"
+(( ${#BOTHFAIL[@]} )) && printf '%snote: both sides exited non-zero, identically, on: %s (check these are expected failures)%s\n' \
+  "$C_YEL" "${BOTHFAIL[*]}" "$C_RST"
 (( ${#NOISY[@]} )) && printf '%snote: both sides wrote to stderr on: %s%s\n' \
   "$C_YEL" "${NOISY[*]}" "$C_RST"
 if (( ${#FAILED[@]} == 0 )); then

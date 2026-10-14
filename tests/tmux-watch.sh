@@ -12,9 +12,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCH="$REPO/band/hover/nf-tmux-watch"
 command -v tmux >/dev/null && command -v ss >/dev/null || { echo "tmux-watch: needs tmux and ss" >&2; exit 77; }
 
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-watch-XXXXXX")
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-watch-XXXXXX") || exit 1
 export TMUX_TMPDIR="$ROOT" NF_TMUX_WATCH_LOG="$ROOT/log" NF_TMUX_HEAL="$REPO/band/hover/nf-tmux-heal" NF_TMUX_WATCH_RESCAN=1
 unset TMUX
+export NF_STATE_DIR="$ROOT/state"   # heal/watch failure logs go here, never the real ~/.local/state
 fail=0
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 reachable() { tmux ls >/dev/null 2>&1; echo $?; }

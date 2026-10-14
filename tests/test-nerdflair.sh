@@ -30,16 +30,13 @@ _setup() {
   mkdir -p "$FAKE_CWD"
 
   # Minimal git repo so renderer can detect branch
-  (
-    cd "$FAKE_CWD"
-    git init -q
-    git checkout -q -b main
-    echo "hello" > file.txt
-    git add -A
-    git commit -q -m "init"
-    git checkout -q -b feature/test-branch
-    echo "change" >> file.txt
-  ) >/dev/null 2>&1
+  # chained with &&: set -e is ignored inside an if condition, so a failed step must stop the chain itself
+  if ! ( cd "$FAKE_CWD" && git init -q && git checkout -q -b main && echo "hello" > file.txt \
+         && git add -A && git commit -q -m "init" && git checkout -q -b feature/test-branch \
+         && echo "change" >> file.txt ) >"$TMPDIR_ROOT/fixture.log" 2>&1; then
+    # A bad fixture must not let tests run against it and pass or fail for the wrong reason.
+    _fail=$((_fail + 1)); _errors+=("fixture git setup failed: $(tail -3 "$TMPDIR_ROOT/fixture.log" | tr '\n' ' ')")
+  fi
 }
 
 _teardown() {
@@ -770,9 +767,11 @@ for t in "${_tests[@]}"; do
   _pass=0
   _fail=0
   _errors=()
-  if "$t" 2>/dev/null; then
+  # stderr kept per test and shown on FAIL: `FAIL (crashed)` must say why.
+  if "$t" 2>"$_results_dir/$t.err"; then
     if (( _fail > 0 )); then
       echo "FAIL"
+      [[ -s "$_results_dir/$t.err" ]] && sed 's/^/      stderr: /' "$_results_dir/$t.err" | tail -5
       echo "$_fail" >> "$_results_dir/fails"
       for e in "${_errors[@]}"; do
         echo "$e" >> "$_results_dir/errors"
@@ -783,6 +782,7 @@ for t in "${_tests[@]}"; do
     fi
   else
     echo "FAIL (crashed)"
+    [[ -s "$_results_dir/$t.err" ]] && sed 's/^/      stderr: /' "$_results_dir/$t.err" | tail -5
     echo "1" >> "$_results_dir/fails"
     echo "FAIL: $t -- crashed or exited nonzero" >> "$_results_dir/errors"
   fi

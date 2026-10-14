@@ -91,18 +91,26 @@ def recount(start, end, root=None):
         try:
             if os.path.getmtime(path) < start:
                 continue
-        except OSError:
+        except OSError as e:
+            print(f"price-recount: SKIPPED unreadable transcript {path}: {e} (the recount is LOWER than reality)", file=sys.stderr)
             continue
         sid = os.path.basename(path)[:-6]
         if os.sep + "subagents" + os.sep in path:
             sid = path.split(os.sep + "subagents" + os.sep)[0].rsplit(os.sep, 1)[-1]
-        with open(path, errors="replace") as f:
+        try:
+            f = open(path, errors="replace")
+        except OSError as e:
+            print(f"price-recount: SKIPPED unreadable transcript {path}: {e} (the recount is LOWER than reality)", file=sys.stderr)
+            continue
+        bad = 0
+        with f:
             for line in f:
                 if '"usage"' not in line:
                     continue
                 try:
                     d = json.loads(line)
                 except ValueError:
+                    bad += 1
                     continue
                 m = d.get("message")
                 if not isinstance(m, dict) or not m.get("usage") or not d.get("timestamp"):
@@ -111,6 +119,8 @@ def recount(start, end, root=None):
                 if not (start <= t < end):
                     continue
                 seen[m.get("id") or f"{path}:{d.get('uuid')}"] = (sid, m.get("model") or "", m["usage"])
+        if bad:
+            print(f"price-recount: SKIPPED {bad} malformed line(s) in {path} (the recount is LOWER than reality)", file=sys.stderr)
     total, unpriced, per = 0.0, {}, {}
     for sid, model, usage in seen.values():
         c = cost_of(usage, model)

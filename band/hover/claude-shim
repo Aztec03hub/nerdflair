@@ -8,18 +8,28 @@
 # the real claude is exec'd, never a failure, never a loop. "Can work" is
 # checked, not assumed: the wrapper's own modules must import under this
 # python3, so a broken or too-old python never stands between you and claude.
+#
+# Every time it falls back to plain claude because something is BROKEN (as
+# opposed to a deliberate no-wrap case) it says why in
+# ~/.local/state/nerdflair/launcher.log, once an hour per reason (nf-log.sh).
 set -u
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOVER="$SELF_DIR/../hover"
+# shellcheck source=nf-log.sh
+if [[ -r "$SELF_DIR/nf-log.sh" ]]; then . "$SELF_DIR/nf-log.sh"; else nf_log() { :; }; fi   # a missing logger must never stop claude
 
 real=""
 IFS=: read -ra dirs <<<"$PATH"
 for d in "${dirs[@]}"; do
+  # Probing PATH entries that may not exist: silent by design.
   [[ -z "$d" || "$(cd "$d" 2>/dev/null && pwd)" == "$SELF_DIR" ]] && continue
   [[ -x "$d/claude" && ! -d "$d/claude" ]] || continue
   # A symlink that leads back to this shim (a symlinked PATH entry, a link to
-  # the shim) would make it exec itself forever.
-  [[ "$(readlink -f "$d/claude")" == "$(readlink -f "${BASH_SOURCE[0]}")" ]] && continue
+  # the shim) would make it exec itself forever. If readlink cannot resolve
+  # (BusyBox, odd mount) both sides are empty and would compare equal and skip
+  # every candidate, so only compare real answers.
+  cand=$(readlink -f "$d/claude" 2>/dev/null) me=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)
+  [[ -n "$cand" && "$cand" == "$me" ]] && continue
   real="$d/claude"; break
 done
 if [[ -z "$real" ]]; then
@@ -27,23 +37,65 @@ if [[ -z "$real" ]]; then
 fi
 
 wrap=1
+# The next five are deliberate no-wrap cases (already wrapped, opted out, pipes,
+# not in tmux, claude's own subcommands), not failures: intentionally silent.
 [[ -n "${NFPTY:-}" || "${NERDFLAIR_HOVER:-1}" == 0 ]] && wrap=0   # already wrapped, or opted out
 [[ -t 0 && -t 1 && -t 2 ]] || wrap=0                               # pipes, -p, scripts, and `claude 2>log` (the child's stderr would be the pty)
 [[ -n "${TMUX:-}" ]] || wrap=0                                    # panels need tmux to restore what they cover
-{ [[ -f "$HOVER/nfpty.py" ]] && command -v python3 >/dev/null; } || wrap=0   # dangling link: plain claude
-# Import check, about 30ms: catches python older than the wrapper needs and a
-# broken install before they can take claude down with them.
-(( wrap )) && { python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import mklayout, panel, nfpty" "$HOVER" >/dev/null 2>&1 || wrap=0; }
 for a in "$@"; do
   case "$a" in -p|--print|-v|--version|-h|--help) wrap=0 ;; esac
 done
 case "${1:-}" in mcp|plugin|plugins|config|update|upgrade|doctor|install|setup-token|migrate-installer|auth|agents) wrap=0 ;; esac
 
 if (( wrap )); then
-  "$SELF_DIR/nf-tmux-heal" 2>/dev/null || true
+  # From here wrapping was wanted, so a fallback means something is broken: log why.
+  if [[ ! -f "$HOVER/nfpty.py" ]]; then
+    nf_log shim "nfpty.py not found at $HOVER (hover link dangling; run band/hover/install.sh); running plain claude"; wrap=0
+  elif ! command -v python3 >/dev/null 2>&1; then
+    nf_log shim "python3 not on PATH; hover disabled, running plain claude"; wrap=0
+  else
+    # Import check, about 30ms: catches python older than the wrapper needs and a
+    # broken install before they can take claude down with them.
+    err=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import mklayout, panel, nfpty" "$HOVER" 2>&1 >/dev/null) || {
+      err=${err##*$'\n'}
+      nf_log shim "hover import check failed (${err:-no message}); hover disabled, running plain claude"; wrap=0
+    }
+  fi
+fi
+
+if (( wrap )); then
+  # nf-tmux-heal logs its own failures (to launcher.log, with the reason); its
+  # stderr is only noise here. A crash of heal itself is logged below.
+  herr=$("$SELF_DIR/nf-tmux-heal" 2>&1 >/dev/null); hrc=$?
+  if (( hrc != 0 && hrc != 3 )); then nf_log shim "nf-tmux-heal rc=$hrc: ${herr##*$'\n'}"; fi
   export CLAUDE_BIN="$real"
+  export NF_LOG_SH="$SELF_DIR/nf-log.sh"
+  # nfpty is started through a small bootstrap, not exec'd directly: if it dies
+  # BEFORE it has forked claude (a python error at startup), claude is exec'd
+  # plain with the reason logged, so a hover bug can never be a lockout. After
+  # the fork the relay owns the session and nothing is retried.
   # argv[0] is "claude" because tmux names the window from the foreground
   # process's argv[0]; without this every window read "python3".
-  exec -a claude python3 "$HOVER/nfpty.py" "$@"
+  exec -a claude python3 -c '
+import os, pty, runpy, subprocess, sys
+hover, args, real = sys.argv[1], sys.argv[2:], os.environ.get("CLAUDE_BIN")
+forked = []
+_fork = pty.fork
+pty.fork = lambda: (forked.append(1), _fork())[1]
+sys.path.insert(0, hover)
+sys.argv = [os.path.join(hover, "nfpty.py")] + args
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+except SystemExit:
+    raise
+except BaseException as e:
+    if forked or not real:
+        raise
+    why = "hover failed to start (%s: %s); running plain claude" % (type(e).__name__, str(e).strip().splitlines()[-1] if str(e).strip() else "no message")
+    subprocess.run(["bash", "-c", ". \"$1\"; nf_log shim \"$2\"", "nf-boot", os.environ.get("NF_LOG_SH", "/nonexistent"), why], check=False)
+    sys.stderr.write("nerdflair: " + why + " (see ~/.local/state/nerdflair/launcher.log)\n")
+    os.environ.pop("NFPTY", None)
+    os.execv(real, [real] + args)
+' "$HOVER" "$@"
 fi
 exec "$real" "$@"
