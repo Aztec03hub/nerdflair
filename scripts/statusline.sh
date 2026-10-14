@@ -49,7 +49,9 @@ fi
 # deadline. Without EPOCHREALTIME (bash < 5) it assumes it did, as before.
 _nf_ran_to_deadline() {
   [[ -n "${EPOCHREALTIME:-}" && -n "${_NF_TMO_US:-}" && -n "$1" ]] || return 0
-  (( ${EPOCHREALTIME/./} - $1 >= _NF_TMO_US ))
+  local _n=${EPOCHREALTIME//[.,]/}   # the radix follows the locale
+  [[ "$_n" =~ ^[0-9]+$ && "$1" =~ ^[0-9]+$ ]] || return 0
+  (( _n - $1 >= _NF_TMO_US ))
 }
 # _nf_cmd LABEL QUIET_ERE cmd args...   stdout -> $_NF_OUT, returns the command's rc.
 # Cannot-run (126/127) and timeout (124) are always logged. A plain non-zero exit
@@ -63,7 +65,7 @@ _nf_cmd() {
     [[ -z "${_NF_GIT_TIMED_OUT:-}" ]] && _nf_recent git-hung 60 && _NF_GIT_TIMED_OUT=1
     if [[ -n "${_NF_GIT_TIMED_OUT:-}" ]]; then _NF_OUT=""; return 124; fi
   fi
-  local _t0=${EPOCHREALTIME/./}
+  local _t0=${EPOCHREALTIME//[.,]/}
   _NF_OUT=$("${_NF_TCMD[@]+"${_NF_TCMD[@]}"}" "$@" 2>"$_SL_BUF.err"); _rc=$?
   if (( _rc != 0 )); then
     _e=$(< "$_SL_BUF.err")

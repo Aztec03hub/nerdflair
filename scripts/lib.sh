@@ -63,8 +63,8 @@ _nf_stamp_dir() {
     # Say so once an hour, via a marker in ~/.claude (twin of errlog::stamp_dir_bad).
     local _m="${_h%/}/.claude/.nerdflair-stamp-dir-bad"
     # -L too: a dangling symlink "does not exist" to -e, yet the write below refuses it.
-    if [[ -L "$_m" ]]; then :   # a symlink marker can never be written (O_NOFOLLOW), so it cannot rate limit: stay quiet
-    elif [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
+    # A symlink marker can never be written (O_NOFOLLOW): not recent, so log once per render.
+    if [[ -L "$_m" ]] || [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
       _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only"
       [[ -L "$_m" ]] || : > "$_m" 2>/dev/null
     fi

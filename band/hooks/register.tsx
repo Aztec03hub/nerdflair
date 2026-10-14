@@ -552,7 +552,10 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       // below with the reason; after that they go and the red error shows.
       // Back off: a renderer that fails is not re-run on every render. Stamped AFTER the
       // refresh settled (a 5 s timeout would otherwise leave a stamp 5 s old, no back-off).
-      lastFailAt = await $.clock.now()
+      lastFailAt = await $.clock.now().catch((err: unknown) => {
+        note($, 'clock', `clock.now() rejected after a failed refresh; using the earlier time: ${err}`)
+        return now
+      })
       if (cache && now - cache.at > STALE_MS) cache = null
     }
   }

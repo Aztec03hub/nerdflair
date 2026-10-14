@@ -78,10 +78,11 @@ fn stamp_dir() -> Option<&'static PathBuf> {
 /// own OnceLock initialiser and deadlock. Twin of lib.sh `_nf_stamp_dir`.
 fn stamp_dir_bad(dir: &std::path::Path, why: &str) {
     let marker = dir.with_file_name(".nerdflair-stamp-dir-bad");
-    // A symlink marker can never be written (O_NOFOLLOW), so it cannot rate limit: stay quiet
-    // rather than repeat the line every render. exists() would call a dangling link absent.
+    // A symlink marker can never be written (O_NOFOLLOW), so it cannot rate limit: it counts as
+    // "not recent" and the line is logged once per render, the honest outcome. exists() would
+    // call a dangling link absent.
     match std::fs::symlink_metadata(&marker) {
-        Ok(m) if m.file_type().is_symlink() || file_age(&marker) < RATE_SECS => return,
+        Ok(m) if !m.file_type().is_symlink() && file_age(&marker) < RATE_SECS => return,
         _ => {}
     }
     emit("stamp-dir", &format!("{} is unusable ({}); rate limits and back-offs work per render only", dir.display(), why));

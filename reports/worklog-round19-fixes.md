@@ -61,3 +61,10 @@ Report item 4 (no-timeout ordering) needed no action.
 
 Old-code check (scripts, rust/src, register.tsx stashed): silent-failures failed on stamp-marker-dangling [both], git-killed-externally [bash] (both checks), bell.sh volume, lib.sh volume. Stash popped, list empty.
 Final runs: silent-failures PASS; difftest 164/164 identical (one run showed payload 145 UNSTABLE, differed once and matched on retry; two reruns were clean); bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail.
+
+# Round 23 fixes (uncommitted, on 18f86a3)
+1. Stamp-dir marker: a symlink marker now counts as "not recent" in both twins (errlog.rs `!is_symlink() && age < RATE`; lib.sh one `if [[ -L ]] || [[ ! -e ]] || age >= 3600`), so the line is logged once per render. `stamp-marker-dangling` now expects 4 (old code: 0 lines, failed in both twins).
+2. `_nf_ran_to_deadline` and `_nf_cmd` strip `EPOCHREALTIME` with `//[.,]/` and treat a non-numeric result as "ran to the deadline" (no arithmetic error). Not testable here: only the C locale is installed.
+3. register.tsx: `lastFailAt = await $.clock.now()` is guarded like the success path (note `clock`, falls back to the earlier time). No test (mock.clock cannot reject).
+4. New Rust case `git-killed-externally-rs`: a SIGKILLed git logs `git:status:signal` (not `timeout:`) and arms no `git-hung` stamp.
+Final runs: silent-failures PASS; difftest 164/164 identical; bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail. Stash list empty.

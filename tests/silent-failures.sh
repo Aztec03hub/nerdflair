@@ -290,7 +290,7 @@ s_usage_float() {   # no usage figures in the payload; the transcript's last usa
   printf '{"message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1,"cache_read_input_tokens":12.5,"output_tokens":3}}}\n' > "$CASE_DIR/t.jsonl"
   PAYLOAD=$(printf '{"session_id":"%s-u","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s","project_dir":"%s"},"transcript_path":"%s/t.jsonl","context_window":{"context_window_size":200000},"cost":{"total_cost_usd":1.25}}' "$TAG" "$CASE_DIR/work" "$CASE_DIR/work" "$CASE_DIR")
 }
-s_stamp_marker_dangling() {   # the marker cannot be written either: the line must not repeat on every render
+s_stamp_marker_dangling() {   # the marker cannot be written either, so it cannot rate limit: one line per render
   s_stamp_symlink; ln -s "$CASE_DIR/nowhere" "$CASE_DIR/home/.claude/.nerdflair-stamp-dir-bad"
 }
 s_git_killed() {   # a git SIGKILLed long before the deadline: logged as an external kill, no back-off stamp
@@ -365,9 +365,11 @@ run_case chime-volume-bad          chime-volume 1 s_chime_volume_bad
 run_case usage-not-integer         ctx-usage-type 1 s_usage_float
 run_case state-empty-file          state-write 0 s_state_empty chk_state_empty
 run_case stamp-dir-symlink         stamp-dir 1 s_stamp_symlink
-run_case stamp-marker-dangling     stamp-dir 0 s_stamp_marker_dangling
+run_case stamp-marker-dangling     stamp-dir 4 s_stamp_marker_dangling
 IMPLS=bash
 run_case git-killed-externally     killed:git:status 1 s_git_killed chk_git_killed
+IMPLS=rust
+run_case git-killed-externally-rs  git:status:signal 1 s_git_killed chk_git_killed
 IMPLS="rust bash"
 IMPLS=bash
 run_case mktemp-fails              buf-mktemp 1 s_mktemp_bad
