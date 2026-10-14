@@ -2450,7 +2450,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     if !fresh && idle {
         let script = format!(
             "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-             _raw=$(timeout -k 5 30 claude mcp list 2>{cache}.err); _rc=$?; \
+             _raw=$(timeout -k 5 {tmo} claude mcp list 2>{cache}.err); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
@@ -2477,6 +2477,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
                && mv -f {cache}.tmp {cache} \
                || printf '%s %s mcp-probe-write: cannot update %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" {cache} >> {log}; \
              else touch {cache} 2>/dev/null; fi",
+            tmo = env_int("NERDFLAIR_MCP_PROBE_TIMEOUT", 30).clamp(1, 600),
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
             stamp = shq(&errlog::stamp_path("mcp-probe").to_string_lossy()),
