@@ -79,7 +79,7 @@ _nf_cmd() {
       # SIGKILL well before the deadline: something else killed it (OOM, a user). The output
       # cannot be trusted, but this is not a hang, so no back-off.
       [[ "$1" == git ]] && _NF_GIT_TIMED_OUT=1
-      _nf_err "killed:${_l/#-/$1}" "$* was killed (rc=137) before the ${_NF_TMO:-no}s deadline; killed externally?"
+      _nf_err "killed:${_l/#-/$1}" "$* was killed (rc=137)${_NF_TMO:+ before the ${_NF_TMO}s deadline}; killed externally?"
     elif [[ "$_l" != "-" ]] && { [[ -z "$_q" ]] || [[ ! "$_e" =~ $_q ]]; }; then
       _e="${_e%%$'\n'*}"
       _nf_err "$_l:$_rc" "$* failed: ${_e:-(no stderr)}"
