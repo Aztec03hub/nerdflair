@@ -39,14 +39,15 @@ python3 "$REPO/tests/price-recount.py" --selfcheck >/dev/null || { echo "validat
 # Live sessions append to the ledger while this runs; bash and Rust must read
 # the same bytes or a 0.1 difference is drift, not a defect. Snapshot once.
 SNAP=$(mktemp "${TMPDIR:-/tmp}/nf-validate-ledger-XXXXXX")
-trap 'rm -f "$SNAP"' EXIT
+ERRF="$SNAP.err"
+trap 'rm -f "$SNAP" "$ERRF"' EXIT
 cp "$LEDGER" "$SNAP"; LEDGER="$SNAP"
 LCAP=$(( $(stat -c %s "$LEDGER") + 1048576 ))
 fail=0
 
 block_of() { # impl-cmd... ; reads payload on stdin
   NERDFLAIR_REPO_COST_FILE="$LEDGER" NERDFLAIR_REPO_COST=0 \
-    NERDFLAIR_LEDGER_TAIL_BYTES="$LCAP" COLUMNS=400 timeout 60 "$@" 2>/dev/null \
+    NERDFLAIR_LEDGER_TAIL_BYTES="$LCAP" COLUMNS=400 timeout 60 "$@" 2>>"$ERRF" \
     | sed 's/\x1b\[[0-9;]*m//g' | grep -oE $'\xef\x82\x94 \\$[0-9]+\\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | tail -1
 }
 
@@ -65,10 +66,19 @@ print(json.dumps({'session_id':'validate-ledger',
  'rate_limits':{'five_hour':{'used_percentage':5,'resets_at':$now + 18000 - $elapsed}}}))")
   rust=$(printf '%s' "$payload" | block_of "$RUST")
   bash_=$(printf '%s' "$payload" | block_of bash "$SH")
-  recount=$(python3 "$REPO/tests/price-recount.py" "$hours" 2>/dev/null)
-  if [[ -z "$rust" || -z "$bash_" || -z "$recount" ]]; then
-    echo "validate-ledger: SKIP: could not read a figure (rust='$rust' bash='$bash_' recount='$recount')" >&2
-    exit 77
+  # recount's stderr is NOT dropped: it prints UNPRICED models there, and an
+  # unpriced model silently lowers the recount.
+  recount=$(python3 "$REPO/tests/price-recount.py" "$hours")
+  if [[ -z "$recount" ]]; then
+    echo "validate-ledger: the recount produced no figure for ${hours}h (its own failure, not a skip)" >&2
+    exit 2
+  fi
+  if [[ -z "$rust" || -z "$bash_" ]]; then
+    # The independent recount worked, so a missing product figure is the
+    # product crashing, timing out (124) or changing its glyph: a regression.
+    echo "validate-ledger: FAIL: ${hours}h figure missing (rust='$rust' bash='$bash_' recount='$recount')" >&2
+    [[ -s "$ERRF" ]] && { echo "validate-ledger: stderr of the products:" >&2; tail -5 "$ERRF" | sed 's/^/    /' >&2; }
+    exit 1
   fi
   delta=$(awk -v a="$rust" -v b="$recount" 'BEGIN{ if (b <= 0) print "nan"; else printf "%+.1f", (a - b) / b * 100 }')
   verdict=ok

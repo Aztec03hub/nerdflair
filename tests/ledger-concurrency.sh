@@ -179,7 +179,10 @@ if [[ -x "$STALE_BIN" ]]; then
   fi
 else
   printf '  SKIP  %-44s %s\n' "stale mkdir lock recovery" "no release build at $STALE_BIN"
+  skipped=1
 fi
 
 (( fail )) && { printf '\nledger-concurrency: FAIL\n'; exit 1; }
+# A skipped check is not a pass: 77 is the convention for "could not run".
+if (( ${skipped:-0} )); then printf '\nledger-concurrency: PASS (1 SKIPPED: stale-lock migration not run)\n'; exit 77; fi
 printf '\nledger-concurrency: PASS\n'

@@ -15,14 +15,24 @@ export NFPTY_ERRLOG="${TMPDIR:-/tmp}/nfpty-exit.errlog"
 
 NFPTY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/band/bridge/nfpty.py"
 fail=0
-check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
+# nfpty's stderr goes to this file (not /dev/null) so a traceback shows on FAIL.
+NF_ERRF=$(mktemp "${TMPDIR:-/tmp}/nf-nfptyexit-XXXXXX") || exit 1
+export NF_ERRF
+trap 'rm -f "$NF_ERRF"' EXIT
+check() {
+  if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"
+  else
+    printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1
+    [[ -s "$NF_ERRF" ]] && { echo "    nfpty stderr:"; tail -8 "$NF_ERRF" | sed 's/^/      /'; : > "$NF_ERRF"; }
+  fi
+}
 
 run() { # script -> prints "<exit code> <seconds>"
   python3 - "$NFPTY" "$1" <<'PY'
 import os, subprocess, sys, time
 t = time.time()
 p = subprocess.Popen([sys.executable, sys.argv[1], "-c", sys.argv[2]], stdin=subprocess.PIPE,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=open(os.environ["NF_ERRF"], "ab"),
                      env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
 try:
     rc = p.wait(timeout=10)
@@ -50,7 +60,7 @@ import os, subprocess, sys, threading
 lost = 0
 for _ in range(60):
     p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "printf LASTWORDS; exit 0"],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(os.environ["NF_ERRF"], "ab"),
                          env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
     timer = threading.Timer(10, p.kill)
     timer.start()
@@ -69,7 +79,7 @@ check "output written just before exit is not lost" yes "$out"
 read -r rc secs < <(python3 - "$NFPTY" <<'PY'
 import os, signal, subprocess, sys, time
 p = subprocess.Popen([sys.executable, sys.argv[1], "-c", "trap '' TERM; echo ready; sleep 6"],
-                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(os.environ["NF_ERRF"], "ab"),
                      env=dict(os.environ, CLAUDE_BIN="/bin/bash"))
 # Signal only once the child has installed its trap: under load a signal sent
 # earlier kills bash normally and the test would blame the SIGKILL path.
