@@ -72,6 +72,18 @@ for d in /usr/bin /bin; do
   done
 done
 
+# Every binary except timeout/gtimeout, for the "no timeout(1)" case.
+NOTMO="$WORK/tools-notimeout"
+mkdir -p "$NOTMO"
+for d in /usr/bin /bin; do
+  [[ -d "$d" ]] || continue
+  for f in "$d"/*; do
+    n="${f##*/}"
+    [[ "$n" == timeout || "$n" == gtimeout ]] && continue
+    [[ -e "$NOTMO/$n" ]] || ln -s "$f" "$NOTMO/$n" 2>/dev/null
+  done
+done
+
 # ── harness ───────────────────────────────────────────────────────
 CASE_DIR=""
 PAYLOAD=""
@@ -298,6 +310,9 @@ s_git_killed() {   # a git SIGKILLed long before the deadline: logged as an exte
   chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
   CASE_PATH="$CASE_DIR/bin:$PATH"; rm -f -- "$(git_cache_path)"
 }
+s_git_killed_notimeout() {   # no deadline exists, so a SIGKILL cannot be a deadline hit
+  s_git_killed; CASE_PATH="$CASE_DIR/bin:$NOTMO"
+}
 chk_git_killed() {
   if [[ -e "$CASE_DIR/stamps/nerdflair-err-$(id -u)-git_hung" ]]; then printf '  FAIL  git-killed: the hang back-off was armed by an external kill\n'; fail=1
   else printf '  PASS  git-killed: no git-hung back-off armed\n'; fi
@@ -368,6 +383,7 @@ run_case stamp-dir-symlink         stamp-dir 1 s_stamp_symlink
 run_case stamp-marker-dangling     stamp-dir 4 s_stamp_marker_dangling
 IMPLS=bash
 run_case git-killed-externally     killed:git:status 1 s_git_killed chk_git_killed
+run_case git-killed-no-timeout     killed:git:status 1 s_git_killed_notimeout chk_git_killed
 IMPLS=rust
 run_case git-killed-externally-rs  git:status:signal 1 s_git_killed chk_git_killed
 IMPLS="rust bash"

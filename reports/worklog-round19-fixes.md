@@ -68,3 +68,8 @@ Final runs: silent-failures PASS; difftest 164/164 identical (one run showed pay
 3. register.tsx: `lastFailAt = await $.clock.now()` is guarded like the success path (note `clock`, falls back to the earlier time). No test (mock.clock cannot reject).
 4. New Rust case `git-killed-externally-rs`: a SIGKILLed git logs `git:status:signal` (not `timeout:`) and arms no `git-hung` stamp.
 Final runs: silent-failures PASS; difftest 164/164 identical; bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail. Stash list empty.
+
+# Round 24 fixes (uncommitted, on 2b2aa83)
+1. statusline.sh `_nf_cmd`: rc 137 is a deadline hit only when `_NF_TMO_US` is set (a deadline exists); with no `timeout`/`gtimeout` it falls to the `killed:` arm and arms no `git-hung` back-off. New bash case `git-killed-no-timeout` (PATH without timeout, SIGKILLing git stub): on old code it failed on both the `killed:git:status` line and the no-back-off check; stash popped, list empty.
+2. README.md:64 rewritten in place: the once-an-hour sentence now carries the stamp-dir exception (once per render when the stamp directory and its marker are both unusable).
+Final runs: silent-failures PASS; difftest 164/164 identical; bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail.

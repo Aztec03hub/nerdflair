@@ -71,7 +71,7 @@ _nf_cmd() {
     _e=$(< "$_SL_BUF.err")
     if (( _rc == 126 || _rc == 127 )); then
       _nf_err "spawn:$1" "cannot run $1 (rc=$_rc): ${_e%%$'\n'*}"
-    elif (( _rc == 124 )) || { (( _rc == 137 )) && _nf_ran_to_deadline "$_t0"; }; then
+    elif (( _rc == 124 )) || { (( _rc == 137 )) && [[ -n "${_NF_TMO_US:-}" ]] && _nf_ran_to_deadline "$_t0"; }; then
       # 137 = `timeout -k` had to SIGKILL a child that ignored TERM
       if [[ "$1" == git ]]; then _NF_GIT_TIMED_OUT=1; _nf_touch git-hung; fi
       _nf_err "timeout:${_l/#-/$1}" "$* still running after ${_NF_TMO}s, killed"
