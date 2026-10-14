@@ -5,7 +5,7 @@
 #
 # What install does, all of it reversible and none of it touching Claude Code:
 #   1. ~/.nerdflair/hover   -> link to band/bridge (the wrapper code)
-#   2. ~/.nerdflair/bin/    -> claude (the shim) and nf-tmux-heal, copied
+#   2. ~/.nerdflair/bin/    -> claude (the shim), nf-tmux-heal, nf-tmux-watch, nf-log.sh, copied
 #   3. a marked block at the END of ~/.bashrc, ~/.zshrc and the one login file bash
 #      reads (~/.bash_profile, ~/.bash_login or ~/.profile; ~/.profile is created if none) that
 #      puts ~/.nerdflair/bin first on PATH and keeps tmux's socket out of /tmp
@@ -14,6 +14,11 @@
 # PATH at every start, and the updater only rewrites that real file.
 # Why it cannot loop or lock you out: the shim execs plain claude whenever
 # wrapping is impossible, and nothing here starts or restarts a service.
+#
+# A person is waiting on this script, so every failure is printed on stderr with
+# its reason (and logged), and the exit status is non-zero when the install did
+# not really succeed: the watcher would not start, or no rc file was updated.
+# The shim and heal are different: they run on every claude start and only log.
 set -euo pipefail
 # mapfile and empty-array expansion under set -u need bash 4.4+ (not macOS /bin/bash 3.2).
 (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || { echo "install.sh needs bash 4.4 or newer" >&2; exit 2; }
@@ -23,6 +28,13 @@ BRIDGE="$(cd "$HERE/../bridge" && pwd)"
 NF="$HOME/.nerdflair"
 BEGIN="# >>> nerdflair hover >>>"
 END="# <<< nerdflair hover <<<"
+problems=0      # set when a step failed but the rest went on; decides the exit status
+# shellcheck source=nf-log.sh
+. "$HERE/nf-log.sh"
+export NF_LOG_NOSTAMP=1      # a person is waiting here: log every failure, not one an hour
+warn() { # message: stderr, the log, and a non-zero exit at the end
+  echo "${1}" >&2; nf_log install "$1"; problems=1
+}
 
 block() {
   cat <<'EOF'
@@ -40,7 +52,8 @@ export PATH="$HOME/.nerdflair/bin${PATH:+:$PATH}"
 # and friends, burying the shim. A function wins over any PATH order.
 unalias claude 2>/dev/null || true      # an alias would break the definition below and beat it
 claude() {
-  if [ -x "$HOME/.nerdflair/bin/claude" ]; then "$HOME/.nerdflair/bin/claude" "$@"; else command claude "$@"; fi
+  if [ -x "$HOME/.nerdflair/bin/claude" ]; then "$HOME/.nerdflair/bin/claude" "$@"
+  else echo "nerdflair: shim missing, running plain claude (run band/hover/install.sh)" >&2; command claude "$@"; fi
 }
 # tmux's socket lives in /tmp by default, and anything sweeping /tmp strands
 # the server. A running server keeps its current socket; this applies to the
@@ -104,13 +117,15 @@ strip() { # file: print it without our block
 # backup is removed only if it is exactly what the file is now.
 remove_block() { # file [uninstall]
   local f=$1 rc=0 tmp
+  [[ -e "$f" ]] || return 0       # absent is the normal answer for an optional file
+  if [[ ! -r "$f" ]]; then warn "${2:-install}: $f is not readable; its nerdflair block (if any) was left alone"; return 0; fi
   # No marker text at all: only the backup may need tidying. (Substring, not
   # whole-line, so a marker with CRLF or trailing space still reaches paired,
   # which names it.)
-  if ! grep -qF "$BEGIN" "$f" 2>/dev/null; then cleanup_backup "$f"; return 0; fi
+  if ! grep -qF "$BEGIN" "$f"; then cleanup_backup "$f"; return 0; fi
   paired "$f" || rc=$?
-  if (( rc == 1 )); then echo "${2:-install}: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
-  (( rc == 0 )) || return 0       # 1 was named above, 2 (CRLF) by paired itself
+  if (( rc == 1 )); then warn "${2:-install}: $f has an unmatched nerdflair marker; fix it by hand"; fi
+  (( rc == 0 )) || { (( rc == 1 )) || problems=1; return 0; }   # CRLF (2) was named by paired itself       # 1 was named above, 2 (CRLF) by paired itself
   tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
   cleanup_backup "$f"
 }
@@ -123,7 +138,8 @@ cleanup_backup() { # file
       # back to absent; a file that existed, empty or not, is left alone.
       if [[ ! -s "$f" ]] && grep -qxF "$f" "$NF/created" 2>/dev/null; then
         rm -f "$f"
-        grep -vxF "$f" "$NF/created" > "$NF/created.tmp" || true     # it is gone: forget it
+        # grep rc 1 = no lines left (fine); rc 2 = a real error, and the mv below must not run on a truncated file
+        grep -vxF "$f" "$NF/created" > "$NF/created.tmp" || [[ $? -eq 1 ]] || { warn "install: could not update $NF/created"; return 0; }
         mv "$NF/created.tmp" "$NF/created"
       fi
     else
@@ -139,14 +155,22 @@ case "${1:-install}" in
     install -m 755 "$HERE/claude-shim" "$NF/bin/claude"
     install -m 755 "$HERE/nf-tmux-heal" "$NF/bin/nf-tmux-heal"
     install -m 755 "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch"
+    install -m 644 "$HERE/nf-log.sh" "$NF/bin/nf-log.sh"
     # A user service that notices a deleted tmux socket the moment it happens,
-    # logs what was running, and repairs it. Skipped quietly where there is no
-    # systemd user manager; everything else works without it.
+    # logs what was running, and repairs it. No systemd user manager is not an
+    # error (everything else works without it) but it is said, not skipped quietly.
     if systemctl --user show-environment >/dev/null 2>&1; then
       mkdir -p "$HOME/.config/systemd/user"
       install -m 644 "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service"
-      systemctl --user daemon-reload || true      # a flaky user manager must not abort the rest
-      systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
+      # A flaky user manager must not abort the rest, but must not be hidden either.
+      out=$(systemctl --user daemon-reload 2>&1) || warn "install: WARNING systemctl daemon-reload failed: ${out//$'\n'/ }"
+      if out=$(systemctl --user enable --now nf-tmux-watch.service 2>&1); then
+        echo "  tmux socket watcher running"
+      else
+        warn "install: WARNING tmux socket watcher not started: ${out//$'\n'/ }"
+      fi
+    else
+      echo "  tmux socket watcher: skipped (no systemd user manager); the shim's heal still runs at each claude start"
     fi
     done=0; skipped=0
     # The file lists are read into arrays, never word-split: $HOME may hold a space.
@@ -162,12 +186,15 @@ case "${1:-install}" in
     fi
     mapfile -t targets < <(rcfiles)
     for f in "${targets[@]}"; do
+      if [[ ! -r "$f" ]]; then
+        warn "install: $f is not readable; no block added there"; skipped=$((skipped + 1)); continue
+      fi
       # The block's `unalias claude` would drop a user's own alias (and its flags).
-      if grep -qE '^[[:space:]]*alias[[:space:]]+claude=' "$f" 2>/dev/null; then
+      if grep -qE '^[[:space:]]*alias[[:space:]]+claude=' "$f"; then
         echo "install: WARNING $f defines alias claude; the block replaces it. Move its flags into settings or the shim." >&2
       fi
       rc=0; paired "$f" || rc=$?
-      if (( rc == 1 )); then echo "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there" >&2; fi
+      if (( rc == 1 )); then warn "install: $f has an unmatched nerdflair marker; fix it by hand, nothing changed there"; fi
       (( rc == 0 )) || { skipped=$((skipped + 1)); continue; }
       done=$((done + 1))
       tmp="$f.nf.$$"
@@ -181,6 +208,10 @@ case "${1:-install}" in
       rm -f "$tmp"
       echo "  rc block in $f"
     done
+    if (( done == 0 || skipped > 0 )); then
+      warn "install: hover is NOT active for new shells ($done rc file(s) updated, $skipped skipped); fix what is named above and run install.sh again"
+    fi
+    if (( problems )); then echo "hover installed WITH PROBLEMS: see the messages above (also in ~/.local/state/nerdflair/launcher.log)" >&2; exit 1; fi
     echo "hover installed: new shells start claude under the wrapper (inside tmux); $done rc file(s) updated, $skipped skipped"
     ;;
   uninstall)
@@ -190,22 +221,26 @@ case "${1:-install}" in
       remove_block "$f" uninstall
     done
     if systemctl --user show-environment >/dev/null 2>&1; then
-      systemctl --user disable --now nf-tmux-watch.service >/dev/null 2>&1 || true
+      # If the watcher cannot be stopped it keeps running with its files gone: say so.
+      out=$(systemctl --user disable --now nf-tmux-watch.service 2>&1) || warn "uninstall: could not stop nf-tmux-watch.service: ${out//$'\n'/ }"
       rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
-      systemctl --user daemon-reload || true      # a flaky user manager must not abort the rest
+      out=$(systemctl --user daemon-reload 2>&1) || warn "uninstall: systemctl daemon-reload failed: ${out//$'\n'/ }"
     fi
-    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
+    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/bin/nf-log.sh" "$NF/hover"
     # The record of files we created is kept while any block is still in place
     # (a retry after fixing a broken marker still knows what was ours).
     still=0
-    for f in "${every[@]}"; do grep -qF "$BEGIN" "$f" 2>/dev/null && still=1; done
+    # (an absent file has no block; an unreadable one was already reported by remove_block)
+    for f in "${every[@]}"; do [[ -r "$f" ]] && grep -qF "$BEGIN" "$f" && still=1; done
     (( still )) || rm -f "$NF/created"
-    rmdir "$NF/bin" "$NF" 2>/dev/null || true
+    rmdir "$NF/bin" "$NF" 2>/dev/null || true      # non-empty is expected (a kept backup record, user files): silent by design
+    if (( problems )); then echo "hover removed WITH PROBLEMS: see the messages above" >&2; exit 1; fi
     echo "hover removed"
     ;;
   status)
     mapfile -t targets < <(rcfiles)
     for f in "${targets[@]}"; do
+      # (2>/dev/null: the file may not exist yet; an unreadable one prints NO, which is true for us)
       if grep -qxF "$BEGIN" "$f" 2>/dev/null; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f); run install.sh again"; fi
     done
     # A login file created after install (a new ~/.bash_profile hides ~/.profile
@@ -213,11 +248,23 @@ case "${1:-install}" in
     echo "login file bash reads: $(loginfile)"
     [[ -x "$NF/bin/claude" ]] && echo "shim: yes" || echo "shim: NO"
     # Copied, not linked, so a repo update does not reach them by itself.
-    for pair in "claude-shim:claude" "nf-tmux-heal:nf-tmux-heal" "nf-tmux-watch:nf-tmux-watch"; do
-      if [[ -f "$NF/bin/${pair#*:}" ]] && ! cmp -s "$HERE/${pair%%:*}" "$NF/bin/${pair#*:}"; then
+    for pair in "claude-shim:claude" "nf-tmux-heal:nf-tmux-heal" "nf-tmux-watch:nf-tmux-watch" "nf-log.sh:nf-log.sh"; do
+      if [[ ! -f "$NF/bin/${pair#*:}" ]]; then
+        echo "MISSING: $NF/bin/${pair#*:}; run install.sh again"
+      elif ! cmp -s "$HERE/${pair%%:*}" "$NF/bin/${pair#*:}"; then
         echo "STALE: $NF/bin/${pair#*:} differs from the repo copy; run install.sh again"
       fi
     done
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      # A watcher stopped by its StartLimit shows only in the journal otherwise.
+      echo "watcher: $(systemctl --user is-active nf-tmux-watch.service 2>&1 || true)"
+    else
+      echo "watcher: no systemd user manager"
+    fi
+    # The rc block moves tmux's socket out of /tmp only when XDG_RUNTIME_DIR is usable.
+    if [[ -n "${TMUX_TMPDIR:-}" ]]; then echo "tmux socket dir: $TMUX_TMPDIR (protected)"
+    elif [[ -d "${XDG_RUNTIME_DIR:-}" ]]; then echo "tmux socket dir: $XDG_RUNTIME_DIR after the rc block is loaded (protected)"
+    else echo "tmux socket dir: /tmp (UNPROTECTED: XDG_RUNTIME_DIR is unset or not a directory)"; fi
     echo "claude resolves to: $(PATH="$NF/bin:$PATH" command -v claude)"
     ;;
   *) echo "usage: install.sh [install|uninstall|status]" >&2; exit 2 ;;

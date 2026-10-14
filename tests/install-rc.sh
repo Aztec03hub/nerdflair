@@ -82,7 +82,7 @@ check "uninstall: and its path is printed" 1 "$(grep -c 'kept .*nf-backup' <<<"$
 bash "$INSTALL" uninstall >/dev/null 2>&1
 printf 'export B=1\n# >>> nerdflair hover >>>\nno end marker\n' > "$HOME/.profile"
 out=$(bash "$INSTALL" install 2>&1); rc=$?
-check "broken .profile: install still finishes" 0 "$rc"
+check "broken .profile: install finishes, and exits non-zero because it skipped a file" 1 "$rc"
 check "broken .profile: and names the file" 1 "$(grep -c 'profile has an unmatched' <<<"$out")"
 check "broken .profile: the other files still got the block" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bashrc")"
 bash "$INSTALL" uninstall >/dev/null 2>&1; check "broken .profile: uninstall finishes and removes the shim" no "$([[ -e "$HOME/.nerdflair/bin/claude" ]] && echo yes || echo no)"
@@ -181,6 +181,70 @@ HOME="$SP" bash "$INSTALL" install >/dev/null 2>&1
 check "spaced HOME: block installed in .bashrc and the login file" 2 "$(cat "$SP/.bashrc" "$SP/.profile" | grep -cxF '# >>> nerdflair hover >>>')"
 HOME="$SP" bash "$INSTALL" uninstall >/dev/null 2>&1
 check "spaced HOME: uninstall restores .bashrc" "y=1" "$(cat "$SP/.bashrc")"
+
+# ── no silent failures: the exit status and the message say what happened ────
+# A systemctl stub with a working user manager whose enable/disable can be made to fail.
+mkdir -p "$ROOT/stub2"
+cat > "$ROOT/stub2/systemctl" <<'SH'
+#!/bin/sh
+case "$*" in
+  *show-environment*) exit 0 ;;
+  *enable*)  [ -n "${SC_FAIL_ENABLE:-}" ]  && { echo "Failed to enable unit: boom" >&2; exit 1; }; exit 0 ;;
+  *disable*) [ -n "${SC_FAIL_DISABLE:-}" ] && { echo "Failed to disable unit: bang" >&2; exit 1; }; exit 0 ;;
+  *is-active*) echo active; exit 0 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$ROOT/stub2/systemctl"
+HOME="$ROOT/h2"; export HOME; mkdir -p "$HOME"; printf 'z=1\n' > "$HOME/.bashrc"
+OLDPATH=$PATH; PATH="$ROOT/stub2:$PATH"
+
+out=$(SC_FAIL_ENABLE=1 bash "$INSTALL" install 2>&1); rc=$?
+check "systemctl enable fails: install exits non-zero" 1 "$rc"
+check "systemctl enable fails: the reason is printed" 1 "$(grep -c 'watcher not started: Failed to enable unit: boom' <<<"$out")"
+check "systemctl enable fails: it is in launcher.log too" 1 "$(grep -c 'install: .*boom' "$HOME/.local/state/nerdflair/launcher.log")"
+check "systemctl enable fails: the rc block was still installed" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bashrc")"
+bash "$INSTALL" uninstall >/dev/null 2>&1
+
+out=$(bash "$INSTALL" install 2>&1); rc=$?
+check "systemctl ok: install exits 0 and says the watcher runs" "0 1" "$rc $(grep -c 'watcher running' <<<"$out")"
+out=$(SC_FAIL_DISABLE=1 bash "$INSTALL" uninstall 2>&1); rc=$?
+check "systemctl disable fails: uninstall exits non-zero" 1 "$rc"
+check "systemctl disable fails: the reason is printed" 1 "$(grep -c 'could not stop nf-tmux-watch.service: Failed to disable unit: bang' <<<"$out")"
+
+PATH="$ROOT/stub:$OLDPATH"
+out=$(bash "$INSTALL" install 2>&1); rc=$?
+check "no systemd user manager: install says the watcher was skipped, exit 0" "0 1" "$rc $(grep -c 'watcher: skipped (no systemd' <<<"$out")"
+bash "$INSTALL" uninstall >/dev/null 2>&1
+
+# No rc file can be updated (the only one has a broken marker): not a success.
+rm -f "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bashrc.nf-backup"
+printf '# >>> nerdflair hover >>>\nno end\n' > "$HOME/.profile"
+out=$(bash "$INSTALL" install 2>&1); rc=$?
+check "no rc file updated: install exits non-zero" 1 "$rc"
+check "no rc file updated: says hover is NOT active" 1 "$(grep -c 'hover is NOT active' <<<"$out")"
+rm -f "$HOME/.profile"; bash "$INSTALL" uninstall >/dev/null 2>&1
+
+# An unreadable rc file is named, not treated as "no marker".
+if [[ $(id -u) != 0 ]]; then
+  printf 'k=1\n' > "$HOME/.bashrc"; printf 'p=1\n' > "$HOME/.profile"
+  bash "$INSTALL" install >/dev/null 2>&1
+  chmod 000 "$HOME/.bashrc"
+  out=$(bash "$INSTALL" uninstall 2>&1); rc=$?
+  check "unreadable rc on uninstall: named, exit non-zero" "1 1" "$(grep -c 'bashrc is not readable' <<<"$out") $rc"
+  chmod 644 "$HOME/.bashrc"; bash "$INSTALL" uninstall >/dev/null 2>&1
+fi
+
+# The function falls back to plain claude when the shim is gone, and now says so.
+printf 'q=1\n' > "$HOME/.bashrc"; bash "$INSTALL" install >/dev/null 2>&1
+rm -f "$HOME/.nerdflair/bin/claude"
+mkdir -p "$HOME/.local/bin"; printf '#!/bin/sh\necho REAL\n' > "$HOME/.local/bin/claude"; chmod +x "$HOME/.local/bin/claude"
+fb=$(env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" "$BASH" -ic 'claude' 2>&1 >/dev/null)
+check "shim missing: the function says it is running plain claude" 1 "$(grep -c 'shim missing, running plain claude' <<<"$fb")"
+check "status: a missing installed copy is named MISSING" 1 "$(bash "$INSTALL" status 2>&1 | grep -c 'MISSING')"
+check "status: says where tmux's socket will live" 1 "$(env -u XDG_RUNTIME_DIR bash "$INSTALL" status 2>&1 | grep -c 'tmux socket dir: /tmp (UNPROTECTED')"
+bash "$INSTALL" uninstall >/dev/null 2>&1
+HOME="$ROOT/home"
 
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
