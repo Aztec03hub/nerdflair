@@ -78,8 +78,11 @@ fn stamp_dir() -> Option<&'static PathBuf> {
 /// own OnceLock initialiser and deadlock. Twin of lib.sh `_nf_stamp_dir`.
 fn stamp_dir_bad(dir: &std::path::Path, why: &str) {
     let marker = dir.with_file_name(".nerdflair-stamp-dir-bad");
-    if marker.exists() && file_age(&marker) < RATE_SECS {
-        return;
+    // A symlink marker can never be written (O_NOFOLLOW), so it cannot rate limit: stay quiet
+    // rather than repeat the line every render. exists() would call a dangling link absent.
+    match std::fs::symlink_metadata(&marker) {
+        Ok(m) if m.file_type().is_symlink() || file_age(&marker) < RATE_SECS => return,
+        _ => {}
     }
     emit("stamp-dir", &format!("{} is unusable ({}); rate limits and back-offs work per render only", dir.display(), why));
     let _ = write_stamp(&marker); // failing only loses the hourly limit
@@ -133,7 +136,8 @@ fn trim(path: &PathBuf) {
         Ok(m) => m.len(),
         Err(e) => {
             // A log that does not exist yet is normal.
-            if e.kind() != std::io::ErrorKind::NotFound {
+            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if e.kind() != std::io::ErrorKind::NotFound && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 let _ = writeln!(std::io::stderr(), "nerdflair: cannot stat {} to trim it: {}", path.display(), e);
             }
             return;

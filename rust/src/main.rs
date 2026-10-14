@@ -2271,12 +2271,12 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
 )
 }
 
-/// What bash's `cd` needs: a directory we may search (execute bit).
+/// What bash's `cd` needs: a directory we may search (execute bit), by EFFECTIVE ids like cd.
 fn can_enter(p: &str) -> bool {
     use std::os::unix::ffi::OsStrExt;
     Path::new(p).is_dir()
         && std::ffi::CString::new(Path::new(p).as_os_str().as_bytes())
-            .map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
+            .map(|c| unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) } == 0)
             .unwrap_or(false)
 }
 

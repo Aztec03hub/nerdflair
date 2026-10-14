@@ -34,15 +34,23 @@ if command -v timeout >/dev/null 2>&1; then
   _nf_ms=${NERDFLAIR_PROC_TIMEOUT_MS:-10000}
   [[ "$_nf_ms" =~ ^[0-9]+$ ]] || _nf_ms=10000
   printf -v _NF_TMO '%d.%03d' $(( _nf_ms / 1000 )) $(( _nf_ms % 1000 ))
+  _NF_TMO_US=$(( _nf_ms * 1000 ))
   _NF_TCMD=(timeout -k 1 "$_NF_TMO")
 elif command -v gtimeout >/dev/null 2>&1; then
   _nf_ms=${NERDFLAIR_PROC_TIMEOUT_MS:-10000}
   [[ "$_nf_ms" =~ ^[0-9]+$ ]] || _nf_ms=10000
   printf -v _NF_TMO '%d.%03d' $(( _nf_ms / 1000 )) $(( _nf_ms % 1000 ))
+  _NF_TMO_US=$(( _nf_ms * 1000 ))
   _NF_TCMD=(gtimeout -k 1 "$_NF_TMO")
 else
   _nf_err no-timeout "timeout(1) not found; git runs without a deadline"
 fi
+# 0 when the command that started at $1 (EPOCHREALTIME without the dot) ran at least the whole
+# deadline. Without EPOCHREALTIME (bash < 5) it assumes it did, as before.
+_nf_ran_to_deadline() {
+  [[ -n "${EPOCHREALTIME:-}" && -n "${_NF_TMO_US:-}" && -n "$1" ]] || return 0
+  (( ${EPOCHREALTIME/./} - $1 >= _NF_TMO_US ))
+}
 # _nf_cmd LABEL QUIET_ERE cmd args...   stdout -> $_NF_OUT, returns the command's rc.
 # Cannot-run (126/127) and timeout (124) are always logged. A plain non-zero exit
 # is logged as LABEL:rc with stderr's first line, unless LABEL is "-" (a probe
@@ -55,14 +63,21 @@ _nf_cmd() {
     [[ -z "${_NF_GIT_TIMED_OUT:-}" ]] && _nf_recent git-hung 60 && _NF_GIT_TIMED_OUT=1
     if [[ -n "${_NF_GIT_TIMED_OUT:-}" ]]; then _NF_OUT=""; return 124; fi
   fi
+  local _t0=${EPOCHREALTIME/./}
   _NF_OUT=$("${_NF_TCMD[@]+"${_NF_TCMD[@]}"}" "$@" 2>"$_SL_BUF.err"); _rc=$?
   if (( _rc != 0 )); then
     _e=$(< "$_SL_BUF.err")
     if (( _rc == 126 || _rc == 127 )); then
       _nf_err "spawn:$1" "cannot run $1 (rc=$_rc): ${_e%%$'\n'*}"
-    elif (( _rc == 124 || _rc == 137 )); then   # 137: timeout had to SIGKILL (child ignored TERM)
+    elif (( _rc == 124 )) || { (( _rc == 137 )) && _nf_ran_to_deadline "$_t0"; }; then
+      # 137 = `timeout -k` had to SIGKILL a child that ignored TERM
       if [[ "$1" == git ]]; then _NF_GIT_TIMED_OUT=1; _nf_touch git-hung; fi
       _nf_err "timeout:${_l/#-/$1}" "$* still running after ${_NF_TMO}s, killed"
+    elif (( _rc == 137 )); then
+      # SIGKILL well before the deadline: something else killed it (OOM, a user). The output
+      # cannot be trusted, but this is not a hang, so no back-off.
+      [[ "$1" == git ]] && _NF_GIT_TIMED_OUT=1
+      _nf_err "killed:${_l/#-/$1}" "$* was killed (rc=137) before the ${_NF_TMO:-no}s deadline; killed externally?"
     elif [[ "$_l" != "-" ]] && { [[ -z "$_q" ]] || [[ ! "$_e" =~ $_q ]]; }; then
       _e="${_e%%$'\n'*}"
       _nf_err "$_l:$_rc" "$* failed: ${_e:-(no stderr)}"
@@ -102,10 +117,6 @@ _SL_WIDTH="$NF_CUR_WIDTH"
 _SL_COLOR_MODE="$NF_CUR_COLOR"
 _SL_TERMINAL_BELL="$NF_CUR_TERMINAL_BELL"
 _SL_CHIME_VOLUME="$NF_CUR_CHIME_VOLUME"
-if [[ -n "$_SL_CHIME_VOLUME" && ! "$_SL_CHIME_VOLUME" =~ ^[0-9]*\.?[0-9]+$ ]]; then
-  _nf_err chime-volume "chime_volume \"$_SL_CHIME_VOLUME\" is not a number; shown as 100%"
-  _SL_CHIME_VOLUME=1
-fi
 _SL_CHIME_STYLE="$NF_CUR_CHIME_STYLE"
 _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 # Per-session data (chime style) is stored in ~/.claude/nerdflair/sessions/<session_id>

@@ -290,6 +290,18 @@ s_usage_float() {   # no usage figures in the payload; the transcript's last usa
   printf '{"message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1,"cache_read_input_tokens":12.5,"output_tokens":3}}}\n' > "$CASE_DIR/t.jsonl"
   PAYLOAD=$(printf '{"session_id":"%s-u","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s","project_dir":"%s"},"transcript_path":"%s/t.jsonl","context_window":{"context_window_size":200000},"cost":{"total_cost_usd":1.25}}' "$TAG" "$CASE_DIR/work" "$CASE_DIR/work" "$CASE_DIR")
 }
+s_stamp_marker_dangling() {   # the marker cannot be written either: the line must not repeat on every render
+  s_stamp_symlink; ln -s "$CASE_DIR/nowhere" "$CASE_DIR/home/.claude/.nerdflair-stamp-dir-bad"
+}
+s_git_killed() {   # a git SIGKILLed long before the deadline: logged as an external kill, no back-off stamp
+  printf '#!/bin/sh\ncase "$1" in rev-parse) case "$*" in *is-inside-work-tree*) echo true; exit 0 ;; *--git-dir*) echo .git; exit 0 ;; esac ;; esac\nkill -9 $$\n' > "$CASE_DIR/bin/git"
+  chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
+  CASE_PATH="$CASE_DIR/bin:$PATH"; rm -f -- "$(git_cache_path)"
+}
+chk_git_killed() {
+  if [[ -e "$CASE_DIR/stamps/nerdflair-err-$(id -u)-git_hung" ]]; then printf '  FAIL  git-killed: the hang back-off was armed by an external kill\n'; fail=1
+  else printf '  PASS  git-killed: no git-hung back-off armed\n'; fi
+}
 s_state_empty() { : > "$CASE_DIR/home/.claude/nerdflair/state.json"; }
 chk_state_empty() {   # bash rebuilds the file (and no write may fail); Rust leaves it and must log it
   local st="$CASE_DIR/home/.claude/nerdflair/state.json"
@@ -353,6 +365,10 @@ run_case chime-volume-bad          chime-volume 1 s_chime_volume_bad
 run_case usage-not-integer         ctx-usage-type 1 s_usage_float
 run_case state-empty-file          state-write 0 s_state_empty chk_state_empty
 run_case stamp-dir-symlink         stamp-dir 1 s_stamp_symlink
+run_case stamp-marker-dangling     stamp-dir 0 s_stamp_marker_dangling
+IMPLS=bash
+run_case git-killed-externally     killed:git:status 1 s_git_killed chk_git_killed
+IMPLS="rust bash"
 IMPLS=bash
 run_case mktemp-fails              buf-mktemp 1 s_mktemp_bad
 IMPLS="rust bash"
@@ -370,6 +386,16 @@ _memo_lines=$( ( export HOME="$WORK/memo-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/me
   source "$REPO/scripts/lib.sh"; _nf_err 'spawn:abc' one; _nf_err 'spawn:*' two; _nf_err 'spawn:xyz' three
   wc -l < "$HOME/.claude/nerdflair-errors.log" ) 2>/dev/null )
 check "lib.sh _nf_err memo: keys with glob characters are literal (3 lines)" 3 "${_memo_lines//[[:space:]]/}"
+
+# hooks/bell.sh reads the same state file but not the renderer: a non-numeric chime_volume must be
+# defaulted and logged by lib.sh, or awk reads "loud" as 0 and the hook mutes itself silently.
+BV="$WORK/bell-vol"; mkdir -p "$BV/home/.claude/nerdflair" "$BV/stamps" "$BV/work"
+printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_sound":"Glass","chime_volume":"loud","chime_style":"random","chime_events":"Notification,Stop","color":"vibrant","last_session":"","chime_recent_styles":[]}' > "$BV/home/.claude/nerdflair/state.json"
+( cd "$BV/work" && printf '{"hook_event_name":"Stop","session_id":"%s-b"}' "$TAG" | timeout 20 env -i PATH="$PATH" HOME="$BV/home" TMPDIR="$BV" \
+    NERDFLAIR_ERR_STAMP_DIR="$BV/stamps" bash "$REPO/hooks/bell.sh" >/dev/null 2>&1 )
+check "bell.sh: a non-numeric chime_volume is logged by the hook (1 line)" 1 "$(rg -cF ' chime-volume: ' "$BV/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
+_bv=$( ( export HOME="$BV/home" NERDFLAIR_ERR_STAMP_DIR="$BV/stamps2"; mkdir -p "$NERDFLAIR_ERR_STAMP_DIR"; source "$REPO/scripts/lib.sh"; _nf_read_state; printf '%s' "$NF_CUR_CHIME_VOLUME" ) 2>/dev/null )
+check "lib.sh: a non-numeric chime_volume is defaulted to 1 for every consumer" 1 "$_bv"
 
 echo
 echo "NOISE (must stay completely silent):"

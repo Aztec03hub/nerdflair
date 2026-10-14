@@ -536,7 +536,11 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
     if (segs) {
       // Stamped when the refresh FINISHED: a 2 s+ renderer would otherwise cache figures
       // that are already past TTL_MS and get re-run by the very next render.
-      cache = { at: await $.clock.now(), segs }
+      // A rejecting clock must not throw away good segments: fall back to the pre-refresh time, noted.
+      cache = { at: await $.clock.now().catch((err: unknown) => {
+        note($, 'clock', `clock.now() rejected after a good refresh; using the earlier time: ${err}`)
+        return now
+      }), segs }
       // A good refresh ends the failure; forget its log line so a later
       // recurrence is logged again rather than swallowed as a duplicate.
       if (lastError) seen.delete(lastError)

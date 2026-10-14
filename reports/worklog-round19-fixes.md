@@ -51,3 +51,13 @@ Skipped (as instructed): the /tmp git-cache symlink item. Not testable: the seco
 Old-code check (scripts, rust/src, register.tsx, mklayout.py stashed; tests kept): silent-failures failed on git-term-ignored [bash], cwd-not-enterable [rust], project-dir-locked [both], chime-volume-bad [both], usage-not-integer [bash], state-empty-file [bash], stamp-dir-symlink [both]; difftest failed; band test "slow renderer that succeeds leaves a cache that is fresh" failed. Stash popped, list empty.
 
 Final runs after rebuild: silent-failures PASS; difftest 164/164 identical; bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail.
+
+# Round 22 fixes (uncommitted, on 11d4ea5)
+1. Stamp-dir marker: a symlink marker (dangling or not) can never be written (O_NOFOLLOW), so both twins now stay quiet instead of logging every render (Rust `symlink_metadata`, bash `[[ -L ]]`). Case `stamp-marker-dangling` expects 0 lines after 4 renders (old code: 4 per impl).
+2. chime_volume is validated once in lib.sh `_nf_read_state` (log `chime-volume`, default 1), so bell.sh and nerdflair.sh agree with the renderer; the duplicate in statusline.sh is gone (Rust keeps its own twin check). New standalone checks: bell.sh logs the line, and lib.sh yields 1 for "loud" (both failed on old code).
+3. Bash `_nf_cmd`: 137 counts as a timeout (and arms `git-hung`) only when the command ran at least the deadline (`EPOCHREALTIME`, helper `_nf_ran_to_deadline`); otherwise it logs `killed:<label>` as an external kill, still marks the output untrusted, and arms no back-off. Case `git-killed-externally` (bash).
+4. Low items: errlog `trim` stat warning is once per process; `can_enter` uses `faccessat(AT_EACCESS)` (effective ids, like cd); register.tsx falls back to the pre-refresh time with a `clock` note when `clock.now()` rejects after a good refresh (no dedicated test: mock.clock cannot reject).
+Report item 4 (no-timeout ordering) needed no action.
+
+Old-code check (scripts, rust/src, register.tsx stashed): silent-failures failed on stamp-marker-dangling [both], git-killed-externally [bash] (both checks), bell.sh volume, lib.sh volume. Stash popped, list empty.
+Final runs: silent-failures PASS; difftest 164/164 identical (one run showed payload 145 UNSTABLE, differed once and matched on retry; two reruns were clean); bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail.

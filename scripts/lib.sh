@@ -62,7 +62,9 @@ _nf_stamp_dir() {
     # Unusable (symlink, file, other owner): back-offs and rate limits are per-render only.
     # Say so once an hour, via a marker in ~/.claude (twin of errlog::stamp_dir_bad).
     local _m="${_h%/}/.claude/.nerdflair-stamp-dir-bad"
-    if [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
+    # -L too: a dangling symlink "does not exist" to -e, yet the write below refuses it.
+    if [[ -L "$_m" ]]; then :   # a symlink marker can never be written (O_NOFOLLOW), so it cannot rate limit: stay quiet
+    elif [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
       _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only"
       [[ -L "$_m" ]] || : > "$_m" 2>/dev/null
     fi
@@ -275,6 +277,12 @@ _nf_read_state() {
     NF_CUR_CHIME_VOLUME="$_old_bell_volume"
   fi
   NF_CUR_CHIME_VOLUME="${NF_CUR_CHIME_VOLUME:-$NF_DEFAULT_CHIME_VOLUME}"
+  # Validated once for the renderer, bell.sh and nerdflair.sh alike: awk would read "loud" as 0
+  # (muted) while the status line says 100%. Twin of the Rust check in main.rs.
+  if [[ ! "$NF_CUR_CHIME_VOLUME" =~ ^[0-9]*\.?[0-9]+$ ]]; then
+    _nf_err chime-volume "chime_volume \"$NF_CUR_CHIME_VOLUME\" is not a number; using $NF_DEFAULT_CHIME_VOLUME (100%)"
+    NF_CUR_CHIME_VOLUME="$NF_DEFAULT_CHIME_VOLUME"
+  fi
 }
 
 # ── Write state file atomically using jq ─────────────────────────
