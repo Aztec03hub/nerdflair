@@ -1,4 +1,4 @@
-import type { Register } from 'claude-code'
+import type { Hook, Register } from 'claude-code'
 
 // The nerdflair status line, drawn as a tree instead of a line of text, so
 // each readout can light under the pointer and explain itself.
@@ -150,7 +150,9 @@ let lastError = ''
 // These are module variables, so a hot reload forgets them. That costs only
 // the two timestamps: the attached/not-attached state is re-read from
 // surfaces() on every render and is always correct. After a reload an active
-// session reads as "just attached", which is honest enough.
+// session reads as "just attached"; the card says "since reload" then, via
+// rcSinceGuess, rather than presenting a guess as an observed time.
+let rcSinceGuess = false // rcSince was set by a render, not by an attach event
 let rcSince = 0 // when the current remote attachment began
 let rcLeftAt = 0 // when the last one ended
 let rcSeen: string[] = [] // the remote surfaces currently attached
@@ -173,6 +175,28 @@ const RC_LINGER_MS = 30000
 function plain(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f\x7f]/g, ' ')
+}
+
+// THE RULE: no silent failures. A fallback is fine, but every absorbed failure
+// is logged or shown, once, with the reason. `note` logs to the debug log only
+// (`to: 'debug'` keeps it off the transcript); `report` also makes it the
+// band's current error, which the red band and the stale marker display.
+// Deduped on the text, so a failure that repeats every render logs one line.
+// Callers keep the reason stable (no ages or counters in it) so the dedupe holds.
+type Log = { ui: { log: (text: string, opts: { to: 'debug' }) => unknown } }
+type RenderArgs = Parameters<Hook<'ui.render'>>
+const seen = new Set<string>()
+function note($: Log, where: string, why: unknown): string {
+  const msg = `${where}: ${plain(String(why)).slice(0, 300)}`
+  if (!seen.has(msg)) {
+    if (seen.size >= 200) seen.clear() // bounded: a reason that varies would grow this forever
+    seen.add(msg)
+    $.ui.log(`nerdflair-band: ${msg}`, { to: 'debug' })
+  }
+  return msg
+}
+function report($: Log, where: string, why: unknown): void {
+  lastError = note($, where, why)
 }
 
 // The band must never wrap. `--json` hands over UNTRUNCATED text (the MCP
@@ -270,11 +294,28 @@ const TTL_MS = 2000
 const STALE_MS = 30000
 let inflight: Promise<Seg[] | null> | null = null
 
+// Test seam: module state outlives a hook registration, so cases in one test
+// file would see each other's cache and errors. The engine never calls this.
+export function resetStateForTests(): void {
+  HOME = ''
+  cache = null
+  lastError = ''
+  inflight = null
+  seen.clear()
+  rcSince = 0
+  rcLeftAt = 0
+  rcSeen = []
+  rcSinceGuess = false
+}
+
 export const register: Register = on => {
   // Timestamp the transitions. The state itself still comes from surfaces();
   // these only make "attached 14m ago" and "left 8s ago" possible.
   on('session.attach', async ($, e, next) => {
-    if (e.surface !== 'terminal' && rcSince === 0) rcSince = await $.clock.now()
+    if (e.surface !== 'terminal' && rcSince === 0) {
+      rcSince = await $.clock.now()
+      rcSinceGuess = false
+    }
     return next(e)
   })
   on('session.detach', async ($, e, next) => {
@@ -289,265 +330,432 @@ export const register: Register = on => {
     return r
   })
 
+  // The whole render is guarded: an exception anywhere below is reported (debug
+  // log, once) and the engine draws its own UI, so the plugin can neither break
+  // the screen nor fail without a trace.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const now = await $.clock.now()
-    if (!HOME) {
+    try {
+      return await band($, e)
+    } catch (err) {
+      report($, 'render failed, engine UI drawn instead', err)
+      return next(e)
+    }
+  })
+
+}
+
+async function band($: RenderArgs[0], e: RenderArgs[1]) {
+  const now = await $.clock.now()
+  if (!HOME) {
+    // No home, no renderer path. Say so in the band (red, with the reason)
+    // instead of silently handing the screen back to the engine, which
+    // would repeat every render forever with no explanation.
+    let why = ''
+    try {
       const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
       HOME = h.exitCode === 0 ? h.stdout.trim() : ''
-      if (!HOME) return next(e) // no home, no renderer: let the engine draw its own
+      if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
+    } catch (err) {
+      why = `printenv HOME failed: ${err}`
     }
-    if (!cache || now - cache.at > TTL_MS) {
-      // One refresh at a time: renders arrive faster than the renderer returns,
-      // and each would otherwise spawn its own.
-      const segs = await (inflight ??= (async () => {
-        try {
-          const u = await $.session.usage()
-          const cwd = await $.session.cwd()
-          // The REAL session id, not a made-up one. The renderer appends the
-          // session's cumulative cost to ~/.claude/nerdflair-usage.tsv keyed
-          // by this; a phantom id would add a second row carrying the same
-          // real dollars, and burn, block and the repo total would all count
-          // this session twice. With the true id the append is idempotent:
-          // same key, same value, and a shared 60s stamp rate-limits it.
-          const sid = await $.session.id()
-          const model = await $.session.model()
-          const five = u.rateLimits?.find(r => r.kind === 'five_hour')
-          const seven = u.rateLimits?.find(r => r.kind === 'seven_day')
-          // resetsAt is an ISO string here; the renderer reads an epoch,
-          // which is the shape the host's own status-line payload uses.
-          const epoch = (t?: string) =>
-            t ? Math.floor(Date.parse(t) / 1000) : undefined
-          const payload = {
-            session_id: sid,
-            transcript_path: '/nonexistent/band.jsonl',
-            workspace: { current_dir: cwd, project_dir: cwd },
-            // The real model, as /model shows it; this used to say "Opus 5"
-            // whatever was running.
-            model: { display_name: model, id: model },
+    if (!HOME) report($, 'HOME lookup', why)
+  }
+  if (HOME && (!cache || now - cache.at > TTL_MS)) {
+    // One refresh at a time: renders arrive faster than the renderer returns,
+    // and each would otherwise spawn its own.
+    const segs = await (inflight ??= (async () => {
+      // Which step is running, so a failure says WHERE it happened.
+      let stage = 'usage'
+      try {
+        const u = await $.session.usage()
+        stage = 'session'
+        const cwd = await $.session.cwd()
+        // The REAL session id, not a made-up one. The renderer appends the
+        // session's cumulative cost to ~/.claude/nerdflair-usage.tsv keyed
+        // by this; a phantom id would add a second row carrying the same
+        // real dollars, and burn, block and the repo total would all count
+        // this session twice. With the true id the append is idempotent:
+        // same key, same value, and a shared 60s stamp rate-limits it.
+        const sid = await $.session.id()
+        const model = await $.session.model()
+        const five = u.rateLimits?.find(r => r.kind === 'five_hour')
+        const seven = u.rateLimits?.find(r => r.kind === 'seven_day')
+        // resetsAt is an ISO string here; the renderer reads an epoch,
+        // which is the shape the host's own status-line payload uses.
+        // An unparseable time is OMITTED (and noted), never sent as NaN, which
+        // JSON turns into null and the renderer would take for "no reset".
+        const epoch = (t?: string) => {
+          if (!t) return undefined
+          const s = Math.floor(Date.parse(t) / 1000)
+          if (Number.isFinite(s)) return s
+          note($, 'payload', `rate limit resetsAt is not a date, resets_at omitted: ${t}`)
+          return undefined
+        }
+        // NEVER invent a figure. A field the host did not give is OMITTED from
+        // the payload and noted once, so its segments vanish honestly instead
+        // of showing 200000 tokens, 0% or $0, which the renderer would also
+        // append to the shared usage ledger as if real.
+        const ctx = u.context as typeof u.context | undefined
+        if (!ctx) note($, 'payload', 'usage.context missing: context segments omitted')
+        else {
+          if (ctx.tokens === undefined) note($, 'payload', 'usage.context.tokens missing: omitted')
+          if (ctx.percent === undefined) note($, 'payload', 'usage.context.percent missing: omitted')
+        }
+        if (!u.cost) note($, 'payload', 'usage.cost missing: cost segments omitted')
+        if (!five) note($, 'payload', 'no five_hour rate limit reported: that window is omitted')
+        if (!seven) note($, 'payload', 'no seven_day rate limit reported: that window is omitted')
+        const payload = {
+          session_id: sid,
+          transcript_path: '/nonexistent/band.jsonl',
+          workspace: { current_dir: cwd, project_dir: cwd },
+          // The real model, as /model shows it; this used to say "Opus 5"
+          // whatever was running.
+          model: { display_name: model, id: model },
+          ...(ctx && {
             context_window: {
-              context_window_size: u.context?.window ?? 200000,
-              total_input_tokens: u.context?.tokens ?? 0,
-              total_output_tokens: 0,
-              used_percentage: u.context?.percent ?? 0,
+              context_window_size: ctx.window,
+              ...(ctx.tokens !== undefined && { total_input_tokens: ctx.tokens }),
+              ...(ctx.percent !== undefined && { used_percentage: ctx.percent }),
             },
+          }),
+          ...(u.cost && {
             cost: {
-              total_cost_usd: u.cost?.usd ?? 0,
+              total_cost_usd: u.cost.usd,
+              // PLACEHOLDERS, not measurements: a plugin is not given the
+              // session's wall-clock or API durations. 1 keeps the renderer
+              // from dividing by zero; the throughput and API-time segments
+              // are therefore not meaningful in the band.
               total_duration_ms: 1,
               total_api_duration_ms: 1,
             },
-            rate_limits: {
-              ...(five && {
-                five_hour: {
-                  used_percentage: five.percentUsed,
-                  resets_at: epoch(five.resetsAt),
-                },
-              }),
-              ...(seven && {
-                seven_day: {
-                  used_percentage: seven.percentUsed,
-                  resets_at: epoch(seven.resetsAt),
-                },
-              }),
-            },
-          }
-          const r = await $.process.run([BIN(), '--json'], {
-            stdin: JSON.stringify(payload),
-            timeoutMs: 5000,
-          })
-          if (r.exitCode !== 0 || !r.stdout) {
-            // The OTHER silent path. The catch below reports throws, but a
-            // non-zero exit or empty stdout returned null with no message,
-            // so the band vanished and said nothing, which is exactly as
-            // undiagnosable as the swallowed exception was.
-            lastError = `exit ${r.exitCode}: ${(r.stderr || '(no stderr)').slice(0, 160)}`
-            return null
-          }
-          return (JSON.parse(r.stdout) as { segments: Seg[] }).segments ?? []
-        } catch (err) {
-          // Do NOT swallow this. A silent catch here is why the first version
-          // drew nothing with no way to find out why: the band simply was not
-          // there, which is indistinguishable from "hover does not work".
-          // Surface it IN the band instead, where it cannot be missed.
-          lastError = String(err).slice(0, 200)
+          }),
+          rate_limits: {
+            ...(five && {
+              five_hour: {
+                used_percentage: five.percentUsed,
+                resets_at: epoch(five.resetsAt),
+              },
+            }),
+            ...(seven && {
+              seven_day: {
+                used_percentage: seven.percentUsed,
+                resets_at: epoch(seven.resetsAt),
+              },
+            }),
+          },
+        }
+        stage = 'run'
+        const r = await $.process.run([BIN(), '--json'], {
+          stdin: JSON.stringify(payload),
+          timeoutMs: 5000,
+        })
+        if (r.exitCode !== 0) {
+          // Non-zero exit: say which, with the renderer's own words. 127 is
+          // the shell's "command not found".
+          const err = (r.stderr || '(no stderr; a signal reads as exit 1)').slice(0, 160)
+          report(
+            $,
+            r.exitCode === 127 ? `renderer not found at ${BIN()}; run the installer` : 'renderer failed',
+            `exit ${r.exitCode}: ${err}`,
+          )
           return null
         }
-      })().finally(() => {
-        inflight = null
-      }))
-      if (segs) cache = { at: now, segs }
-      // A renderer that keeps failing must not leave figures frozen as if
-      // they were live: after 30 s the old ones go and the error shows.
-      else if (cache && now - cache.at > STALE_MS) cache = null
+        if (r.stderr) note($, 'renderer warned on stderr (exit 0)', r.stderr.slice(0, 200))
+        if (r.isStdoutTruncated) {
+          report($, 'renderer output truncated', 'stdout exceeded the capture limit, so it cannot be parsed')
+          return null
+        }
+        if (!r.stdout) {
+          report($, 'renderer printed nothing', 'exit 0 but empty stdout')
+          return null
+        }
+        stage = 'parse'
+        let j: unknown
+        try {
+          j = JSON.parse(r.stdout)
+        } catch (err) {
+          // The sample is what the renderer actually said, which is how a
+          // stale binary printing the plain status line shows itself.
+          report($, 'renderer output is not JSON', `${err}; starts: ${r.stdout.slice(0, 80)}`)
+          return null
+        }
+        stage = 'validate'
+        const segs = (j as { segments?: unknown } | null)?.segments
+        if (!Array.isArray(segs)) {
+          report($, 'renderer JSON has no segments array', `starts: ${r.stdout.slice(0, 80)}`)
+          return null
+        }
+        if (segs.length === 0) {
+          report($, 'renderer returned 0 segments', 'an empty list is an error here, not "nothing to show"')
+          return null
+        }
+        if (!segs.every(s => s && typeof s.id === 'string' && typeof s.text === 'string')) {
+          report($, 'renderer segments malformed', 'each needs a string id and text')
+          return null
+        }
+        return segs as Seg[]
+      } catch (err) {
+        // Do NOT swallow this. A silent catch here is why the first version
+        // drew nothing with no way to find out why. It is reported, with the
+        // step that failed, to the debug log and into the band.
+        const msg = String(err)
+        if (stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) {
+          report($, `renderer not found at ${BIN()}; run the installer`, msg)
+        } else if (stage === 'run' && /time(d)? ?out/i.test(msg)) {
+          report($, 'renderer timed out (5 s)', msg)
+        } else {
+          report($, `refresh failed at ${stage}`, msg)
+        }
+        return null
+      }
+    })().finally(() => {
+      inflight = null
+    }))
+    if (segs) {
+      cache = { at: now, segs }
+      // A good refresh ends the failure; forget its log line so a later
+      // recurrence is logged again rather than swallowed as a duplicate.
+      if (lastError) seen.delete(lastError)
+      lastError = ''
     }
-    // Cheap and never rejects, so it is read every render rather than cached:
-    // the whole point of this chip is that it is never stale.
-    // plain(): surface names come from outside and reach a Text and a tmux popup
-    rcSeen = (await $.session.surfaces()).filter(x => x !== 'terminal').map(plain)
-    if (rcSeen.length > 0 && rcSince === 0) rcSince = now
-    if (rcSeen.length === 0 && rcSince !== 0) {
-      rcLeftAt = now
-      rcSince = 0
-    }
+    // A renderer that keeps failing must not leave figures frozen as if
+    // they were live: until 30 s pass the old ones stay, marked `stale`
+    // below with the reason; after that they go and the red error shows.
+    else if (cache && now - cache.at > STALE_MS) cache = null
+  }
+  // Cheap and never rejects, so it is read every render rather than cached:
+  // the whole point of this chip is that it is never stale.
+  // plain(): surface names come from outside and reach a Text and a tmux popup
+  rcSeen = (await $.session.surfaces()).filter(x => x !== 'terminal').map(plain)
+  if (rcSeen.length > 0 && rcSince === 0) {
+    rcSince = now
+    rcSinceGuess = true // not observed: could have been attached before we loaded
+  }
+  if (rcSeen.length === 0 && rcSince !== 0) {
+    rcLeftAt = now
+    rcSince = 0
+  }
 
-    const { Box, Text, Button } = $.ui.resolve(e)
-    if (!cache || cache.segs.length === 0) {
-      if (!lastError) return next(e)
-      return (
-        <Box>
-          <Text color="#f87171">nerdflair-band: {plain(lastError)}</Text>
-        </Box>
-      )
-    }
+  const { Box, Text, Button } = $.ui.resolve(e)
+  if (!cache) {
+    // No figures to show. Say why in the band. An empty reason cannot happen
+    // (every failed refresh sets one), so if it does, that is itself reported.
+    if (!lastError) report($, 'band', 'no figures and no recorded reason (plugin bug)')
+    return (
+      <Box>
+        <Text color="#f87171">nerdflair-band: {plain(lastError)}</Text>
+      </Box>
+    )
+  }
+  // Old figures after a failed refresh are drawn, but marked: the age and the
+  // reason, in red at the end of the row, so they are not read as live.
+  const staleText = lastError ? `stale ${ago(now - cache.at)}: ${plain(lastError).slice(0, 60)}` : ''
 
-    // The Remote Control pill: always present, three states, hover panel.
-    // Always present is the point. An indicator that only appears when remote
-    // control is on cannot tell you it is OFF, and "no indicator" is also what
-    // a broken indicator looks like, which is how the native one went missing
-    // without anyone being able to say when.
-    // The BRIDGE decides the state, not surfaces(). The renderer reports it
-    // from CLAUDE_CODE_BRIDGE_SESSION_ID, which Claude Code maintains in its
-    // own process as bridges attach and detach. surfaces() answers a
-    // different question, "who is drawing right now", and measured on this
-    // machine it said terminal-only while the session file carried a live
-    // bridgeSessionId: the chip read "RC off" with remote control attached.
-    // surfaces() is still worth showing, as the detail of WHERE it is drawing,
-    // so it stays in the card.
-    const rcSeg = cache.segs.find(s => s.id === 'remote_control')
-    const rcOn = rcSeg ? rcSeg.text === 'rc on' : rcSeen.length > 0
-    const rcJustLeft = !rcOn && rcLeftAt > 0 && now - rcLeftAt < RC_LINGER_MS
-    // rcSeen can be empty while rcOn is true: a bridge is attached but no
-    // remote client is painting. "on" is the honest label for that.
-    const rc = rcOn
+  // The Remote Control pill: always present, three states, hover panel.
+  // Always present is the point. An indicator that only appears when remote
+  // control is on cannot tell you it is OFF, and "no indicator" is also what
+  // a broken indicator looks like, which is how the native one went missing
+  // without anyone being able to say when.
+  // The BRIDGE decides the state, not surfaces(). The renderer reports it
+  // from CLAUDE_CODE_BRIDGE_SESSION_ID, which Claude Code maintains in its
+  // own process as bridges attach and detach. surfaces() answers a
+  // different question, "who is drawing right now", and measured on this
+  // machine it said terminal-only while the session file carried a live
+  // bridgeSessionId: the chip read "RC off" with remote control attached.
+  // surfaces() is still worth showing, as the detail of WHERE it is drawing,
+  // so it stays in the card.
+  // The renderer says exactly `rc on` or `rc off`. Anything else, or no
+  // segment at all (an older or newer binary), is UNKNOWN and shown as such,
+  // in amber, with a log line. It used to fall back to surfaces(), which the
+  // note above says is wrong, so the chip could read "off" while attached.
+  const rcSeg = cache.segs.find(s => s.id === 'remote_control')
+  const rcRaw = rcSeg ? plain(rcSeg.text).trim() : undefined
+  const rcUnknown = rcRaw !== 'rc on' && rcRaw !== 'rc off'
+  if (rcUnknown) {
+    note(
+      $,
+      'remote control chip',
+      rcRaw === undefined
+        ? 'renderer sent no remote_control segment (old binary?), state unknown'
+        : `unexpected remote_control text "${rcRaw.slice(0, 40)}", state unknown`,
+    )
+  }
+  const rcOn = rcRaw === 'rc on'
+  const rcJustLeft = !rcUnknown && !rcOn && rcLeftAt > 0 && now - rcLeftAt < RC_LINGER_MS
+  // rcSeen can be empty while rcOn is true: a bridge is attached but no
+  // remote client is painting. "on" is the honest label for that.
+  const rc = rcUnknown
+    ? { color: RC_AMBER, glyph: '?', label: 'unknown' }
+    : rcOn
       ? { color: RC_GREEN, glyph: '⬤', label: rcSeen.length > 0 ? rcSeen.join('+') : 'on' }
       : rcJustLeft
         ? { color: RC_AMBER, glyph: '◌', label: `left ${ago(now - rcLeftAt)}` }
         : { color: RC_OFF, glyph: '◯', label: 'off' }
-    const rcCard = rcOn
+  const rcCard = rcUnknown
+    ? [
+        'the renderer did not say whether Remote Control is on',
+        rcRaw === undefined ? 'no remote_control segment in its output' : `it sent "${rcRaw.slice(0, 40)}"`,
+        'the binary may be out of step with this plugin; see the debug log',
+      ]
+    : rcOn
+    ? [
+        'a Remote Control bridge is attached to this session',
+        rcSeen.length > 0
+          ? `drawing on: ${rcSeen.join(', ')}`
+          : 'no remote client is drawing right now',
+        `seen attached for: ${ago(now - rcSince)}${rcSinceGuess ? ' (since reload)' : ''}`,
+        'anything typed there runs here, in this working directory',
+        'source: CLAUDE_CODE_BRIDGE_SESSION_ID, read fresh each render',
+      ]
+    : rcJustLeft
       ? [
-          'a Remote Control bridge is attached to this session',
-          rcSeen.length > 0
-            ? `drawing on: ${rcSeen.join(', ')}`
-            : 'no remote client is drawing right now',
-          `seen attached for: ${ago(now - rcSince)}`,
-          'anything typed there runs here, in this working directory',
-          'source: CLAUDE_CODE_BRIDGE_SESSION_ID, read fresh each render',
+          `last remote client detached ${ago(now - rcLeftAt)} ago`,
+          'the terminal is the only surface again',
         ]
-      : rcJustLeft
-        ? [
-            `last remote client detached ${ago(now - rcLeftAt)} ago`,
-            'the terminal is the only surface again',
-          ]
-        : [
-            'no remote client attached; terminal only',
-            'from $.session.surfaces(): anything not "terminal" is remote',
-            'Claude Code used to show this in green and no longer does',
-          ]
+      : [
+          'no remote client attached; terminal only',
+          'from $.session.surfaces(): anything not "terminal" is remote',
+          'Claude Code used to show this in green and no longer does',
+        ]
 
-    // Clipped once for the whole row, before anything is drawn: the budget is
-    // a property of the row, so it cannot be decided inside a per-segment map.
-    // The RC chip is charged against the budget too, as it occupies the row
-    // like any other segment.
-    // remote_control is drawn by the chip, so it must not also appear as an
-    // ordinary segment. One list from here on, so the chip and the segments
-    // cannot disagree about who is charged against the width budget.
-    const segs = cache.segs.filter(s => s.id !== 'remote_control')
-    // The chip is NOT in the budget. It was, and the budget duly clipped it to
-    // "RC …", which throws away the one thing it exists to say. A state
-    // indicator that can be shortened into ambiguity is worse than no
-    // indicator, so it is charged against the budget as a fixed cost and the
-    // other segments share what is left.
-    const rcText = `${rc.glyph} RC ${rc.label}`
-    const shown = budget(segs.map(s => plain(s.text)), SEP.length, rcText.length + SEP.length)
+  // Clipped once for the whole row, before anything is drawn: the budget is
+  // a property of the row, so it cannot be decided inside a per-segment map.
+  // The RC chip is charged against the budget too, as it occupies the row
+  // like any other segment.
+  // remote_control is drawn by the chip, so it must not also appear as an
+  // ordinary segment. One list from here on, so the chip and the segments
+  // cannot disagree about who is charged against the width budget.
+  const segs = cache.segs.filter(s => s.id !== 'remote_control')
+  // The chip is NOT in the budget. It was, and the budget duly clipped it to
+  // "RC …", which throws away the one thing it exists to say. A state
+  // indicator that can be shortened into ambiguity is worse than no
+  // indicator, so it is charged against the budget as a fixed cost and the
+  // other segments share what is left.
+  const rcText = `${rc.glyph} RC ${rc.label}`
+  // The stale marker is charged too, so it cannot push the row into wrapping.
+  const shown = budget(
+    segs.map(s => plain(s.text)),
+    SEP.length,
+    rcText.length + SEP.length + (staleText ? staleText.length + SEP.length : 0),
+  )
 
-    // A CLICK opens a real floating popup, drawn by tmux.
-    //
-    // This is the way out of the whole overlay problem. The engine cannot
-    // float anything here (see the note above the budget), but tmux can,
-    // because tmux owns the screen: its own menus are drawn exactly this way.
-    // Verified before wiring, by attaching a throwaway client to a scratch
-    // session and finding the popup's title and 105 border cells in the
-    // client's pty stream.
-    //
-    // It has to be a click rather than a hover IN HERE, and that is not a
-    // preference. No hover event ever crosses to a plugin: the engine puts
-    // the terminal in mouse mode 1003 and consumes motion itself, so this
-    // code never learns the pointer moved. `ui.press` IS delivered, so a
-    // press is the only moment a plugin can act on.
-    //
-    // The pointer CAN be had from outside the process, and the hover panels
-    // in band/bridge/nfpty.py do exactly that: it holds the pty, so motion
-    // reaches it before the engine, and it forwards every byte unchanged so
-    // the engine's own highlighting is untouched. Routes that look easier
-    // and are not, each closed by a measurement rather than a guess, are in
-    // band/bridge/inspector-lab/README.md.
-    //
-    // `plain` draws "the label alone", no [ brackets ], so the band looks
-    // exactly as it did and the pointer still lights the label.
-    const popup = (title: string, bodyText: string, x: number) => {
-      void $.process.run(['bash', POPUP(), String(x), title, bodyText], {
-        timeoutMs: 60000,
-      })
+  // A CLICK opens a real floating popup, drawn by tmux.
+  //
+  // This is the way out of the whole overlay problem. The engine cannot
+  // float anything here (see the note above the budget), but tmux can,
+  // because tmux owns the screen: its own menus are drawn exactly this way.
+  // Verified before wiring, by attaching a throwaway client to a scratch
+  // session and finding the popup's title and 105 border cells in the
+  // client's pty stream.
+  //
+  // It has to be a click rather than a hover IN HERE, and that is not a
+  // preference. No hover event ever crosses to a plugin: the engine puts
+  // the terminal in mouse mode 1003 and consumes motion itself, so this
+  // code never learns the pointer moved. `ui.press` IS delivered, so a
+  // press is the only moment a plugin can act on.
+  //
+  // The pointer CAN be had from outside the process, and the hover panels
+  // in band/bridge/nfpty.py do exactly that: it holds the pty, so motion
+  // reaches it before the engine, and it forwards every byte unchanged so
+  // the engine's own highlighting is untouched. Routes that look easier
+  // and are not, each closed by a measurement rather than a guess, are in
+  // band/bridge/inspector-lab/README.md.
+  //
+  // `plain` draws "the label alone", no [ brackets ], so the band looks
+  // exactly as it did and the pointer still lights the label.
+  //
+  // The result is READ. popup.sh exits non-zero, with a one-line reason on
+  // stderr, when it cannot draw (no tmux, not inside tmux, display-popup
+  // failed); that reason is toasted and logged. A 60 s timeout is NOT a
+  // failure: it is the popup's own lifetime, left open and reaped.
+  const popup = (title: string, bodyText: string, x: number) => {
+    const fail = (why: string) => {
+      const msg = note($, 'popup', why)
+      void $.ui.toast(`nerdflair-band: ${msg}`)
     }
-    // Where each readout starts, so the popup opens under the thing clicked
-    // instead of in the corner. The press event carries no coordinates, but
-    // the widths are already known here: they are what the budget produced.
-    let col = 0
-    const colOf: number[] = []
-    for (const t of shown) {
-      colOf.push(col)
-      col += t.length + SEP.length
-    }
+    void (async () => {
+      try {
+        const r = await $.process.run(['bash', POPUP(), String(x), title, bodyText], {
+          timeoutMs: 60000,
+        })
+        if (r.exitCode !== 0) fail(`exit ${r.exitCode}: ${(r.stderr || '(no stderr)').trim().slice(0, 160)}`)
+      } catch (err) {
+        if (!/time(d)? ?out/i.test(String(err))) fail(`could not run ${POPUP()}: ${err}`)
+      }
+    })()
+  }
+  // Where each readout starts, so the popup opens under the thing clicked
+  // instead of in the corner. The press event carries no coordinates, but
+  // the widths are already known here: they are what the budget produced.
+  let col = 0
+  const colOf: number[] = []
+  for (const t of shown) {
+    colOf.push(col)
+    col += t.length + SEP.length
+  }
 
-    const rcChipWidth = rcText.length + SEP.length
+  const rcChipWidth = rcText.length + SEP.length
 
-    return (
-      <Box flexDirection="column">
-        <Box>
-          {/* A Text with a hover style needs a KEYED Box around it: Claude Code
-              2.1.296 refuses the whole tree otherwise ("Text hover has no Box
-              with a key around it") and draws its own, which is why the band
-              and the Remote Control pill never appeared. */}
-          <Box key="rc">
-            <Button
-              plain
-              key="rc-button"
-              onPress={() => popup('Remote Control', rcCard.join(' · '), 0)}
-            >
-              <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
-                {rcText}
-              </Text>
-            </Button>
-          </Box>
-          <Text color={DIM}>{SEP}</Text>
-          {segs.map((s, i) => {
-            const card = CARDS[s.id]
-            const color = card?.color ?? DIM
-            const full = plain(s.text)
-            // The full value leads whenever the row had to clip it, or the
-            // popup would explain a number you cannot read.
-            const detail = card
-              ? (shown[i] !== full ? `${full}  —  ` : '') + card.lines.join(' · ')
-              : full
-            return (
-              <Box key={`seg-${s.id}`}>
-                {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
-                <Button
-                  plain
-                  key={s.id}
-                  onPress={() =>
-                    popup(card?.title ?? s.id, detail, rcChipWidth + (colOf[i] ?? 0))
-                  }
-                >
-                  <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
-                    {shown[i]}
-                  </Text>
-                </Button>
-              </Box>
-            )
-          })}
+  // budget() stops at the per-segment floor rather than spin. If the row is
+  // STILL too wide then it will wrap, which is what it exists to prevent:
+  // say so, once, instead of wrapping unexplained.
+  if (rcChipWidth + shown.reduce((n, t) => n + len(t) + SEP.length, 0) > BAND_MAX + SEP.length) {
+    note($, 'band width', `row still over ${BAND_MAX} columns at the segment floor; it will wrap`)
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        {/* A Text with a hover style needs a KEYED Box around it: Claude Code
+            2.1.296 refuses the whole tree otherwise ("Text hover has no Box
+            with a key around it") and draws its own, which is why the band
+            and the Remote Control pill never appeared. */}
+        <Box key="rc">
+          <Button
+            plain
+            key="rc-button"
+            onPress={() => popup('Remote Control', rcCard.join(' · '), 0)}
+          >
+            <Text color={rc.color} hover={{ bold: true, backgroundColor: LIT }}>
+              {rcText}
+            </Text>
+          </Button>
         </Box>
+        <Text color={DIM}>{SEP}</Text>
+        {segs.map((s, i) => {
+          const card = CARDS[s.id]
+          // Drawn grey with its own text, which is fine, but a renderer newer
+          // than the CARDS table is drift worth one line in the log.
+          if (!card) note($, 'segment', `unknown id "${s.id}", drawn without a card (renderer newer than this plugin?)`)
+          const color = card?.color ?? DIM
+          const full = plain(s.text)
+          // The full value leads whenever the row had to clip it, or the
+          // popup would explain a number you cannot read.
+          const detail = card
+            ? (shown[i] !== full ? `${full}  —  ` : '') + card.lines.join(' · ')
+            : full
+          return (
+            <Box key={`seg-${s.id}`}>
+              {i > 0 ? <Text color={DIM}>{SEP}</Text> : null}
+              <Button
+                plain
+                key={s.id}
+                onPress={() => {
+                  const at = colOf[i]
+                  if (at === undefined) note($, 'popup', `no column known for ${s.id}, opened at the chip`)
+                  popup(card?.title ?? s.id, detail, rcChipWidth + (at ?? 0))
+                }}
+              >
+                <Text color={color} hover={{ bold: true, backgroundColor: LIT }}>
+                  {shown[i]}
+                </Text>
+              </Button>
+            </Box>
+          )
+        })}
+        {staleText ? <Text color="#f87171">{SEP + staleText}</Text> : null}
       </Box>
-    )
-  })
+    </Box>
+  )
 }
 
