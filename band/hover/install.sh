@@ -53,9 +53,29 @@ EOF
 # .bashrc and it prepends ~/.local/bin, so the block must end it as well. A
 # ~/.bash_profile or ~/.bash_login makes bash skip .profile, so they are covered.
 # (zsh reads .zprofile BEFORE .zshrc; .zshrc already ends last, so no .zprofile.)
-# Files an earlier version wrote a block to: stripped on install/uninstall, never added to.
-legacy() { [[ -f "$HOME/.zprofile" ]] && echo "$HOME/.zprofile"; return 0; }
-rcfiles() { for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login"; do [[ -f "$f" ]] && echo "$f"; done; }
+# The ONE login file bash reads: the first of these that exists. The block goes
+# in that one only; if none exists, ~/.profile is created, because without any
+# of them a login shell (a tmux window) reads no startup file at all.
+loginfile() {
+  local f
+  for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do [[ -f "$f" ]] && { echo "$f"; return; }; done
+  echo "$HOME/.profile"
+}
+# Where the block belongs: .bashrc and .zshrc if present, and the login file.
+rcfiles() {
+  local f
+  for f in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$f" ]] && echo "$f"; done
+  echo "$(loginfile)"
+}
+# Files that may hold a block this version would not write (an earlier version's
+# .zprofile, a login file bash does not read): stripped on install, never added.
+legacy() {
+  local f chosen; chosen=$(loginfile)
+  for f in "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+    [[ -f "$f" && "$f" != "$chosen" ]] && echo "$f"
+  done
+  return 0
+}
 
 # A file with a BEGIN marker and no END would lose everything after it, so the
 # markers must pair up before anything is stripped.
@@ -97,6 +117,7 @@ case "${1:-install}" in
       rc=0; paired "$f" || rc=$?
       if (( rc == 0 )); then tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"; fi
     done
+    [[ -f "$(loginfile)" ]] || : > "$(loginfile)"      # see loginfile
     for f in $(rcfiles); do
       # The block's `unalias claude` would drop a user's own alias (and its flags).
       if grep -qE '^[[:space:]]*alias[[:space:]]+claude=' "$f" 2>/dev/null; then
@@ -108,14 +129,19 @@ case "${1:-install}" in
       done=$((done + 1))
       tmp="$f.nf.$$"
       { strip "$f"; block; } > "$tmp"
-      if ! cmp -s "$tmp" "$f"; then cp -p "$f" "$f.nf-backup"; cat "$tmp" > "$f"; fi
+      if ! cmp -s "$tmp" "$f"; then
+        # The backup is the file as the user left it: made once, never replaced
+        # by a later install (that would overwrite it with a version holding our old block).
+        [[ -e "$f.nf-backup" ]] || cp -p "$f" "$f.nf-backup"
+        cat "$tmp" > "$f"
+      fi
       rm -f "$tmp"
       echo "  rc block in $f"
     done
     echo "hover installed: new shells start claude under the wrapper (inside tmux); $done rc file(s) updated, $skipped skipped"
     ;;
   uninstall)
-    for f in $(rcfiles) $(legacy); do
+    for f in $(rcfiles) $(legacy); do   # every file a block could be in
       rc=0; paired "$f" || rc=$?
       if (( rc == 1 )); then echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
       (( rc == 0 )) || continue
@@ -137,8 +163,11 @@ case "${1:-install}" in
     ;;
   status)
     for f in $(rcfiles); do
-      if grep -qF "$BEGIN" "$f"; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f)"; fi
+      if grep -qF "$BEGIN" "$f" 2>/dev/null; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f); run install.sh again"; fi
     done
+    # A login file created after install (a new ~/.bash_profile hides ~/.profile
+    # from bash) has no block until install runs again; this is how it is noticed.
+    echo "login file bash reads: $(loginfile)"
     [[ -x "$NF/bin/claude" ]] && echo "shim: yes" || echo "shim: NO"
     # Copied, not linked, so a repo update does not reach them by itself.
     for pair in "claude-shim:claude" "nf-tmux-heal:nf-tmux-heal" "nf-tmux-watch:nf-tmux-watch"; do

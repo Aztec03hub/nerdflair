@@ -100,7 +100,49 @@ printf 'alias claude="claude --foo"\n' > "$HOME/.bashrc"
 check "alias warning printed" 1 "$(bash "$INSTALL" install 2>&1 >/dev/null | grep -c 'defines alias claude')"
 # Every file broken: say so, do not claim success silently.
 rm -f "$HOME/.profile" "$HOME/.zshrc" "$HOME/.zprofile"; printf '# >>> nerdflair hover >>>\n' > "$HOME/.bashrc"
-check "all skipped: the summary says so" 1 "$(bash "$INSTALL" install 2>&1 | grep -c '0 rc file(s) updated, 1 skipped')"
+check "all skipped: the summary says so" 1 "$(bash "$INSTALL" install 2>&1 | grep -c '1 rc file(s) updated, 1 skipped')"
+
+# ── login file selection, backups, late files, the function, dash ───────────
+bash "$INSTALL" uninstall >/dev/null 2>&1
+rm -f "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"
+rm -f "$HOME/.bashrc.nf-backup"       # left by the earlier cases
+printf 'export BR=1\n' > "$HOME/.bashrc"; cp "$HOME/.bashrc" "$ROOT/br0"
+bash "$INSTALL" install >/dev/null 2>&1
+check "no login file at all: ~/.profile is created with the block" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.profile" 2>/dev/null)"
+check "a login shell with no prior files now gets the function" "NF:function" "$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" -lic 'echo "NF:$(type -t claude)"' 2>/dev/null | grep -a '^NF:' | tail -1)"
+
+# bash reads only the first of .bash_profile/.bash_login/.profile: one block, in that one.
+printf 'export BP=1\n' > "$HOME/.bash_profile"; printf 'export BL=1\n' > "$HOME/.bash_login"
+bash "$INSTALL" install >/dev/null 2>&1
+check "three login files: only .bash_profile has the block" "1 0 0" "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bash_profile") $(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bash_login") $(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.profile")"
+
+# The backup is the file as the user left it, and survives later installs.
+bash "$INSTALL" install >/dev/null 2>&1
+check "backup holds the pristine original after repeat installs" "$(cat "$ROOT/br0")" "$(cat "$HOME/.bashrc.nf-backup")"
+printf '\n# my edit\n' >> "$HOME/.bashrc"
+bash "$INSTALL" install >/dev/null 2>&1
+check "backup is not overwritten by a later changing install" "$(cat "$ROOT/br0")" "$(cat "$HOME/.bashrc.nf-backup")"
+
+# A login file created AFTER install is noticed by status, and fixed by install.
+rm -f "$HOME/.bash_profile"; bash "$INSTALL" install >/dev/null 2>&1
+printf 'export LATE=1\n' > "$HOME/.bash_profile"
+check "late .bash_profile: status says to re-run install" 1 "$(bash "$INSTALL" status 2>&1 | grep -c 'rc block: NO .*bash_profile')"
+bash "$INSTALL" install >/dev/null 2>&1
+check "late .bash_profile: install gives it the block" 1 "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bash_profile")"
+
+# Run claude THROUGH the function: with the shim present it runs the shim...
+printf '#!/bin/sh\necho SHIM\n' > "$HOME/.nerdflair/bin/claude"
+check "function runs the shim" "NF:SHIM" "NF:$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$BASH" -ic 'claude' 2>/dev/null | grep -a SHIM | tail -1)"
+# ...and with the shim gone it falls back to the real binary instead of failing.
+rm -f "$HOME/.nerdflair/bin/claude"
+check "no shim: the function falls back to the real claude" "REAL" "$(env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" "$BASH" -ic 'claude' 2>/dev/null | grep -a '^REAL$' | tail -1)"
+
+# dash (a POSIX sh reading .profile) must survive the block: no syntax error.
+if command -v dash >/dev/null; then
+  err=$(env -i HOME="$HOME" PATH="/usr/bin:/bin" dash -c '. "$HOME/.bash_profile"' 2>&1 >/dev/null | grep -ci 'bad substitution\|syntax error')
+  check "dash sourcing the login file: no bad substitution / syntax error" 0 "${err:-0}"
+fi
+command -v zsh >/dev/null && printf '  note: zsh present but its block is not exercised here\n'
 
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
