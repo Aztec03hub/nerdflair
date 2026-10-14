@@ -145,7 +145,7 @@ case "${1:-install}" in
     if systemctl --user show-environment >/dev/null 2>&1; then
       mkdir -p "$HOME/.config/systemd/user"
       install -m 644 "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service"
-      systemctl --user daemon-reload
+      systemctl --user daemon-reload || true      # a flaky user manager must not abort the rest
       systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
     fi
     done=0; skipped=0
@@ -192,7 +192,7 @@ case "${1:-install}" in
     if systemctl --user show-environment >/dev/null 2>&1; then
       systemctl --user disable --now nf-tmux-watch.service >/dev/null 2>&1 || true
       rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
-      systemctl --user daemon-reload
+      systemctl --user daemon-reload || true      # a flaky user manager must not abort the rest
     fi
     rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
     # The record of files we created is kept while any block is still in place
