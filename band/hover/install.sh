@@ -6,7 +6,8 @@
 # What install does, all of it reversible and none of it touching Claude Code:
 #   1. ~/.nerdflair/hover   -> link to band/bridge (the wrapper code)
 #   2. ~/.nerdflair/bin/    -> claude (the shim) and nf-tmux-heal, copied
-#   3. a marked block at the END of ~/.bashrc, ~/.zshrc, ~/.profile, ~/.bash_profile and ~/.bash_login (if present) that
+#   3. a marked block at the END of ~/.bashrc, ~/.zshrc and the one login file bash
+#      reads (~/.bash_profile, ~/.bash_login or ~/.profile; ~/.profile is created if none) that
 #      puts ~/.nerdflair/bin first on PATH and keeps tmux's socket out of /tmp
 #
 # Why this survives a Claude Code update: the shim finds the real claude on
@@ -96,6 +97,30 @@ strip() { # file: print it without our block
   awk -v b="$BEGIN" -v e="$END" '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$1"
 }
 
+# Take our block out of one file. A file we created empty (the backup made at
+# install is empty too) is removed rather than left behind as a 0-byte file; a
+# backup is removed only if it is exactly what the file is now.
+remove_block() { # file [uninstall]
+  local f=$1 rc=0 tmp
+  grep -qF "$BEGIN" "$f" 2>/dev/null || { [[ -n "${2:-}" ]] && cleanup_backup "$f"; return 0; }
+  paired "$f" || rc=$?
+  if (( rc == 1 )); then echo "${2:-install}: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
+  (( rc == 0 )) || return 0
+  tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
+  cleanup_backup "$f"
+}
+cleanup_backup() { # file
+  local f=$1
+  if [[ -f "$f.nf-backup" ]]; then
+    if cmp -s "$f.nf-backup" "$f"; then
+      rm -f "$f.nf-backup"
+      [[ -s "$f" ]] || rm -f "$f"          # it was empty before we touched it: leave it as we found it, absent
+    else
+      echo "uninstall: kept $f.nf-backup (it differs from $f); remove it when you no longer need it"
+    fi
+  fi
+}
+
 case "${1:-install}" in
   install)
     mkdir -p "$NF/bin"
@@ -113,12 +138,14 @@ case "${1:-install}" in
       systemctl --user enable --now nf-tmux-watch.service >/dev/null 2>&1 && echo "  tmux socket watcher running"
     fi
     done=0; skipped=0
-    for f in $(legacy); do   # a block an earlier version wrote there: remove it, add nothing
-      rc=0; paired "$f" || rc=$?
-      if (( rc == 0 )); then tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"; fi
+    # The file lists are read into arrays, never word-split: $HOME may hold a space.
+    mapfile -t old < <(legacy)
+    for f in "${old[@]}"; do   # a block an earlier version wrote there: remove it, add nothing
+      remove_block "$f"
     done
     [[ -f "$(loginfile)" ]] || : > "$(loginfile)"      # see loginfile
-    for f in $(rcfiles); do
+    mapfile -t targets < <(rcfiles)
+    for f in "${targets[@]}"; do
       # The block's `unalias claude` would drop a user's own alias (and its flags).
       if grep -qE '^[[:space:]]*alias[[:space:]]+claude=' "$f" 2>/dev/null; then
         echo "install: WARNING $f defines alias claude; the block replaces it. Move its flags into settings or the shim." >&2
@@ -141,16 +168,10 @@ case "${1:-install}" in
     echo "hover installed: new shells start claude under the wrapper (inside tmux); $done rc file(s) updated, $skipped skipped"
     ;;
   uninstall)
-    for f in $(rcfiles) $(legacy); do   # every file a block could be in
-      rc=0; paired "$f" || rc=$?
-      if (( rc == 1 )); then echo "uninstall: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
-      (( rc == 0 )) || continue
-      tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
-      # The backup install made is only ours to remove if it is exactly what
-      # the file is now (nothing the user edited since); otherwise say where it is.
-      if [[ -f "$f.nf-backup" ]]; then
-        if cmp -s "$f.nf-backup" "$f"; then rm -f "$f.nf-backup"; else echo "uninstall: kept $f.nf-backup (it differs from $f); remove it when you no longer need it"; fi
-      fi
+    mapfile -t every < <(rcfiles; legacy)
+    for f in "${every[@]}"; do   # every file a block could be in
+      [[ -f "$f" ]] || continue
+      remove_block "$f" uninstall
     done
     if systemctl --user show-environment >/dev/null 2>&1; then
       systemctl --user disable --now nf-tmux-watch.service >/dev/null 2>&1 || true
@@ -162,7 +183,8 @@ case "${1:-install}" in
     echo "hover removed"
     ;;
   status)
-    for f in $(rcfiles); do
+    mapfile -t targets < <(rcfiles)
+    for f in "${targets[@]}"; do
       if grep -qF "$BEGIN" "$f" 2>/dev/null; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f); run install.sh again"; fi
     done
     # A login file created after install (a new ~/.bash_profile hides ~/.profile

@@ -10,7 +10,8 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL="$REPO/band/hover/install.sh"
 
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-install-XXXXXX")
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-install-XXXXXX") || exit 1
+[[ -d "$ROOT" ]] || exit 1
 export HOME="$ROOT/home"
 mkdir -p "$HOME" "$ROOT/stub"
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
@@ -18,6 +19,7 @@ chmod +x "$ROOT/stub/systemctl"
 export PATH="$ROOT/stub:$PATH"
 
 fail=0
+blocks() { if [[ -f "$1" ]]; then grep -cxF '# >>> nerdflair hover >>>' "$1" || true; else echo 0; fi; }   # 0 for a missing file
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
 printf 'export FOO=1\n' > "$HOME/.bashrc"
@@ -114,7 +116,7 @@ check "a login shell with no prior files now gets the function" "NF:function" "$
 # bash reads only the first of .bash_profile/.bash_login/.profile: one block, in that one.
 printf 'export BP=1\n' > "$HOME/.bash_profile"; printf 'export BL=1\n' > "$HOME/.bash_login"
 bash "$INSTALL" install >/dev/null 2>&1
-check "three login files: only .bash_profile has the block" "1 0 0" "$(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bash_profile") $(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.bash_login") $(grep -cxF '# >>> nerdflair hover >>>' "$HOME/.profile")"
+check "three login files: only .bash_profile has the block" "1 0 0" "$(blocks "$HOME/.bash_profile") $(blocks "$HOME/.bash_login") $(blocks "$HOME/.profile")"
 
 # The backup is the file as the user left it, and survives later installs.
 bash "$INSTALL" install >/dev/null 2>&1
@@ -143,6 +145,21 @@ if command -v dash >/dev/null; then
   check "dash sourcing the login file: no bad substitution / syntax error" 0 "${err:-0}"
 fi
 command -v zsh >/dev/null && printf '  note: zsh present but its block is not exercised here\n'
+
+# The ~/.profile install created empty is gone after uninstall, not left as 0 bytes.
+bash "$INSTALL" uninstall >/dev/null 2>&1
+rm -f "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc.nf-backup"; printf 'x=1\n' > "$HOME/.bashrc"
+bash "$INSTALL" install >/dev/null 2>&1; bash "$INSTALL" uninstall >/dev/null 2>&1
+check "created-empty .profile is removed by uninstall" no "$([[ -e "$HOME/.profile" ]] && echo yes || echo no)"
+# Uninstall with no login file at all must not complain about a marker.
+check "uninstall with no login file: no marker complaint" 0 "$(bash "$INSTALL" uninstall 2>&1 | grep -c unmatched)"
+
+# A $HOME with a space in it: install and uninstall still work.
+SP="$ROOT/my home"; mkdir -p "$SP"; printf 'y=1\n' > "$SP/.bashrc"
+HOME="$SP" bash "$INSTALL" install >/dev/null 2>&1
+check "spaced HOME: block installed in .bashrc and the login file" 2 "$(cat "$SP/.bashrc" "$SP/.profile" | grep -cxF '# >>> nerdflair hover >>>')"
+HOME="$SP" bash "$INSTALL" uninstall >/dev/null 2>&1
+check "spaced HOME: uninstall restores .bashrc" "y=1" "$(cat "$SP/.bashrc")"
 
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
