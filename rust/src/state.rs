@@ -31,8 +31,12 @@ pub struct State {
 }
 
 pub fn state_file() -> PathBuf {
+    // The bash renderer builds "$HOME/.claude/..." and so, with HOME unset or
+    // empty, "/.claude/...". An empty PathBuf would instead join to a path
+    // RELATIVE to the working directory and litter whatever repo it ran in.
     let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".claude/nerdflair/state.json")
+    let base = if home.is_empty() { PathBuf::from("/") } else { PathBuf::from(home) };
+    base.join(".claude/nerdflair/state.json")
 }
 
 pub fn read_state(path: &Path) -> State {
