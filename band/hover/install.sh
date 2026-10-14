@@ -104,10 +104,13 @@ strip() { # file: print it without our block
 # backup is removed only if it is exactly what the file is now.
 remove_block() { # file [uninstall]
   local f=$1 rc=0 tmp
-  grep -qxF "$BEGIN" "$f" 2>/dev/null || return 0
+  # No marker text at all: only the backup may need tidying. (Substring, not
+  # whole-line, so a marker with CRLF or trailing space still reaches paired,
+  # which names it.)
+  if ! grep -qF "$BEGIN" "$f" 2>/dev/null; then cleanup_backup "$f"; return 0; fi
   paired "$f" || rc=$?
   if (( rc == 1 )); then echo "${2:-install}: $f has an unmatched nerdflair marker; fix it by hand" >&2; fi
-  (( rc == 0 )) || return 0
+  (( rc == 0 )) || return 0       # 1 was named above, 2 (CRLF) by paired itself
   tmp="$f.nf.$$"; strip "$f" > "$tmp"; cat "$tmp" > "$f"; rm -f "$tmp"
   cleanup_backup "$f"
 }
@@ -118,7 +121,11 @@ cleanup_backup() { # file
       rm -f "$f.nf-backup"
       # A file we created (recorded at install) and that is still empty goes
       # back to absent; a file that existed, empty or not, is left alone.
-      if [[ ! -s "$f" ]] && grep -qxF "$f" "$NF/created" 2>/dev/null; then rm -f "$f"; fi
+      if [[ ! -s "$f" ]] && grep -qxF "$f" "$NF/created" 2>/dev/null; then
+        rm -f "$f"
+        grep -vxF "$f" "$NF/created" > "$NF/created.tmp" || true     # it is gone: forget it
+        mv "$NF/created.tmp" "$NF/created"
+      fi
     else
       echo "uninstall: kept $f.nf-backup (it differs from $f); remove it when you no longer need it"
     fi
@@ -187,14 +194,19 @@ case "${1:-install}" in
       rm -f "$HOME/.config/systemd/user/nf-tmux-watch.service"
       systemctl --user daemon-reload
     fi
-    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover" "$NF/created"
+    rm -f "$NF/bin/claude" "$NF/bin/nf-tmux-heal" "$NF/bin/nf-tmux-watch" "$NF/hover"
+    # The record of files we created is kept while any block is still in place
+    # (a retry after fixing a broken marker still knows what was ours).
+    still=0
+    for f in "${every[@]}"; do grep -qF "$BEGIN" "$f" 2>/dev/null && still=1; done
+    (( still )) || rm -f "$NF/created"
     rmdir "$NF/bin" "$NF" 2>/dev/null || true
     echo "hover removed"
     ;;
   status)
     mapfile -t targets < <(rcfiles)
     for f in "${targets[@]}"; do
-      if grep -qF "$BEGIN" "$f" 2>/dev/null; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f); run install.sh again"; fi
+      if grep -qxF "$BEGIN" "$f" 2>/dev/null; then echo "rc block: yes ($f)"; else echo "rc block: NO ($f); run install.sh again"; fi
     done
     # A login file created after install (a new ~/.bash_profile hides ~/.profile
     # from bash) has no block until install runs again; this is how it is noticed.

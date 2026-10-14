@@ -160,6 +160,21 @@ bash "$INSTALL" install >/dev/null 2>&1; bash "$INSTALL" uninstall >/dev/null 2>
 check "a user's own empty .profile survives uninstall" yes "$([[ -e "$HOME/.profile" ]] && echo yes || echo no)"
 rm -f "$HOME/.profile"
 
+# A stale "created" entry must not let uninstall delete a file the user made later.
+bash "$INSTALL" uninstall >/dev/null 2>&1; rm -f "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc.nf-backup"
+printf 'x=1\n' > "$HOME/.bashrc"
+bash "$INSTALL" install >/dev/null 2>&1                       # creates .profile, records it
+printf 'export A=1\n' > "$HOME/.bash_profile"                  # login file changes: the empty .profile is stripped and forgotten
+bash "$INSTALL" install >/dev/null 2>&1
+check "stale entry: forgotten once the file is gone" 0 "$(grep -cxF "$HOME/.profile" "$HOME/.nerdflair/created" || true)"
+rm -f "$HOME/.bash_profile"; printf '' > "$HOME/.profile"       # the user makes their own empty .profile
+bash "$INSTALL" uninstall >/dev/null 2>&1
+check "stale entry: the user's later empty .profile survives" yes "$([[ -e "$HOME/.profile" ]] && echo yes || echo no)"
+rm -f "$HOME/.profile"
+# CRLF marker: uninstall says so instead of reporting success silently.
+printf '# >>> nerdflair hover >>>\r\nx\r\n# <<< nerdflair hover <<<\r\n' > "$HOME/.bashrc"
+check "CRLF marker on uninstall is named" 1 "$(bash "$INSTALL" uninstall 2>&1 | grep -c CRLF)"
+
 # A $HOME with a space in it: install and uninstall still work.
 SP="$ROOT/my home"; mkdir -p "$SP"; printf 'y=1\n' > "$SP/.bashrc"
 HOME="$SP" bash "$INSTALL" install >/dev/null 2>&1
