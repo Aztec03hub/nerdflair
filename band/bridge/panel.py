@@ -118,6 +118,8 @@ class Panel:
             self.erase()
         if self.backdrop:
             self.backdrop.save(y, h)      # AFTER the old panel is gone
+            if getattr(self.backdrop, "deferred", False):
+                return                    # the screen is not settled yet; the caller retries
 
         self.accent = accent
         self.body = list(body)

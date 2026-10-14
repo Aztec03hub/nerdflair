@@ -66,7 +66,7 @@ class Shadow:
                       timeout=3)
             self.ok = r.returncode == 0
             if not self.ok:
-                self.why = (r.stderr or f"tmux exit {r.returncode}").strip()
+                self.why = " ".join((r.stderr or f"tmux exit {r.returncode}").split())   # one line, for the log
         except (OSError, subprocess.SubprocessError) as e:
             self.ok = False
             self.why = f"{type(e).__name__}: {e}"

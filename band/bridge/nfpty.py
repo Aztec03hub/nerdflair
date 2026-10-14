@@ -69,7 +69,16 @@ MOUSE = re.compile(rb"\033\[<(\d+);(\d+);(\d+)([Mm])")
 HOVER_BTN = 35
 # Bytes the terminal itself sends that are not the user typing: focus in/out,
 # bracketed-paste markers are NOT here (a paste is typing), device replies.
-TERMINAL_NOISE = re.compile(rb"\033\[[IO]|\033\[[?>]?[0-9;]*c|\033\[[0-9;]*R|\033\[\?[0-9;]*\$y")
+TERMINAL_NOISE = re.compile(
+    rb"\033\[I"                                   # focus in (focus OUT is handled separately: it hides)
+    rb"|\033\[[?>][0-9;]*c|\033\[[0-9;]*c"          # device attributes replies
+    rb"|\033\[\??[0-9]+;[0-9]+R"                    # cursor position report. Shift-F3 (ESC[1;2R) is byte-identical to a valid one and is taken as noise: unavoidable, rare
+    rb"|\033\[\?[0-9;]*\$y|\033\[\?[0-9]+u"        # mode report, kitty keyboard query reply
+    rb"|\033\][^\a\033]*(?:\a|\033\\)"            # OSC replies (colours)
+    rb"|\033P[^\033]*\033\\"                        # DCS replies (XTVERSION)
+    rb"|\033\[8;[0-9]+;[0-9]+t"                      # window size report
+)
+FOCUS_OUT = b"\033[O"
 
 # MEASURED: Claude Code sets 1000h, 1002h, 1003h and 1006h itself, so the
 # terminal already reports plain motion and nothing in the output stream needs
@@ -82,12 +91,18 @@ TERMINAL_NOISE = re.compile(rb"\033\[[IO]|\033\[[?>]?[0-9;]*c|\033\[[0-9;]*R|\03
 HIDE_AFTER = 0.25
 # With no pointer report this long, a card is taken down (the pointer left the
 # window: terminals send nothing then). A pointer resting on the card still
-# sends nothing, so this is also how long a card stays while you read it.
+# sends nothing, so this is also how long a card stays while you read it, and
+# after WATCHDOG_ON_CARD with the pointer still resting the card goes and only
+# a pointer move brings it back (a still pointer cannot be told from a gone one).
 WATCHDOG = 4.0
 # Longer when the last report was ON the card: the pointer is probably resting
 # there while it is read. Leaving the window from the card is rarer (the card
 # sits above the status line, away from the window edge).
 WATCHDOG_ON_CARD = 20.0
+# Except where the pointer is likely to LEAVE the window: on the edge rows and
+# columns the long grace does not apply (leaving downwards off the status line
+# is the common exit).
+EDGE = 1
 
 
 def winsize(fd):
@@ -132,9 +147,11 @@ class Backdrop:
         self.top = 0
         self.span = None
         self.note = None        # optional debug sink: note(str)
+        self.settled = lambda: True   # False while our own writes are still queued
 
     def save(self, y, h):
         self.rows = None
+        self.deferred = False
         if not self.pane:
             return
         self.span = (y, h)
@@ -145,6 +162,12 @@ class Backdrop:
         # shows the CURRENT status line, not the one from when the card opened.
         r = self.shadow.capture(*span) if self.shadow is not None else None
         if r is None:
+            if not self.settled():
+                # The live pane may still show a card whose erase is queued, and
+                # saving it would restore that card as "the screen" later. Say so
+                # to the caller, which declines to open until the queue drains.
+                self.deferred = True
+                return
             try:
                 r = subprocess.run(
                     ["tmux", "capture-pane", "-p", *span, "-t", self.pane],
@@ -167,7 +190,7 @@ class Backdrop:
             r = self.shadow.capture("-e", "-S", str(y - 1), "-E", str(y + h - 2))
             if self.note:
                 self.note(f"restore shadow={'none' if r is None else 'ok'} ok={self.shadow.ok} "
-                          f"clean={self.shadow.clean} rows={None if r is None else r.stdout.split(chr(10))[:h]}")
+                          f"clean={self.shadow.clean} rows={None if r is None else len(r.stdout.split(chr(10))[:h])}")
             if r is not None:
                 self.rows = r.stdout.split("\n")[:h]
         out = []
@@ -202,18 +225,28 @@ class Layout:
         self.pane = pane
         self.shadow = shadow
         self.at = 0.0
+        self.backoff_until = 0.0     # tmux answered slowly: no reads until then
         self.segs = []
 
-    def refresh(self, covered=()):
+    @property
+    def paused(self):
+        """True while reads are suspended after a slow tmux answer: the layout
+        is then too old to OPEN a card from."""
+        return time.monotonic() < self.backoff_until
+
+    def refresh(self, covered=(), force=False):
+        """`force` skips the rate limit (never the slow-read backoff): used
+        before OPENING a card, so the readout under the pointer is judged on
+        the screen as it is now, not as it was up to MIN_INTERVAL ago."""
         now = time.monotonic()
-        if not self.pane or now - self.at < self.MIN_INTERVAL:
+        if not self.pane or now < self.backoff_until or (not force and now - self.at < self.MIN_INTERVAL):
             return
         self.at = now
         fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow)
         # tmux is read on the relay loop, so a slow answer is typing lag. If
         # it took long, stop asking for a while rather than stall again.
         if time.monotonic() - now > 0.3:
-            self.at = time.monotonic() + 5.0
+            self.backoff_until = time.monotonic() + 5.0
         # An EMPTY read is an answer, not a failure to keep the old layout
         # through: it means something (a permission prompt, a dialog) is
         # drawn over the status line. Keeping the last good layout there made
@@ -448,6 +481,45 @@ def selfcheck():
     assert st.feed(b"\x1b]0;" + "\U000f024b".encode()[:2]) is False
     assert st.feed("\U000f024b".encode()[2:] + b" title") is False, "still inside the OSC after the glyph completes"
     assert st.feed(b"\x07") is True
+    # What is terminal noise (does not count as typing) and what is typing.
+    for raw, noise in [(b"\x1b[I", 1), (b"\x1b[?62;4c", 1), (b"\x1b[12;40R", 1), (b"\x1b]11;rgb:1/2/3\x07", 1),
+                       (b"\x1bP>|x\x1b\\", 1), (b"\x1b[?0u", 1), (b"\x1b[Z", 0), (b"c", 0), (b"\x1b[A", 0),
+                       (b"\x1bi", 0), (b"x", 0), (b"\x1b[O", 0)]:
+        assert (TERMINAL_NOISE.sub(b"", raw) == b"") == bool(noise), (raw, TERMINAL_NOISE.sub(b"", raw))
+    # A card is judged on a FRESH layout: force skips the rate limit but never the
+    # slow-read backoff (a stalled tmux must not be asked again at once).
+    calls = []
+    real_ex = mklayout.build_ex
+    try:
+        mklayout.build_ex = lambda _p, skip=(), shadow=None: (calls.append(1) or [], False)
+        lay2 = Layout("%0")
+        lay2.refresh()
+        lay2.refresh()
+        assert len(calls) == 1, "the rate limit holds without force"
+        lay2.refresh(force=True)
+        assert len(calls) == 2, "force bypasses the rate limit"
+        lay2.backoff_until = time.monotonic() + 5
+        lay2.refresh(force=True)
+        assert len(calls) == 2 and lay2.paused, "force must not bypass the slow-read backoff"
+    finally:
+        mklayout.build_ex = real_ex
+    # A card is not opened while a card's erase is still queued and the live pane
+    # is the only source (it would save the old card as the "screen" to restore).
+    queue = [("erase", True)]
+    bd = Backdrop("%0", shadow=None)
+    bd.settled = lambda: not queue
+    wrote = []
+    pn = Panel(lambda t, keep=False: wrote.append(t), 50, 200, backdrop=bd, keeps=True)
+    pn.show("a", "T", ["body"], (1, 2, 3), 10, 20)
+    assert pn.shown is None and pn.rect is None and not wrote and bd.deferred, "deferred while unsettled"
+    queue.clear()
+    real_run = subprocess.run
+    try:
+        subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="\n".join(["row"] * 5), stderr="")
+        pn.show("a", "T", ["body"], (1, 2, 3), 10, 20)
+    finally:
+        subprocess.run = real_run
+    assert pn.shown == "a" and pn.rect, "opens once the queue has drained"
     # L5: an idle session sleeps long; anything animating or on a clock does not.
     assert select_timeout(None, None, b"", [], None) == IDLE
     for args in ((True, None, b"", [], None), (None, 1.0, b"", [], None), (None, None, b"x", [], None),
@@ -517,6 +589,27 @@ def selfcheck():
 
 
 ERRLOG = os.path.expanduser("~/.local/state/nerdflair/nfpty-error.log")
+
+
+_NOTED = set()
+
+
+def note_once(kind, msg, dbg=None):
+    """Record a degraded-but-continuing condition, ONCE per kind per process, in
+    the durable error log (and NFPTY_LOG when set). The rule for this file: a
+    failure that is absorbed must leave a trace somewhere; silence is a bug."""
+    if kind in _NOTED:
+        return
+    _NOTED.add(kind)
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {msg}\n"
+    try:
+        os.makedirs(os.path.dirname(ERRLOG), exist_ok=True)
+        with open(ERRLOG, "a") as f:
+            f.write(line)
+    except OSError as e:
+        sys.stderr.write(f"nfpty: cannot write {ERRLOG} ({e}); {msg}\n")    # last resort: the user's terminal
+    if dbg:
+        dbg.write(line)
 
 
 def degrade(where, dbg=None):
@@ -651,6 +744,7 @@ def main():
     panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
     layout = Layout(pane, shadow)
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
+    panel.backdrop.settled = lambda: not pending
 
     old = None
     try:
@@ -684,6 +778,8 @@ def main():
     hide_at: list = [None]
     last_motion = [0.0]         # when the pointer last reported; the watchdog below uses it
     on_card = [False]           # whether that last report was on the card OR on the readout that opens it
+    retry = [None]              # (col, row, t) of a hover whose card was deferred
+    at_edge = [False]           # last report was on an edge row/column: the pointer is probably leaving
 
     def _drop_card():
         try:
@@ -696,6 +792,8 @@ def main():
 
     def on_hover(hovers):
         col0, row0 = hovers[-1]
+        retry[0] = None
+        at_edge[0] = row0 >= rows - EDGE or col0 <= EDGE or col0 >= cols - EDGE + 1
         last_motion[0] = time.monotonic()
         on_card[0] = bool(panel.rect and panel.rect[0] <= col0 < panel.rect[0] + panel.rect[2]
                           and panel.rect[1] <= row0 < panel.rect[1] + panel.rect[3])
@@ -713,7 +811,7 @@ def main():
         layout.refresh(covered)
         col, row = hovers[-1]      # only the latest position
         hit = layout.hit(col, row)
-        on_card[0] = hit is not None     # resting on a readout is resting on the card's trigger: same long grace
+        on_card[0] = hit is not None     # resting on a readout is resting on the card's trigger: long grace...
         if dbg:
             dbg.write(f"hover {col},{row} "
                       f"hit={hit['id'] if hit else None} "
@@ -736,9 +834,21 @@ def main():
         else:
             hide_at[0] = None          # back on a readout
             if hit["id"] != panel.shown:
+                # Opening or switching: judge the readout on the screen as it is
+                # NOW (the cached layout may be MIN_INTERVAL old), and not at
+                # all from a layout suspended by a slow tmux read.
+                if layout.paused:
+                    note_once("layout-paused", "tmux answered slowly; opening cards is paused for 5 s")
+                    return
+                layout.refresh(covered, force=True)
+                hit = layout.hit(col, row)
+                if hit is None:
+                    return              # the readout moved away from under the pointer
                 panel.show(hit["id"], hit["title"], hit["body"],
                            tuple(hit["rgb"]), hit["x"],
                            hit["row"])
+                if panel.shown != hit["id"]:
+                    retry[0] = (col, row, time.monotonic())   # deferred: try again once the queue drains
 
     try:
         while True:
@@ -823,7 +933,9 @@ def main():
                     if MOUSE.search(fwd):
                         last_motion[0] = time.monotonic()    # any mouse report: the pointer is still in the window
                     # Typing takes a card down: nothing tells us the pointer left.
-                    typed = bool(MOUSE.sub(b"", TERMINAL_NOISE.sub(b"", fwd)))
+                    typed = bool(MOUSE.sub(b"", TERMINAL_NOISE.sub(b"", fwd).replace(FOCUS_OUT, b"")))
+                    if FOCUS_OUT in fwd and panel.shown:
+                        typed = True               # focus left the terminal (alt-tab): the card must not stay over the next window
                 if hovers:
                     guarded("hover", on_hover, hovers)
                 # AFTER the hovers: a keystroke and a motion report in one read
@@ -832,6 +944,15 @@ def main():
                     hide_at[0] = time.monotonic()
 
             now = time.monotonic()
+
+            # A card whose opening was deferred (the screen was not settled) is
+            # opened once our write queue has drained, if the pointer has not
+            # moved since: nothing else would trigger it while the pointer rests.
+            if retry[0] is not None and not pending and clean[0]:
+                col_r, row_r, t_r = retry[0]
+                retry[0] = None
+                if now - t_r < 1.0:
+                    guarded("hover", on_hover, [(col_r, row_r)])
 
             # A held fragment that never completes is not a mouse report, and
             # is dropped rather than typed into the engine as stray text.
@@ -858,7 +979,7 @@ def main():
 
             # Watchdog: a card up with no pointer report for WATCHDOG seconds (the
             # pointer left the window, so no more reports come) is taken down.
-            if panel.shown and hide_at[0] is None and last_motion[0] and now - last_motion[0] > (WATCHDOG_ON_CARD if on_card[0] else WATCHDOG):
+            if panel.shown and hide_at[0] is None and last_motion[0] and now - last_motion[0] > (WATCHDOG_ON_CARD if (on_card[0] and not at_edge[0]) else WATCHDOG):
                 hide_at[0] = now
             if hide_at[0] is not None and now >= hide_at[0]:
                 hide_at[0] = None
