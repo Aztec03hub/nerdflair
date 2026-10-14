@@ -37,13 +37,33 @@ NF_RST='\033[0m'
 #   _nf_err key reason   log once per hour per key
 #   _nf_ok key           log "recovered: key" once if key had logged
 #   _nf_recent/_nf_touch/_nf_clear  retry back-off markers (no logging)
-# NERDFLAIR_ERR_STAMP_DIR moves the stamps (tests); default /tmp.
+# NERDFLAIR_ERR_STAMP_DIR moves the stamps (tests); default ~/.claude/.nerdflair-stamps (0700).
 NF_ERR_LOG="${HOME:-}/.claude/nerdflair-errors.log"
-# Sets _NF_STAMP (no subshell, so _nf_ok costs no fork on a healthy render).
 _NF_UID="${UID:-$(id -u)}"
+_NF_MEM=" "                      # keys already logged by THIS process (an unwritable stamp dir must not repeat a line)
+# Stamps live in a private 0700 directory under ~/.claude, NOT /tmp: /tmp is
+# shared and the names are predictable, so another user could plant a file or
+# symlink to silence a key or make us truncate something of theirs. Twin of
+# errlog::stamp_dir. _NF_SDIR is empty when no safe directory can be had (then
+# rate limiting is in memory only). No fork on the healthy path: -O and -L are
+# shell tests; mkdir runs only when the directory is missing.
+_nf_stamp_dir() {
+  [[ -n "${_NF_SDIR_DONE:-}" ]] && return 0
+  _NF_SDIR_DONE=1; _NF_SDIR=""
+  local _d _h="${HOME:-}"
+  if [[ -n "${NERDFLAIR_ERR_STAMP_DIR:-}" ]]; then _NF_SDIR="$NERDFLAIR_ERR_STAMP_DIR"; return 0; fi
+  _d="${_h%/}/.claude/.nerdflair-stamps"        # HOME unset or empty means /, as in Rust
+  [[ -d "$_d" ]] || mkdir -p -m 700 "$_d" 2>/dev/null
+  if [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]]; then _NF_SDIR="$_d"; fi
+  return 0
+}
+# Sets _NF_STAMP (empty when there is no safe directory). No subshell.
 _nf_stamp() {
   local _s="${1//[^a-zA-Z0-9]/_}"
-  _NF_STAMP="${NERDFLAIR_ERR_STAMP_DIR:-/tmp}/nerdflair-err-${_NF_UID}-${_s:0:100}"
+  _nf_stamp_dir
+  _NF_STAMP=""
+  [[ -n "$_NF_SDIR" ]] && _NF_STAMP="${_NF_SDIR}/nerdflair-err-${_NF_UID}-${_s:0:100}"
+  return 0
 }
 # Age in seconds of a stamp. Missing or future-dated = very old, like util::file_age.
 _nf_stamp_age() {
@@ -54,13 +74,13 @@ _nf_stamp_age() {
   (( _a < 0 )) && _a=4611686018427387903
   printf '%s' "$_a"
 }
-# Create or touch a stamp WITHOUT following a symlink (/tmp is shared and the
-# name is predictable): touch -h acts on a link itself, noclobber refuses to
-# write through one that appeared meanwhile.
+# Create or touch a stamp WITHOUT following a symlink: touch -h acts on a link
+# itself, noclobber refuses to write through one that appeared meanwhile.
 _nf_stamp_write() {
   if [[ -e "$1" || -L "$1" ]]; then touch -h "$1" 2>/dev/null
   else ( set -o noclobber; : > "$1" ) 2>/dev/null; fi
 }
+# Appends one line. Returns 0 when it was written, 1 when it fell back to stderr.
 _nf_log_line() {
   local _k="$1" _r="${2:-}" _sz _tmp
   _r="${_r//[[:cntrl:]]/ }"
@@ -70,34 +90,50 @@ _nf_log_line() {
   _sz=$(stat -c %s "$NF_ERR_LOG" 2>/dev/null || stat -f %z "$NF_ERR_LOG" 2>/dev/null || echo 0)
   if (( _sz > 262144 )); then
     _tmp="${NF_ERR_LOG}.tmp.$$"
-    if tail -c 65536 "$NF_ERR_LOG" 2>/dev/null | tail -n +2 > "$_tmp" 2>/dev/null; then
+    if { tail -c 65536 "$NF_ERR_LOG" | tail -n +2 > "$_tmp"; } 2>/dev/null; then
       mv -f "$_tmp" "$NF_ERR_LOG" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
     else
       rm -f "$_tmp" 2>/dev/null
     fi
   fi
-  # One pre-built line, one O_APPEND write. stderr is the last resort.
-  printf '%s %s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$_k" "$_r" >> "$NF_ERR_LOG" 2>/dev/null \
-    || printf 'nerdflair: cannot write %s | %s: %s\n' "$NF_ERR_LOG" "$_k" "$_r" >&2
+  # One pre-built line, one O_APPEND write. The braces send the SHELL's own
+  # "Permission denied" to /dev/null too (a redirection error is printed before
+  # a trailing 2>/dev/null takes effect). stderr is the last resort.
+  if { printf '%s %s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$_k" "$_r" >> "$NF_ERR_LOG"; } 2>/dev/null; then
+    return 0
+  fi
+  printf 'nerdflair: cannot write %s | %s: %s\n' "$NF_ERR_LOG" "$_k" "$_r" >&2
+  return 1
 }
 _nf_err() {
-  _nf_stamp "$1"
-  local _st="$_NF_STAMP"
-  (( $(_nf_stamp_age "$_st") < 3600 )) && return 0
-  _nf_stamp_write "$_st"   # if this fails we cannot rate limit; log anyway
-  _nf_log_line "$1" "${2:-}"
+  local _k="$1" _st
+  case "$_NF_MEM" in *" ${_k} "*) return 0 ;; esac    # once per process whatever the stamp says
+  _NF_MEM+="${_k} "
+  _nf_stamp "$_k"
+  _st="$_NF_STAMP"
+  if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < 3600 )); then return 0; fi
+  # Log first, stamp after: a failed append must not silence the key for an hour.
+  if _nf_log_line "$_k" "${2:-}" && [[ -n "$_st" ]]; then _nf_stamp_write "$_st"; fi
   return 0
 }
+# A keyed condition that had logged has cleared: say so, once per failure line.
+# The failure stamp is kept (a condition that flaps stays limited to one failure
+# line an hour); a second stamp records that the recovery was reported.
 _nf_ok() {
-  _nf_stamp "$1"
-  local _st="$_NF_STAMP"
+  local _st _rec _age
+  _nf_stamp "$1"; _st="$_NF_STAMP"
+  [[ -n "$_st" ]] || return 0
   [[ -e "$_st" || -L "$_st" ]] || return 0
-  rm -f "$_st" 2>/dev/null && _nf_log_line recovered "$1"
+  _nf_stamp "recovered-$1"; _rec="$_NF_STAMP"
+  _age=$(_nf_stamp_age "$_st")
+  if (( _age >= 3600 )); then rm -f "$_st" "$_rec" 2>/dev/null; return 0; fi   # stale: nothing recent to recover from
+  if [[ -e "$_rec" || -L "$_rec" ]] && (( $(_nf_stamp_age "$_rec") <= _age )); then return 0; fi
+  if _nf_log_line recovered "$1"; then _nf_stamp_write "$_rec"; fi
   return 0
 }
-_nf_recent() { _nf_stamp "$1"; [[ -e "$_NF_STAMP" || -L "$_NF_STAMP" ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }
-_nf_touch() { _nf_stamp "$1"; _nf_stamp_write "$_NF_STAMP"; return 0; }
-_nf_clear() { _nf_stamp "$1"; rm -f "$_NF_STAMP" 2>/dev/null; return 0; }
+_nf_recent() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" && ( -e "$_NF_STAMP" || -L "$_NF_STAMP" ) ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }
+_nf_touch() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && _nf_stamp_write "$_NF_STAMP"; return 0; }
+_nf_clear() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && rm -f "$_NF_STAMP" 2>/dev/null; return 0; }
 
 # ── jq check ─────────────────────────────────────────────────────
 _nf_require_jq() {
@@ -130,7 +166,12 @@ _nf_read_field() {
 # ── Read the chime_recent_styles array as comma-separated ────────
 _nf_read_recent_styles() {
   if [[ -f "$NF_STATE_FILE" ]]; then
-    jq -r '.chime_recent_styles // [] | join(",")' "$NF_STATE_FILE" 2>/dev/null
+    local _rerr _rcsv
+    if _rcsv=$(jq -r '.chime_recent_styles // [] | join(",")' "$NF_STATE_FILE" 2>&1); then
+      printf '%s\n' "$_rcsv"
+    else
+      _nf_err "state-read" "jq could not read chime_recent_styles from $NF_STATE_FILE: ${_rcsv%%$'\n'*}"
+    fi
   fi
 }
 

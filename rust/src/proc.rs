@@ -37,12 +37,19 @@ fn drain<R: Read + Send + 'static>(h: Option<R>, what: &'static str) -> thread::
 /// `chk = Some((label, quiet))` also logs a non-zero exit with the first line
 /// of stderr, unless stderr contains one of the `quiet` substrings (the
 /// documented "this just means no" answers, such as "not a git repository").
+static TIMED_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn run(
     prog: &str,
     args: &[&str],
     dir: Option<&Path>,
     chk: Option<(&str, &[&str])>,
 ) -> (Vec<u8>, bool) {
+    // After one timeout this render, do not wait another full timeout for the next
+    // call (a hung filesystem makes every git call hang): already logged once.
+    if TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed) && prog == "git" {
+        return (Vec::new(), false);
+    }
     let mut c = Command::new(prog);
     c.args(args)
         .stdin(Stdio::null())
@@ -68,12 +75,21 @@ fn run(
             Ok(Some(s)) => break s,
             Ok(None) => {
                 if start.elapsed() >= limit {
-                    let _ = child.kill(); // already past the deadline; wait() below reaps it
-                    let _ = child.wait();
+                    // Log FIRST: reaping can itself hang on a process stuck in
+                    // uninterruptible I/O, and the line must not wait on that.
                     errlog::note(
                         &format!("timeout:{}", label),
-                        &format!("{} {:?} still running after {} ms, killed", prog, args, limit.as_millis()),
+                        &format!("{} {:?} still running after {} ms, killed; no more {} this render", prog, args, limit.as_millis(), prog),
                     );
+                    TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = child.kill();
+                    // Bounded reap (about 200 ms): never block the render on a stuck child.
+                    for _ in 0..200 {
+                        if matches!(child.try_wait(), Ok(Some(_))) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
                     // Not joined: a grandchild may still hold the pipes open.
                     return (Vec::new(), false);
                 }

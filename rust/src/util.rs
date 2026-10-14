@@ -290,6 +290,13 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 pub fn uid() -> u32 {
+    // Cached: it is asked for several times per render (every stamp path), and
+    // each uncached call re-reads /proc/self/status (or spawns `id`).
+    static UID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *UID.get_or_init(uid_uncached)
+}
+
+fn uid_uncached() -> u32 {
     // Avoids a libc dependency for one getuid().
     if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
         for line in s.lines() {

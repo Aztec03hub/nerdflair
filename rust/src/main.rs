@@ -533,7 +533,13 @@ fn render_inner(input: &str) -> Result<String, String> {
             git_dir = cwd.clone();
         } else {
             let mut subs: Vec<String> = Vec::new();
-            if let Ok(rd) = std::fs::read_dir(&cwd) {
+            let rd_res = std::fs::read_dir(&cwd);
+            if let Err(e) = &rd_res {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    errlog::note_io("cwd-read", &format!("cannot list {} to look for git repositories below it", cwd), e);
+                }
+            }
+            if let Ok(rd) = rd_res {
                 let mut entries: Vec<String> = rd
                     .filter_map(|e| e.ok())
                     .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -638,7 +644,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                 list.push_str(&format!("{}:{}", basename(sub), b));
             }
             if let Err(e) = std::fs::write(&cache_file, format!("{}\n{}", off, list)) {
-                errlog::note_io("tmp-write", &cache_file.display().to_string(), &e);
+                errlog::note_io(&errlog::tmp_key(&cache_file), &cache_file.display().to_string(), &e);
             }
         }
         let content = std::fs::read_to_string(&cache_file).unwrap_or_default();
@@ -1650,7 +1656,13 @@ fn render_inner(input: &str) -> Result<String, String> {
             let cache = PathBuf::from(format!("/tmp/nerdflair-tmux-{}-{}", uid, slugify(&pane)));
             let mut name = String::new();
             if cache.is_file() && file_age(&cache) < 60 {
-                name = std::fs::read_to_string(&cache).unwrap_or_default();
+                name = match std::fs::read_to_string(&cache) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        errlog::note_io("tmux-cache-read", &cache.display().to_string(), &e);
+                        String::new()
+                    }
+                };
                 while name.ends_with('\n') {
                     name.pop();
                 }
@@ -1663,7 +1675,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                 name = n;
                 if !name.is_empty() {
                     if let Err(e) = std::fs::write(&cache, &name) {
-                        errlog::note_io("tmp-write", &cache.display().to_string(), &e);
+                        errlog::note_io(&errlog::tmp_key(&cache), &cache.display().to_string(), &e);
                     }
                 }
             }
@@ -2184,7 +2196,7 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
             dirty, added, removed, branch, remote, worktree, ahead, behind
         );
         if let Err(e) = std::fs::write(&cache_file, &payload) {
-            errlog::note_io("tmp-write", &format!("{} (git re-runs every render)", cache_file.display()), &e);
+            errlog::note_io(&errlog::tmp_key(&cache_file), &format!("{} (git re-runs every render)", cache_file.display()), &e);
         }
         computed = Some(payload);
     }
@@ -2468,9 +2480,9 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
                _why=\"claude mcp list printed no parseable server lines\"; fi; \
              _st={stamp}; \
              if [ -n \"$_why\" ]; then _fl=$(printf '%s %s' \"$_raw\" \"$(cat \"$_ef\" 2>/dev/null)\" | head -n 1 | cut -c1-160); \
-               if [ ! -f \"$_st\" ] || [ $(( $(date +%s) - $(stat -c %Y \"$_st\" 2>/dev/null || echo 0) )) -ge 3600 ]; then \
-                 : > \"$_st\"; printf '%s %s mcp-probe: %s; first output: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" \"$_why\" \"$_fl\" >> {log}; fi; \
-             elif [ -f \"$_st\" ]; then rm -f \"$_st\"; printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log}; fi; \
+               if [ -z \"$_st\" ] || [ ! -f \"$_st\" ] || [ $(( $(date +%s) - $(stat -c %Y \"$_st\" 2>/dev/null || echo 0) )) -ge 3600 ]; then \
+                 [ -z \"$_st\" ] || : > \"$_st\"; printf '%s %s mcp-probe: %s; first output: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" \"$_why\" \"$_fl\" >> {log}; fi; \
+             elif [ -n \"$_st\" ] && [ -f \"$_st\" ]; then rm -f \"$_st\"; printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log}; fi; \
              [ \"$_ef\" != /dev/null ] && rm -f \"$_ef\"; \
              if [ $((_o+_b+_w)) -gt 0 ]; then \
                printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
@@ -2480,7 +2492,8 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
             tmo = env_int("NERDFLAIR_MCP_PROBE_TIMEOUT", 30).clamp(1, 600),
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
-            stamp = shq(&errlog::stamp_path("mcp-probe").to_string_lossy()),
+            // Empty when no safe stamp directory exists: the script then logs without a rate limit.
+            stamp = shq(&errlog::stamp_path("mcp-probe").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
             log = shq(&errlog::log_path().to_string_lossy()),
         );
         // The `else touch` above matters as much as the lock. The cache used
@@ -2738,10 +2751,18 @@ fn repo_cost_segment(
         // Skipping a sample costs nothing permanent, the column being
         // cumulative.
         if let Err(e) = std::fs::write(&stamp, "") {
-            errlog::note_io("tmp-write", &stamp.display().to_string(), &e);
+            errlog::note_io(&errlog::tmp_key(&stamp), &stamp.display().to_string(), &e);
         }
         } // shared lock released here, before the exclusive one is requested
-        let bytes = std::fs::metadata(&cost_file).map(|m| m.len()).unwrap_or(0);
+        let bytes = match std::fs::metadata(&cost_file) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    errlog::note_io("ledger-stat", &format!("cannot stat {}: compaction size check skipped", cost_file.display()), &e);
+                }
+                0
+            }
+        };
         let maxb = env_int("NERDFLAIR_REPO_COST_MAXBYTES", 2_000_000) as u64;
         // A size trigger alone is not a trigger, it is a treadmill: once the
         // COMPACTED file is still over the threshold, every refresh rewrites
@@ -2960,7 +2981,7 @@ fn repo_cost_segment(
             total = fmtx::f2(t);
         }
         if let Err(e) = std::fs::write(&memo, &total) {
-            errlog::note_io("tmp-write", &memo.display().to_string(), &e);
+            errlog::note_io(&errlog::tmp_key(&memo), &memo.display().to_string(), &e);
         }
     }
     if !total.is_empty() && total != "0.00" {

@@ -12,8 +12,9 @@
 //! failure is the one correct `let _ =` in this program: there is nowhere left
 //! to report it except stderr, which is tried last.
 //!
-//! Stamps live in $NERDFLAIR_ERR_STAMP_DIR (default /tmp); the override exists
-//! so tests never share rate-limit state with a real session.
+//! Stamps live in a private directory under ~/.claude (see stamp_dir);
+//! $NERDFLAIR_ERR_STAMP_DIR overrides it so tests never share rate-limit state
+//! with a real session.
 
 use crate::util::{epoch_secs, file_age, slugify, uid};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -32,14 +33,51 @@ pub fn log_path() -> PathBuf {
     base.join(".claude/nerdflair-errors.log")
 }
 
-pub fn stamp_path(key: &str) -> PathBuf {
-    let dir = std::env::var("NERDFLAIR_ERR_STAMP_DIR")
-        .ok()
-        .filter(|d| !d.is_empty())
-        .unwrap_or_else(|| "/tmp".into());
+/// Where rate-limit stamps live. NOT /tmp: it is shared, the names are
+/// predictable, and another user could plant a file or symlink there to silence
+/// a key or make us truncate something of theirs. A private 0700 directory
+/// under the user's own ~/.claude, verified (a real directory, ours, mode 0700)
+/// on first use. None when it cannot be made safe: the caller then rate limits
+/// in memory only (once per process) instead of trusting a hostile directory.
+/// NERDFLAIR_ERR_STAMP_DIR overrides it (tests; trusted).
+fn stamp_dir() -> Option<&'static PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(d) = std::env::var("NERDFLAIR_ERR_STAMP_DIR").ok().filter(|d| !d.is_empty()) {
+            return Some(PathBuf::from(d));
+        }
+        let dir = log_path().parent()?.join(".nerdflair-stamps");
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+        let m = std::fs::symlink_metadata(&dir).ok()?;
+        if m.is_dir() && m.uid() == uid() && m.mode() & 0o077 == 0 {
+            Some(dir)
+        } else {
+            None
+        }
+    })
+    .as_ref()
+}
+
+pub fn stamp_path(key: &str) -> Option<PathBuf> {
     let mut slug = slugify(key);
     slug.truncate(100); // slugify output is ASCII
-    PathBuf::from(dir).join(format!("nerdflair-err-{}-{}", uid(), slug))
+    Some(stamp_dir()?.join(format!("nerdflair-err-{}-{}", uid(), slug)))
+}
+
+/// Key for a failed write to a /tmp cache or stamp file: the file name is part
+/// of the key, so two different files failing in the same hour both log.
+pub fn tmp_key(p: &std::path::Path) -> String {
+    format!("tmp-write:{}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+fn mem_seen(key: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    match SEEN.get_or_init(Default::default).lock() {
+        Ok(mut g) => !g.insert(key.to_string()),
+        Err(_) => false,
+    }
 }
 
 /// Days since 1970-01-01 to (y, m, d), proleptic Gregorian (Hinnant).
@@ -90,7 +128,7 @@ fn trim(path: &PathBuf) {
     }
 }
 
-fn emit(key: &str, reason: &str) {
+fn emit(key: &str, reason: &str) -> bool {
     let mut clean: String = reason
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -117,7 +155,9 @@ fn emit(key: &str, reason: &str) {
     if let Err(e) = wrote {
         // Last resort. Hidden by the host, but better than nothing.
         let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {}: {} | {}", path.display(), e, line.trim_end());
+        return false;
     }
+    true
 }
 
 /// Create or touch a stamp WITHOUT following a symlink: /tmp is shared and the
@@ -133,41 +173,74 @@ fn write_stamp(path: &PathBuf) -> bool {
         .is_ok()
 }
 
-/// Record an absorbed failure, once per key per hour.
+/// Record an absorbed failure, once per key per hour (and once per process
+/// whatever the stamp says, so an unwritable stamp directory cannot make a
+/// render log the same thing twice).
 pub fn note(key: &str, reason: &str) {
-    let stamp = stamp_path(key);
-    if stamp.exists() && file_age(&stamp) < RATE_SECS {
+    if mem_seen(key) {
         return;
     }
-    // Stamp first. If the stamp cannot be written we cannot rate limit, and
-    // losing a reason is worse than a repeat, so log regardless.
-    // ponytail: two renderers racing at the hour boundary may both log.
-    let _ = write_stamp(&stamp); // false only loses the rate limit, never the line
-    emit(key, reason);
+    let stamp = stamp_path(key);
+    if let Some(st) = &stamp {
+        if st.exists() && file_age(st) < RATE_SECS {
+            return;
+        }
+    }
+    // Log first, stamp after: a failed append must not silence the key for an
+    // hour. ponytail: two renderers racing at the hour boundary may both log.
+    if emit(key, reason) {
+        if let Some(st) = &stamp {
+            let _ = write_stamp(st); // false only loses the rate limit
+        }
+    }
 }
 
-/// A keyed condition that had logged has cleared: say so once.
+/// A keyed condition that had logged has cleared: say so, once per failure
+/// line. The failure stamp is KEPT (so a condition that flaps is still limited
+/// to one failure line an hour); a second stamp records that the recovery was
+/// already reported for it.
 pub fn ok(key: &str) {
-    let stamp = stamp_path(key);
-    if stamp.exists() && std::fs::remove_file(&stamp).is_ok() {
-        emit("recovered", key);
+    let (Some(fail), Some(rec)) = (stamp_path(key), stamp_path(&format!("recovered-{}", key))) else {
+        return;
+    };
+    if !fail.exists() {
+        return;
+    }
+    let age = file_age(&fail);
+    if age >= RATE_SECS {
+        let _ = std::fs::remove_file(&fail); // stale: nothing recent to recover from
+        let _ = std::fs::remove_file(&rec);
+        return;
+    }
+    // Report only if no recovery line is newer than the failure line.
+    if rec.exists() && file_age(&rec) <= age {
+        return;
+    }
+    if emit("recovered", key) {
+        let _ = write_stamp(&rec);
     }
 }
 
 /// True when `key` was touched less than `secs` ago. For retry back-off.
 pub fn recent(key: &str, secs: i64) -> bool {
-    let stamp = stamp_path(key);
-    stamp.exists() && file_age(&stamp) < secs
+    match stamp_path(key) {
+        Some(st) => st.exists() && file_age(&st) < secs,
+        None => false,
+    }
 }
 
 /// Mark `key` now (back-off marker; logs nothing).
 pub fn touch(key: &str) {
-    let _ = write_stamp(&stamp_path(key)); // failing only loses the back-off
+    if let Some(st) = stamp_path(key) {
+        let _ = write_stamp(&st); // failing only loses the back-off
+    }
 }
 
 /// Drop a back-off marker.
 pub fn clear(key: &str) {
-    let _ = std::fs::remove_file(stamp_path(key)); // absent is the normal case
+    if let Some(st) = stamp_path(key) {
+        let _ = std::fs::remove_file(&st); // absent is the normal case
+    }
 }
 
 /// `note` for an io::Error with its kind, so the log shows the class.

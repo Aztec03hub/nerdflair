@@ -50,6 +50,21 @@ How it stays out of the way:
 
 The band also ships as a Claude Code plugin, `nerdflair-band`, which adds the Remote Control indicator. `band/sync-local-plugin.sh` installs it for every session.
 
+### When something degrades, it says so
+
+Nothing here fails silently. A fallback is allowed (hover must never stop you running `claude`), but every one leaves a line with the reason, once. If a card looks wrong or hover has stopped working, read these first:
+
+| Log | Written by | What lands in it |
+|---|---|---|
+| `~/.local/state/nerdflair/nfpty-error.log` | the pty wrapper | the shadow screen failing to start or turning off, tmux not answering, a layout that could not be read, cards clipped or blanked, a hover bug (with traceback; hover is then off for that session), signals, a terminal left in raw mode |
+| `~/.local/state/nerdflair/launcher.log` | the shim, `nf-tmux-heal`, the installer | the wrapper failing to start and claude launching plain instead, heal unable to act, python missing |
+| `~/.local/state/nerdflair/tmux-watch.log` | `nf-tmux-watch` | each deleted socket, what was running, whether it was really healed |
+| `~/.claude/nerdflair-errors.log` | the renderer (Rust and bash) | the ledger or `state.json` not writable, a corrupt state file, git or the MCP probe failing, a missing transcript, a bad payload, a panic |
+
+Each line is `time, what, why`. The renderer logs a given cause at most once an hour, and says `recovered` once when it clears; the wrapper logs a given cause once per session, or once a minute with a count for events that can repeat. The installer and sync script also print the reason and exit non-zero on a real failure. The band itself shows a red `nerdflair-band: ...` line, or a `stale Ns` marker on old figures, when the renderer fails. `NFPTY_ERRLOG=path` redirects the wrapper's log.
+
+Things that are normal are not logged: a closed window, tmux lock contention, a directory that is not a git repository, an unfinished escape sequence.
+
 
 ## Features
 
