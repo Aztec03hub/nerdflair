@@ -7,6 +7,7 @@
 
 mod bar;
 mod colors;
+mod errlog;
 mod fmtx;
 mod jqx;
 mod proc;
@@ -27,13 +28,28 @@ const MULTI_SEP: &str = " \u{b7} ";
 const MULTI_SEP_W: i64 = 3;
 
 fn main() {
+    errlog::install_panic_hook();
+    // TEST ONLY: tests/silent-failures.sh has no natural way to make the
+    // renderer panic, so this env var does. Never set it outside that test.
+    if std::env::var_os("NERDFLAIR_TEST_PANIC").is_some() {
+        panic!("NERDFLAIR_TEST_PANIC is set (test-only panic)");
+    }
     let mut buf = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut buf);
+    if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+        errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
+    }
     let input = String::from_utf8_lossy(&buf).into_owned();
     let out = render(&input);
     let mut so = std::io::stdout().lock();
-    let _ = so.write_all(&colors::emit_bytes(&out));
-    let _ = so.flush();
+    // EPIPE means the host went away (it kills slow renderers); that is not a
+    // renderer fault and stdout is no place to report it. Anything else is.
+    for r in [so.write_all(&colors::emit_bytes(&out)), so.flush()] {
+        if let Err(e) = r {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                errlog::note_io("stdout-write", "writing the status line", &e);
+            }
+        }
+    }
 }
 
 // ── jq field extraction ──────────────────────────────────────────
@@ -71,7 +87,13 @@ fn extract(root: &Value) -> Fields {
             }
             match jqx::path(root, p) {
                 Ok(v) => parts.push(jqx::tostring(v)),
-                Err(_) => failed = true,
+                Err(_) => {
+                    failed = true;
+                    errlog::note(
+                        &format!("payload-shape:{}", p.join(".")),
+                        "unexpected type on the path; ALL payload fields blanked (bash parity)",
+                    );
+                }
             }
         };
         push(&["workspace", "current_dir"]);
@@ -81,7 +103,10 @@ fn extract(root: &Value) -> Fields {
     // absent — shifting every later field left by one. Reproduced.
     if !failed {
         match jqx::path(root, &["model"]) {
-            Err(_) => failed = true,
+            Err(_) => {
+                failed = true;
+                errlog::note("payload-shape:model", "unexpected type; ALL payload fields blanked (bash parity)");
+            }
             Ok(Value::Object(m)) => {
                 let pick = |k: &str| -> Option<String> {
                     match m.get(k) {
@@ -107,7 +132,13 @@ fn extract(root: &Value) -> Fields {
             }
             match jqx::path(root, p) {
                 Ok(v) => parts.push(jqx::tostring(v)),
-                Err(_) => failed = true,
+                Err(_) => {
+                    failed = true;
+                    errlog::note(
+                        &format!("payload-shape:{}", p.join(".")),
+                        "unexpected type on the path; ALL payload fields blanked (bash parity)",
+                    );
+                }
             }
         };
         push(&["worktree", "branch"]);
@@ -163,8 +194,21 @@ fn extract(root: &Value) -> Fields {
 /// document so downstream lookups are unchanged.
 fn load_claude_json(path: &Path, project_dir: &str) -> Option<Value> {
     use serde_json::value::RawValue;
-    let text = std::fs::read_to_string(path).ok()?;
-    let top: std::collections::HashMap<String, &RawValue> = serde_json::from_str(&text).ok()?;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None, // no ~/.claude.json: normal
+        Err(e) => {
+            errlog::note_io("claude-json", &format!("cannot read {}; MCP names come from the probe cache only", path.display()), &e);
+            return None;
+        }
+    };
+    let top: std::collections::HashMap<String, &RawValue> = match serde_json::from_str(&text) {
+        Ok(t) => t,
+        Err(e) => {
+            errlog::note("claude-json", &format!("{} is not a JSON object ({}); MCP servers read as none", path.display(), e));
+            return None;
+        }
+    };
     let mut obj = serde_json::Map::new();
     if let Some(raw) = top.get("mcpServers") {
         if let Ok(v) = serde_json::from_str::<Value>(raw.get()) {
@@ -185,6 +229,7 @@ fn load_claude_json(path: &Path, project_dir: &str) -> Option<Value> {
                 obj.insert("projects".into(), Value::Object(pobj));
             } else {
                 // `.projects` is not an object: jq would error on the index.
+                errlog::note("claude-json", &format!("{}: .projects is not an object; project MCP data ignored", path.display()));
                 obj.insert("projects".into(), Value::String(String::new()));
             }
         }
@@ -318,6 +363,9 @@ fn render_inner(input: &str) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let uid = uid();
     let now = epoch_secs();
+    if home.is_empty() {
+        errlog::note("home-unset", "HOME is unset or empty; state, ledger and log paths are rooted at /");
+    }
 
     // ── State ────────────────────────────────────────────────────
     let state_path = state::state_file();
@@ -335,7 +383,20 @@ fn render_inner(input: &str) -> Result<String, String> {
     let opt_bullet = format!("{} \u{b7}{}", pal.dim, RESET);
 
     // ── Payload ──────────────────────────────────────────────────
-    let root: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    // Output is unchanged (a bad payload renders as an empty one), but the host
+    // changing its schema is exactly what this must not hide.
+    let root: Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(e) => {
+            if input.trim().is_empty() {
+                errlog::note("payload-empty", "empty status payload on stdin");
+            } else {
+                let head: String = input.chars().take(200).collect();
+                errlog::note("payload-parse", &format!("{}; first 200 chars: {}", e, head));
+            }
+            Value::Null
+        }
+    };
     let f = extract(&root);
     let cwd = f.cwd.clone();
     let mut project_dir = f.project_dir.clone();
@@ -380,9 +441,19 @@ fn render_inner(input: &str) -> Result<String, String> {
         let owned: Option<Value> = if *is_claude_json {
             None
         } else {
-            std::fs::read_to_string(path)
-                .ok()
-                .and_then(|t| serde_json::from_str(&t).ok())
+            match std::fs::read_to_string(path) {
+                Err(e) => {
+                    errlog::note_io("mcp-json", &format!("cannot read {}; its servers are ignored", path.display()), &e);
+                    None
+                }
+                Ok(t) => match serde_json::from_str(&t) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        errlog::note("mcp-json", &format!("{} is not valid JSON ({}); its servers are ignored", path.display(), e));
+                        None
+                    }
+                },
+            }
         };
         let v: &Value = match (*is_claude_json, &owned) {
             (true, _) => match &claude_root {
@@ -415,7 +486,10 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
         let mh = mcp_cache_path(uid);
-        if let Ok(t) = std::fs::read_to_string(&mh) {
+        match std::fs::read_to_string(&mh) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
+            Err(e) => errlog::note_io("mcp-cache-read", &mh.display().to_string(), &e),
+            Ok(t) => {
             let p = read_ifs_unit(&t, 4);
             let probe: Vec<String> = p[3]
                 .split('\u{1e}')
@@ -424,6 +498,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                 .collect();
             if !probe.is_empty() {
                 mcp_names = probe;
+            }
             }
         }
     }
@@ -444,7 +519,16 @@ fn render_inner(input: &str) -> Result<String, String> {
             shell_cwd = PathBuf::from(&cwd);
         }
         let run_dir = shell_cwd.clone();
-        let (_, ok) = proc::out("git", &["rev-parse", "--is-inside-work-tree"], Some(&run_dir));
+        // "not a git repository" is the normal answer for a plain directory and
+        // stays silent; any other failure (dubious ownership, corrupt repo) is
+        // logged, because it silently drops the whole git UI.
+        let (_, ok) = proc::out_chk(
+            "git",
+            &["rev-parse", "--is-inside-work-tree"],
+            Some(&run_dir),
+            "git:inside-work-tree",
+            &["not a git repository"],
+        );
         if ok {
             git_dir = cwd.clone();
         } else {
@@ -531,7 +615,17 @@ fn render_inner(input: &str) -> Result<String, String> {
                     None,
                 );
                 if !ok {
-                    let (b2, _) = proc::out("git", &["-C", sub, "rev-parse", "--short", "HEAD"], None);
+                    // Detached HEAD is normal; both failing is not.
+                    let (b2, ok2) = proc::out_chk(
+                        "git",
+                        &["-C", sub, "rev-parse", "--short", "HEAD"],
+                        None,
+                        "git:multi-branch",
+                        &[],
+                    );
+                    if !ok2 {
+                        errlog::note("git-branch", &format!("neither symbolic-ref nor rev-parse HEAD worked in {}", sub));
+                    }
                     b = b2;
                 }
                 if b.is_empty() || b == "main" || b == "master" {
@@ -543,7 +637,9 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
                 list.push_str(&format!("{}:{}", basename(sub), b));
             }
-            let _ = std::fs::write(&cache_file, format!("{}\n{}", off, list));
+            if let Err(e) = std::fs::write(&cache_file, format!("{}\n{}", off, list)) {
+                errlog::note_io("tmp-write", &cache_file.display().to_string(), &e);
+            }
         }
         let content = std::fs::read_to_string(&cache_file).unwrap_or_default();
         let mut lines = content.splitn(2, '\n');
@@ -649,11 +745,23 @@ fn render_inner(input: &str) -> Result<String, String> {
         let ctx_trunc: String = ctx_total_s.split('.').next().unwrap_or("").to_string();
         let pct_trunc: String = f.used_pct.split('.').next().unwrap_or("").to_string();
         match arith(&ctx_trunc) {
-            Ar::Fatal => return Err(out),
-            Ar::Syntax => pct_is_int = false,
+            Ar::Fatal => {
+                arith_note("fatal", "context_window_size", &ctx_trunc);
+                return Err(out);
+            }
+            Ar::Syntax => {
+                arith_note("syntax", "context_window_size", &ctx_trunc);
+                pct_is_int = false
+            }
             Ar::Val(t) => match arith(&pct_trunc) {
-                Ar::Fatal => return Err(out),
-                Ar::Syntax => pct_is_int = false,
+                Ar::Fatal => {
+                    arith_note("fatal", "used_percentage", &pct_trunc);
+                    return Err(out);
+                }
+                Ar::Syntax => {
+                    arith_note("syntax", "used_percentage", &pct_trunc);
+                    pct_is_int = false
+                }
                 Ar::Val(p) => {
                     total_used = t.wrapping_mul(p) / 100;
                     pct = p;
@@ -664,6 +772,15 @@ fn render_inner(input: &str) -> Result<String, String> {
         let transcript = jqx::path(&root, &["transcript_path"])
             .map(jqx::tostring)
             .unwrap_or_default();
+        if !transcript.is_empty() && !Path::new(&transcript).is_file() {
+            // The payload had no usage figures AND the transcript it names is
+            // missing, so the gauge reads 0% with nothing behind it. Expected
+            // only on the very first render of a new session.
+            errlog::note(
+                "ctx-transcript-missing",
+                &format!("transcript_path {} is not a file; context gauge reads 0%", transcript),
+            );
+        }
         if !transcript.is_empty() && Path::new(&transcript).is_file() {
             // Only the LAST usage line is wanted, so read the tail, not the
             // file. Transcripts here reach 617 MB and this is the render
@@ -677,7 +794,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             let tcap = clamp_cap(env_int("NERDFLAIR_TRANSCRIPT_TAIL_BYTES", 1_048_576));
             // Truncation is harmless here: we want the LAST usage line, and
             // cutting the head only removes older ones.
-            let (mut text, cut) = ledger_tail(Path::new(&transcript), tcap);
+            let (mut text, cut) = ledger_tail(Path::new(&transcript), tcap, "ctx-transcript-read");
             // Unless the cap lands INSIDE the last line. A single assistant
             // message carrying a large tool result can exceed a megabyte on
             // its own; the partial first line is then dropped and the tail
@@ -688,7 +805,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             if cut && !text.contains("\"usage\"") {
                 let wider = clamp_cap((tcap as i64).saturating_mul(16));
                 if wider > tcap {
-                    text = ledger_tail(Path::new(&transcript), wider).0;
+                    text = ledger_tail(Path::new(&transcript), wider, "ctx-transcript-read").0;
                 }
             }
             {
@@ -698,7 +815,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                 // made a live session flicker to 0% whenever the read landed
                 // mid-write. Bounded, so a corrupt tail cannot turn this into
                 // a scan of every line.
-                if let Some(v) = text
+                let found = text
                     .lines()
                     .filter(|l| l.contains("\"usage\""))
                     .rev()
@@ -711,21 +828,47 @@ fn render_inner(input: &str) -> Result<String, String> {
                         jqx::path(v, &["message", "usage"])
                             .map(|u| !u.is_null())
                             .unwrap_or(false)
-                    })
+                    });
+                if found.is_none() && text.contains("\"usage\"") {
+                    errlog::note(
+                        "ctx-no-usage",
+                        &format!("no parseable message.usage in the last usage lines of {}; gauge reads 0%", transcript),
+                    );
+                }
+                if let Some(v) = found
                 {
                     {
                         if let Ok(u) = jqx::path(&v, &["message", "usage"]) {
                             if !u.is_null() {
                                 let g = |k: &str| -> i64 {
-                                    u.get(k).and_then(|x| x.as_i64()).unwrap_or(0)
+                                    match u.get(k) {
+                                        None | Some(Value::Null) => 0,
+                                        Some(x) => x.as_i64().unwrap_or_else(|| {
+                                            errlog::note(
+                                                "ctx-usage-type",
+                                                &format!("usage.{} = {} is not an integer; counted as 0", k, x),
+                                            );
+                                            0
+                                        }),
+                                    }
                                 };
                                 total_used = g("input_tokens")
                                     + g("cache_creation_input_tokens")
                                     + g("cache_read_input_tokens")
                                     + g("output_tokens");
-                                let ct = bash_int(&ctx_total_s).unwrap_or(200000);
+                                let ct = bash_int(&ctx_total_s).unwrap_or_else(|| {
+                                    errlog::note(
+                                        "ctx-size-nonint",
+                                        &format!("context window size {:?} is not an integer; assuming 200000", ctx_total_s),
+                                    );
+                                    200000
+                                });
                                 pct = total_used * 100 / ct;
                                 if pct > 100 {
+                                    errlog::note(
+                                        "ctx-pct-clamped",
+                                        &format!("computed context use {}% shown as 99%", pct),
+                                    );
                                     pct = 99;
                                 }
                             }
@@ -748,13 +891,20 @@ fn render_inner(input: &str) -> Result<String, String> {
             .join(".claude/nerdflair/sessions")
             .join(&f.session_id);
         if sf.is_file() {
-            if let Ok(t) = std::fs::read_to_string(&sf) {
-                if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                    session_chime = match v.get("chime") {
-                        Some(Value::Null) | None => String::new(),
-                        Some(x) => jqx::tostring(x),
-                    };
-                }
+            match std::fs::read_to_string(&sf) {
+                Err(e) => errlog::note_io("session-file", &format!("cannot read {}; chime label falls back to style", sf.display()), &e),
+                Ok(t) => match serde_json::from_str::<Value>(&t) {
+                    Ok(v) => {
+                        session_chime = match v.get("chime") {
+                            Some(Value::Null) | None => String::new(),
+                            Some(x) => jqx::tostring(x),
+                        };
+                    }
+                    Err(e) => errlog::note(
+                        "session-file",
+                        &format!("{} is not valid JSON ({}); chime label falls back to style", sf.display(), e),
+                    ),
+                },
             }
         }
     }
@@ -793,12 +943,21 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut row_width: i64 = if sl_width != "auto" && !sl_width.is_empty()
         && sl_width.bytes().all(|b| b.is_ascii_digit())
     {
-        sl_width.parse::<i64>().unwrap_or(80)
+        sl_width.parse::<i64>().unwrap_or_else(|_| {
+            errlog::note("width-bad", &format!("configured width {:?} does not fit an integer; using 80", sl_width));
+            80
+        })
     } else {
+        if sl_width != "auto" && !sl_width.is_empty() {
+            errlog::note("width-bad", &format!("configured width {:?} is neither \"auto\" nor a number; measuring the terminal", sl_width));
+        }
         let cols = match std::env::var("COLUMNS").ok().filter(|s| !s.is_empty()) {
-            Some(c) => bash_int(&c).unwrap_or(80),
+            Some(c) => bash_int(&c).unwrap_or_else(|| {
+                errlog::note("columns-bad", &format!("COLUMNS={:?} is not an integer; using 80", c));
+                80
+            }),
             None => {
-                let (o, ok) = proc::out("tput", &["cols"], None);
+                let (o, ok) = proc::out_chk("tput", &["cols"], None, "tput", &[]);
                 if ok {
                     bash_int(&o).unwrap_or(80)
                 } else {
@@ -1158,10 +1317,26 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut rate_now: Option<i64> = None;
     if !f.output_tokens.is_empty() && !f.total_api_ms.is_empty() {
         let ot = match arith(&f.output_tokens) {
-            Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
+            Ar::Fatal => {
+                arith_note("fatal", "total_output_tokens", &f.output_tokens);
+                return Err(out);
+            }
+            Ar::Val(v) => v,
+            Ar::Syntax => {
+                arith_note("syntax", "total_output_tokens", &f.output_tokens);
+                0
+            }
         };
         let am = match arith(&f.total_api_ms) {
-            Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
+            Ar::Fatal => {
+                arith_note("fatal", "total_api_duration_ms", &f.total_api_ms);
+                return Err(out);
+            }
+            Ar::Val(v) => v,
+            Ar::Syntax => {
+                arith_note("syntax", "total_api_duration_ms", &f.total_api_ms);
+                0
+            }
         };
         if let Some(pv) = prev {
             if ot > 0 && am > pv.api_ms {
@@ -1209,7 +1384,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         std::env::var("NERDFLAIR_REPO_COST_FILE")
             .unwrap_or_else(|_| format!("{}/.claude/nerdflair-usage.tsv", home)),
     );
-    let (ledger, ledger_cut) = ledger_tail(&ledger_file, ledger_cap);
+    let (ledger, ledger_cut) = ledger_tail(&ledger_file, ledger_cap, "ledger-read");
 
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
@@ -1229,6 +1404,12 @@ fn render_inner(input: &str) -> Result<String, String> {
         // A cut tail that does not reach the window start means the earliest
         // spend is simply missing, and an undercount looks like a real figure.
         let covered = !ledger_cut || (oldest > 0 && oldest <= now - win);
+        if !covered {
+            errlog::note(
+                "ledger-uncovered",
+                &format!("tail cap {} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+            );
+        }
         if span > 0 && span >= min_span && spent > 0.0 && covered && now - newest <= stale_after {
             burn_val = fmtx::f2(spent / (span as f64 / 3600.0));
         }
@@ -1237,7 +1418,10 @@ fn render_inner(input: &str) -> Result<String, String> {
     // session's own lifetime average, which is what this did before.
     if burn_val.is_empty() && !f.cost.is_empty() && !f.total_duration_ms.is_empty() {
         match arith(&f.total_duration_ms) {
-            Ar::Fatal => return Err(out),
+            Ar::Fatal => {
+                arith_note("fatal", "total_duration_ms", &f.total_duration_ms);
+                return Err(out);
+            }
             Ar::Val(d) if d > 120000 => {
                 if let Some(c) = fmtx::awk_expr_num(&f.cost) {
                     burn_val = fmtx::f2(c / (d as f64 / 3600000.0));
@@ -1294,6 +1478,12 @@ fn render_inner(input: &str) -> Result<String, String> {
                 // is an absolute amount of money, and a quietly low one is
                 // read as fact.
                 let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
+                if !covered {
+                    errlog::note(
+                        "ledger-uncovered",
+                        &format!("tail cap {} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                    );
+                }
                 block_segment = if !covered {
                     String::new()
                 } else if fmtx::f2(spent) != "0.00" && spent > 0.0 {
@@ -1377,7 +1567,15 @@ fn render_inner(input: &str) -> Result<String, String> {
     if cp_secs.is_none() && !ctx_dropped {
         if let Some(u10) = used10 {
             let dur = match arith(&f.total_duration_ms) {
-                Ar::Fatal => return Err(out), Ar::Val(v) => v, Ar::Syntax => 0,
+                Ar::Fatal => {
+                    arith_note("fatal", "total_duration_ms", &f.total_duration_ms);
+                    return Err(out);
+                }
+                Ar::Val(v) => v,
+                Ar::Syntax => {
+                    arith_note("syntax", "total_duration_ms", &f.total_duration_ms);
+                    0
+                }
             };
             if dur > 120000 && u10 > 0 && u10 < cp_target {
                 cp_secs = Some((cp_target - u10) * (dur / 1000) / u10);
@@ -1410,6 +1608,7 @@ fn render_inner(input: &str) -> Result<String, String> {
 
     // ── Persist this sample ──────────────────────────────────────
     if let Some(sp) = smp_path.as_ref() {
+        // Already reported above when it is bad (same field).
         let api_now = match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 };
         let u_now = used10.unwrap_or(0);
         let moved = prev.map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
@@ -1427,8 +1626,19 @@ fn render_inner(input: &str) -> Result<String, String> {
                 body.push_str(&format!("{} {} {}\n", h.epoch, h.used10, h.api_ms));
             }
             let tmp = PathBuf::from(format!("{}.tmp", sp.display()));
-            if std::fs::write(&tmp, body.as_bytes()).is_ok() {
-                let _ = std::fs::rename(&tmp, sp);
+            match std::fs::write(&tmp, body.as_bytes()) {
+                Ok(()) => match std::fs::rename(&tmp, sp) {
+                    Ok(()) => errlog::ok("sample-write"),
+                    Err(e) => {
+                        errlog::note_io("sample-write", &format!("rename {}", tmp.display()), &e);
+                        let _ = std::fs::remove_file(&tmp); // best effort cleanup of our own temp
+                    }
+                },
+                Err(e) => errlog::note_io(
+                    "sample-write",
+                    &format!("{}: ETA/throughput history will not accumulate", tmp.display()),
+                    &e,
+                ),
             }
         }
     }
@@ -1446,10 +1656,15 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
             }
             if name.is_empty() {
-                let (n, _) = proc::out("tmux", &["display-message", "-p", "#S"], None);
+                let (n, ok) = proc::out("tmux", &["display-message", "-p", "#S"], None);
+                if !ok {
+                    errlog::note("tmux", "tmux display-message failed; session name segment hidden");
+                }
                 name = n;
                 if !name.is_empty() {
-                    let _ = std::fs::write(&cache, &name);
+                    if let Err(e) = std::fs::write(&cache, &name) {
+                        errlog::note_io("tmp-write", &cache.display().to_string(), &e);
+                    }
                 }
             }
             if !name.is_empty() {
@@ -1473,9 +1688,15 @@ fn render_inner(input: &str) -> Result<String, String> {
         // `_rl5=$(_rl_part ...)` runs in a subshell, so a fatal arithmetic
         // error there truncates only this part's output, not the render.
         let p = match arith(head) {
-            Ar::Fatal => return String::new(),
+            Ar::Fatal => {
+                arith_note("fatal", label, head);
+                return String::new();
+            }
             Ar::Val(v) => v,
-            Ar::Syntax => 0,
+            Ar::Syntax => {
+                arith_note("syntax", label, head);
+                0
+            }
         };
         let mut color = pal.dark_green;
         if p >= 60 {
@@ -1850,7 +2071,7 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
             *shell_cwd = PathBuf::from(git_dir);
         }
         let d: &Path = shell_cwd.as_path();
-        let (status, _) = proc::out_raw(
+        let (status, _) = proc::out_raw_chk(
             "git",
             &[
                 "-c",
@@ -1860,16 +2081,26 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
                 "--ignore-submodules=dirty",
             ],
             Some(d),
+            "git:status",
+            &[],
         );
         let dirty = status.bytes().filter(|b| *b == b'\n').count() as i64;
         let mut added = 0i64;
         let mut removed = 0i64;
         if dirty > 0 {
-            let (numstat, ok) = proc::out_raw("git", &["diff", "--numstat", "HEAD"], Some(d));
+            // A repo with no commits has no HEAD, so the fallback is expected
+            // there and the first failure stays silent; anything else is logged.
+            let (numstat, ok) = proc::out_raw_chk(
+                "git",
+                &["diff", "--numstat", "HEAD"],
+                Some(d),
+                "git:diff-head",
+                &["ambiguous argument 'HEAD'", "bad revision 'HEAD'"],
+            );
             let numstat = if ok {
                 numstat
             } else {
-                proc::out_raw("git", &["diff", "--numstat"], Some(d)).0
+                proc::out_raw_chk("git", &["diff", "--numstat"], Some(d), "git:diff", &[]).0
             };
             for line in numstat.lines() {
                 let mut it = line.split('\t');
@@ -1885,10 +2116,12 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
                     removed += v;
                 }
             }
-            let (others, _) = proc::out_raw(
+            let (others, _) = proc::out_raw_chk(
                 "git",
                 &["ls-files", "--others", "--exclude-standard"],
                 Some(d),
+                "git:ls-files",
+                &[],
             );
             let mut ucount = 0i64;
             for file in others.lines() {
@@ -1896,19 +2129,30 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
                 if ucount > 100 {
                     break;
                 }
-                if let Ok(bytes) = std::fs::read(d.join(file)) {
-                    added += bytes.iter().filter(|b| **b == b'\n').count() as i64;
+                match std::fs::read(d.join(file)) {
+                    Ok(bytes) => added += bytes.iter().filter(|b| **b == b'\n').count() as i64,
+                    // A file listed then gone (a race) is normal; anything else
+                    // under-counts +N and is worth one line.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => errlog::note_io("git-untracked-read", &d.join(file).display().to_string(), &e),
                 }
             }
         }
         let (mut branch, ok) =
             proc::out("git", &["symbolic-ref", "--quiet", "--short", "HEAD"], Some(d));
         if !ok {
-            branch = proc::out("git", &["rev-parse", "--short", "HEAD"], Some(d)).0;
+            // Detached HEAD is normal (symbolic-ref exits 1 quietly). Both
+            // failing is not.
+            let (b2, ok2) = proc::out_chk("git", &["rev-parse", "--short", "HEAD"], Some(d), "git:rev-parse-head", &[]);
+            if !ok2 {
+                errlog::note("git-branch", &format!("neither symbolic-ref nor rev-parse HEAD worked in {}", d.display()));
+            }
+            branch = b2;
         }
-        let (common, _) = proc::out("git", &["rev-parse", "--git-common-dir"], Some(d));
-        let (gdir, _) = proc::out("git", &["rev-parse", "--git-dir"], Some(d));
+        let (common, _) = proc::out_chk("git", &["rev-parse", "--git-common-dir"], Some(d), "git:common-dir", &[]);
+        let (gdir, _) = proc::out_chk("git", &["rev-parse", "--git-dir"], Some(d), "git:git-dir", &[]);
         let worktree = if common != gdir { "1" } else { "0" };
+        // No origin is normal: exit 2 / "No such remote". Silent.
         let (remote_raw, _) = proc::out("git", &["remote", "get-url", "origin"], Some(d));
         let remote = rewrite_remote(&remote_raw);
         let mut ahead = "0".to_string();
@@ -1939,13 +2183,21 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
             "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
             dirty, added, removed, branch, remote, worktree, ahead, behind
         );
-        let _ = std::fs::write(&cache_file, &payload);
+        if let Err(e) = std::fs::write(&cache_file, &payload) {
+            errlog::note_io("tmp-write", &format!("{} (git re-runs every render)", cache_file.display()), &e);
+        }
         computed = Some(payload);
     }
-    let content = std::fs::read_to_string(&cache_file)
-        .ok()
-        .or(computed)
-        .unwrap_or_default();
+    let content = match std::fs::read_to_string(&cache_file) {
+        Ok(t) => t,
+        Err(e) => {
+            // NotFound with a fresh computation is just the failed write above.
+            if computed.is_none() {
+                errlog::note_io("git-cache-read", &cache_file.display().to_string(), &e);
+            }
+            computed.unwrap_or_default()
+        }
+    };
     let p = read_ifs_unit(&content, 8);
     GitCache {
         dirty: p[0].clone(),
@@ -2094,13 +2346,34 @@ fn fit_multi_branches(list: &str, target: i64) -> String {
         .join(MULTI_SEP)
 }
 
+/// A payload field that bash arithmetic would reject. The renderer's VALUE
+/// handling stays bug-for-bug identical to bash (`fatal` truncates the line,
+/// `syntax` coerces to 0 or "not an int"), but a truncated or zeroed figure
+/// with no trace is the worst kind of silent failure, so it is logged.
+fn arith_note(kind: &str, field: &str, val: &str) {
+    errlog::note(
+        &format!("arith-{}:{}", kind, field),
+        &format!("payload field {} = {:?} is not bash-integer arithmetic ({})", field, val, kind),
+    );
+}
+
 // ── mcp health / repo cost ─────────────────────────────
 fn env_int(k: &str, default: i64) -> i64 {
-    std::env::var(k)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| bash_int(&s))
-        .unwrap_or(default)
+    match std::env::var(k) {
+        Ok(s) if !s.is_empty() => match bash_int(&s) {
+            Some(v) => v,
+            None => {
+                // The value stays the default (bash parity); a typo in a
+                // tunable is a user configuration error and must be visible.
+                errlog::note(
+                    &format!("env-bad:{}", k),
+                    &format!("{}={:?} is not an integer; using default {}", k, s, default),
+                );
+                default
+            }
+        },
+        _ => default, // unset or empty is a normal, explicit "use the default"
+    }
 }
 
 fn shq(s: &str) -> String {
@@ -2122,6 +2395,8 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
         return (ok, bad, warn, names);
     }
     if proc::which("claude").is_none() {
+        // The segment simply vanishes; say why (once an hour).
+        errlog::note("mcp-no-claude", "claude is not on PATH; MCP health probe disabled");
         return (ok, bad, warn, names);
     }
     let cache = mcp_cache_path(uid);
@@ -2131,12 +2406,21 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
         if file_age(&cache) < ttl {
             fresh = true;
         }
-        if let Ok(t) = std::fs::read_to_string(&cache) {
-            let p = read_ifs_unit(&t, 4);
-            ok = p[0].clone();
-            bad = p[1].clone();
-            warn = p[2].clone();
-            names = p[3].clone();
+        match std::fs::read_to_string(&cache) {
+            Err(e) => errlog::note_io("mcp-cache-read", &cache.display().to_string(), &e),
+            Ok(t) => {
+                let p = read_ifs_unit(&t, 4);
+                ok = p[0].clone();
+                bad = p[1].clone();
+                warn = p[2].clone();
+                names = p[3].clone();
+                // The probe's own `touch` on failure leaves an EMPTY cache,
+                // which is the documented "no data" state; only non-empty
+                // junk is a garbled cache.
+                if !t.is_empty() && (bash_int(&ok).is_none() || bash_int(&bad).is_none() || bash_int(&warn).is_none()) {
+                    errlog::note("mcp-cache-garbled", &format!("{} does not hold three integers; health shows 0/0", cache.display()));
+                }
+            }
         }
     }
     // flock, not a mkdir lock with a stale-breaker. The breaker was the
@@ -2166,7 +2450,8 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     if !fresh && idle {
         let script = format!(
             "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-             _out=$(timeout -k 5 30 claude mcp list 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' || true); _o=0; _b=0; _w=0; _nm=\"\"; \
+             _raw=$(timeout -k 5 30 claude mcp list 2>{cache}.err); _rc=$?; \
+             _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
              *\"Failed to connect\"*) _b=$((_b+1)) ;; \
@@ -2177,12 +2462,25 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
              case \"$_nn\" in plugin:*) _nn=\"${{_nn##*:}}\" ;; \"claude.ai \"*) _nn=\"${{_nn#claude.ai }}\" ;; esac; \
              if [ -n \"$_nn\" ]; then [ -n \"$_nm\" ] && _nm=\"$_nm$(printf '\\036')\"; _nm=\"$_nm$_nn\"; fi; \
              done <<< \"$_out\"; \
+             _why=\"\"; \
+             if [ $_rc -ne 0 ]; then _why=\"claude mcp list exited $_rc ($([ $_rc -eq 124 ] && echo timeout || echo failed))\"; \
+             elif [ $((_o+_b+_w)) -eq 0 ] && [ -n \"$_raw\" ] && ! printf '%s' \"$_raw\" | grep -qi 'no mcp servers'; then \
+               _why=\"claude mcp list printed no parseable server lines\"; fi; \
+             _st={stamp}; \
+             if [ -n \"$_why\" ]; then _fl=$(printf '%s %s' \"$_raw\" \"$(cat {cache}.err 2>/dev/null)\" | head -n 1 | cut -c1-160); \
+               if [ ! -f \"$_st\" ] || [ $(( $(date +%s) - $(stat -c %Y \"$_st\" 2>/dev/null || echo 0) )) -ge 3600 ]; then \
+                 : > \"$_st\"; printf '%s %s mcp-probe: %s; first output: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" \"$_why\" \"$_fl\" >> {log}; fi; \
+             elif [ -f \"$_st\" ]; then rm -f \"$_st\"; printf '%s %s recovered: mcp-probe\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" >> {log}; fi; \
+             rm -f {cache}.err; \
              if [ $((_o+_b+_w)) -gt 0 ]; then \
                printf '%s\\037%s\\037%s\\037%s' \"$_o\" \"$_b\" \"$_w\" \"$_nm\" > {cache}.tmp \
-               && mv -f {cache}.tmp {cache}; \
+               && mv -f {cache}.tmp {cache} \
+               || printf '%s %s mcp-probe-write: cannot update %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" {cache} >> {log}; \
              else touch {cache} 2>/dev/null; fi",
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
+            stamp = shq(&errlog::stamp_path("mcp-probe").to_string_lossy()),
+            log = shq(&errlog::log_path().to_string_lossy()),
         );
         // The `else touch` above matters as much as the lock. The cache used
         // to be written ONLY on a successful probe, so a failing or timing
@@ -2199,7 +2497,9 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        let _ = c.spawn();
+        if let Err(e) = c.spawn() {
+            errlog::note_io("mcp-probe-spawn", "cannot start the bash MCP probe", &e);
+        }
     }
     (ok, bad, warn, names)
 }
@@ -2239,7 +2539,14 @@ struct Ring { rate: i64, hist: Vec<Sample> }
 
 fn read_ring(path: &Path) -> Ring {
     let mut r = Ring { rate: 0, hist: Vec::new() };
-    let Ok(t) = std::fs::read_to_string(path) else { return r };
+    let t = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return r, // first sample: normal
+        Err(e) => {
+            errlog::note_io("sample-read", &format!("{}; ETA history restarts", path.display()), &e);
+            return r;
+        }
+    };
     let mut lines = t.lines();
     match lines.next() {
         Some(first) if first.starts_with("v2 ") => {
@@ -2267,6 +2574,9 @@ fn read_ring(path: &Path) -> Ring {
             }
         }
         None => {}
+    }
+    if r.hist.is_empty() && r.rate == 0 && !t.trim().is_empty() {
+        errlog::note("sample-read", &format!("{} has content but no readable samples; ETA history restarts", path.display()));
     }
     r
 }
@@ -2386,18 +2696,36 @@ fn repo_cost_segment(
         {
         let _shared = try_flock(&lock_file, false);
         if _shared.is_some() {
-        if let Ok(mut fh) = std::fs::OpenOptions::new()
+        // A missed lock is contention (silent: the next sample carries the
+        // total). An open or write FAILURE is not: the ledger stops growing and
+        // burn, block and repo totals go quietly stale, so each is logged.
+        match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&cost_file)
         {
+        Err(e) => errlog::note_io(
+            "ledger-open",
+            &format!("cannot append to {}; burn, block and repo totals will go stale", cost_file.display()),
+            &e,
+        ),
+        Ok(mut fh) => {
+            errlog::ok("ledger-open");
             // ONE write_all of a pre-built line. `write!` on a std::fs::File
             // is unbuffered and emits a separate write() per format fragment;
             // O_APPEND makes each fragment atomic but lets another process
             // interleave BETWEEN them. That spliced an epoch onto a cost and
             // produced a $1,787,994,297.21 repo total.
             let line = format!("{}\t{}\t{}\t{}\n", now, f.session_id, slug, f.cost);
-            let _ = fh.write_all(line.as_bytes());
+            match fh.write_all(line.as_bytes()) {
+                Ok(()) => errlog::ok("ledger-write"),
+                Err(e) => errlog::note_io(
+                    "ledger-write",
+                    &format!("append to {} failed (disk full?); burn, block and repo totals will go stale", cost_file.display()),
+                    &e,
+                ),
+            }
+        }
         }
         }
         // Stamped whether or not the append happened, including when the
@@ -2408,7 +2736,9 @@ fn repo_cost_segment(
         // scaling with a file that grows on its own: the incident pattern.
         // Skipping a sample costs nothing permanent, the column being
         // cumulative.
-        let _ = std::fs::write(&stamp, "");
+        if let Err(e) = std::fs::write(&stamp, "") {
+            errlog::note_io("tmp-write", &stamp.display().to_string(), &e);
+        }
         } // shared lock released here, before the exclusive one is requested
         let bytes = std::fs::metadata(&cost_file).map(|m| m.len()).unwrap_or(0);
         let maxb = env_int("NERDFLAIR_REPO_COST_MAXBYTES", 2_000_000) as u64;
@@ -2435,7 +2765,11 @@ fn repo_cost_segment(
                 // outlives the kill window. Stamping only on success has the
                 // same shape. Claiming first bounds a pathological compaction
                 // to one attempt per interval.
-                let _ = std::fs::write(&compacted_stamp, "");
+                if let Err(e) = std::fs::write(&compacted_stamp, "") {
+                    // Without the cooldown, compaction (exclusive lock) would
+                    // run on every refresh.
+                    errlog::note_io("ledger-compact-stamp", &format!("{} (cooldown cannot hold)", compacted_stamp.display()), &e);
+                }
                 let cutoff = now - days * 86400;
                 // Dropping only rows older than `days` is not a bound: at 14
                 // live sessions a 30-day window is ~400k rows and ~30 MB, so
@@ -2452,7 +2786,11 @@ fn repo_cost_segment(
                 // machine has been up.
                 let full_days = env_int("NERDFLAIR_LEDGER_FULL_DAYS", 3);
                 let full_from = (now - full_days * 86400) as f64;
-                if let Ok(text) = read_lossy(&cost_file) {
+                let ledger_text = read_lossy(&cost_file);
+                if let Err(e) = &ledger_text {
+                    errlog::note_io("ledger-compact-read", &format!("cannot read {}; compaction skipped", cost_file.display()), e);
+                }
+                if let Ok(text) = ledger_text {
                     let mut old: std::collections::HashMap<String, (i64, String)> =
                         std::collections::HashMap::new();
                     let mut recent: Vec<&str> = Vec::new();
@@ -2512,18 +2850,57 @@ fn repo_cost_segment(
                     // produces a believable truncated file.
                     let kept_rows = kept.lines().count();
                     if kept_in > 0 && kept_rows == 0 {
-                        // nothing survived a non-empty input: refuse
+                        // nothing survived a non-empty input: refuse. The
+                        // refusal is the right call, but a ledger stuck over
+                        // its size cap with the time gate retrying hourly is
+                        // something the owner has to be told about.
+                        errlog::note(
+                            "ledger-compact-refused",
+                            &format!(
+                                "{} valid rows but none newer than the {}-day cutoff ({}); refusing to wipe {} (clock jump?)",
+                                kept_in, days, cutoff, cost_file.display()
+                            ),
+                        );
                     } else {
+                        // Compaction deletes rows for good, so say how many
+                        // were not even well-formed (the readers skip these
+                        // silently on the hot path, by design).
+                        let total_rows = text.lines().filter(|l| !l.is_empty()).count();
+                        let malformed = total_rows.saturating_sub(kept_in);
+                        if malformed > 0 {
+                            errlog::note(
+                                "ledger-compact-dropped",
+                                &format!("{} malformed ledger rows removed from {} ({} valid rows seen)", malformed, cost_file.display(), kept_in),
+                            );
+                        }
+                        if text.contains('\u{fffd}') {
+                            errlog::note("ledger-invalid-utf8", &format!("{} had invalid UTF-8 bytes, replaced during compaction", cost_file.display()));
+                        }
                         let tmp = PathBuf::from(format!("{}.tmp", cost_file.display()));
-                        if let Ok(mut fh) = std::fs::File::create(&tmp) {
-                            use std::io::Write as _;
-                            // fsync before the rename: the rename is atomic in
-                            // the directory, but the DATA need not have reached
-                            // disk, so a crash can leave an empty inode under
-                            // the ledger's name.
-                            if fh.write_all(kept.as_bytes()).is_ok() && fh.sync_all().is_ok() {
-                                drop(fh);
-                                let _ = std::fs::rename(&tmp, &cost_file);
+                        use std::io::Write as _;
+                        // fsync before the rename: the rename is atomic in
+                        // the directory, but the DATA need not have reached
+                        // disk, so a crash can leave an empty inode under
+                        // the ledger's name.
+                        let res = std::fs::File::create(&tmp)
+                            .and_then(|mut fh| {
+                                fh.write_all(kept.as_bytes())?;
+                                fh.sync_all()
+                            })
+                            .and_then(|_| std::fs::rename(&tmp, &cost_file));
+                        match res {
+                            Ok(()) => errlog::ok("ledger-compact-write"),
+                            Err(e) => {
+                                errlog::note_io(
+                                    "ledger-compact-write",
+                                    &format!("compacting {} failed; old ledger kept, retried after the cooldown", cost_file.display()),
+                                    &e,
+                                );
+                                if let Err(e2) = std::fs::remove_file(&tmp) {
+                                    if e2.kind() != std::io::ErrorKind::NotFound {
+                                        errlog::note_io("ledger-compact-write", &format!("orphan {}", tmp.display()), &e2);
+                                    }
+                                }
                             }
                         }
                     }
@@ -2540,11 +2917,24 @@ fn repo_cost_segment(
     ));
     let mut total = String::new();
     if !due && memo.is_file() {
-        total = std::fs::read_to_string(&memo).unwrap_or_default();
+        total = match std::fs::read_to_string(&memo) {
+            Ok(t) => t,
+            Err(e) => {
+                errlog::note_io("tmp-read", &memo.display().to_string(), &e);
+                String::new()
+            }
+        };
         while total.ends_with('\n') {
             total.pop();
         }
-    } else if let Ok(text) = read_lossy(&cost_file) {
+    } else if let Some(text) = match read_lossy(&cost_file) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None, // no ledger yet: normal
+        Err(e) => {
+            errlog::note_io("ledger-read", &format!("cannot read {} for the repo total", cost_file.display()), &e);
+            None
+        }
+    } {
         let cutoff = (now - days * 86400) as f64;
         let mut m: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         for line in text.lines() {
@@ -2568,7 +2958,9 @@ fn repo_cost_segment(
         if t > 0.0 {
             total = fmtx::f2(t);
         }
-        let _ = std::fs::write(&memo, &total);
+        if let Err(e) = std::fs::write(&memo, &total) {
+            errlog::note_io("tmp-write", &memo.display().to_string(), &e);
+        }
     }
     if !total.is_empty() && total != "0.00" {
         return format!("{}{} ${}{}", pal.dark_green, REPO_ICON, total, RESET);
@@ -2598,7 +2990,7 @@ fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
     };
     let f = match open() {
         Ok(f) => f,
-        Err(_) => {
+        Err(first) => {
             // An earlier version took this same path as a mkdir lock, and a
             // process killed mid-compaction left the DIRECTORY behind.
             // Opening a directory fails with EISDIR, so every append and
@@ -2607,15 +2999,37 @@ fn try_flock(path: &Path, exclusive: bool) -> Option<std::fs::File> {
             // through the migration. rmdir only succeeds on an empty dir,
             // so this cannot eat anything that matters.
             if path.is_dir() {
-                let _ = std::fs::remove_dir(path);
+                if let Err(e) = std::fs::remove_dir(path) {
+                    errlog::note_io("flock-open", &format!("{} is a directory and cannot be removed", path.display()), &e);
+                }
             }
-            open().ok()?
+            match open() {
+                Ok(f) => f,
+                Err(e) => {
+                    // Callers read None as "someone else holds it" and skip;
+                    // an unopenable lock means they skip FOREVER (no ledger
+                    // appends, no compaction), so it is not silent.
+                    errlog::note_io(
+                        "flock-open",
+                        &format!("cannot open lock {} (first error: {}); ledger appends and compaction are skipped", path.display(), first),
+                        &e,
+                    );
+                    return None;
+                }
+            }
         }
     };
     let op = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH } | libc::LOCK_NB;
     if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
         Some(f)
     } else {
+        // EWOULDBLOCK is the normal "another process holds it" (a compaction
+        // in progress): silent. Anything else (ENOLCK, EBADF...) is a real
+        // failure that callers would misread as contention.
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            errlog::note_io("flock", &format!("flock({}) failed; treated as held", path.display()), &e);
+        }
         None
     }
 }
@@ -2659,21 +3073,34 @@ fn read_lossy(path: &Path) -> std::io::Result<String> {
 /// time window must know, because a window reaching back past the cap is
 /// silently undercounted otherwise, and an undercounted dollar figure looks
 /// exactly like a real one.
-fn ledger_tail(path: &Path, cap: u64) -> (String, bool) {
+fn ledger_tail(path: &Path, cap: u64, key: &str) -> (String, bool) {
     use std::io::{Read, Seek, SeekFrom};
+    // NotFound is the genuine "nothing yet" (first run); every other failure
+    // looks identical to it downstream, so it is logged under `key`.
+    let bad = |what: &str, e: &std::io::Error| {
+        errlog::note_io(key, &format!("{} {}", what, path.display()), e);
+        (String::new(), false)
+    };
     let mut fh = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return (String::new(), false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (String::new(), false),
+        Err(e) => return bad("cannot open", &e),
     };
-    let len = fh.metadata().map(|m| m.len()).unwrap_or(0);
+    // Not unwrap_or(0): a failed stat would make start 0 and stream the whole
+    // file, the unbounded read this function exists to avoid.
+    let len = match fh.metadata() {
+        Ok(m) => m.len(),
+        Err(e) => return bad("cannot stat", &e),
+    };
     let start = len.saturating_sub(cap);
-    if fh.seek(SeekFrom::Start(start)).is_err() {
-        return (String::new(), false);
+    if let Err(e) = fh.seek(SeekFrom::Start(start)) {
+        return bad("cannot seek", &e);
     }
     let mut buf = Vec::new();
-    if fh.read_to_end(&mut buf).is_err() {
-        return (String::new(), false);
+    if let Err(e) = fh.read_to_end(&mut buf) {
+        return bad("cannot read", &e);
     }
+    errlog::ok(key);
     let mut s = String::from_utf8_lossy(&buf).into_owned();
     // A seek lands mid-record unless it landed at byte 0; that first partial
     // line would otherwise parse as a row with a truncated epoch or cost.

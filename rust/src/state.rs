@@ -1,6 +1,7 @@
 //! lib.sh state handling, including its legacy migrations and its
 //! field-collapsing read bug (see `read_ifs_whitespace`).
 
+use crate::errlog;
 use crate::jqx;
 use crate::util::read_ifs_whitespace;
 use serde_json::Value;
@@ -41,9 +42,18 @@ pub fn state_file() -> PathBuf {
 
 pub fn read_state(path: &Path) -> State {
     let mut vals = vec![String::new(); 14];
+    // Missing file = first run, defaults are correct and silent. A file that
+    // EXISTS but cannot be read or parsed also degrades to defaults (the
+    // user's settings silently revert), so that case is logged.
     if path.is_file() {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+        match std::fs::read_to_string(path) {
+            Err(e) => errlog::note_io("state-corrupt", &format!("cannot read {}; using defaults", path.display()), &e),
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Err(e) => errlog::note(
+                    "state-corrupt",
+                    &format!("{} is not valid JSON ({}); using defaults", path.display(), e),
+                ),
+                Ok(v) => {
                 let keys = [
                     "mode",
                     "width",
@@ -75,8 +85,15 @@ pub fn read_state(path: &Path) -> State {
                     // `IFS=$'\t' read`: tab is IFS whitespace, so empty fields
                     // collapse and later fields shift left. Reproduced.
                     vals = read_ifs_whitespace(&fields.join("\t"), 14);
+                    errlog::ok("state-corrupt");
+                } else {
+                    errlog::note(
+                        "state-corrupt",
+                        &format!("{} is JSON but not an object; using defaults", path.display()),
+                    );
                 }
-            }
+                }
+            },
         }
     }
 
@@ -157,17 +174,36 @@ pub fn read_state(path: &Path) -> State {
 /// `_nf_write_state` — the canonical 11-key object jq -n builds.
 fn write_state(path: &Path, s: &State) {
     let mut recent = Value::Array(vec![]);
-    if let Ok(text) = std::fs::read_to_string(path) {
-        if let Ok(v) = serde_json::from_str::<Value>(&text) {
-            if let Some(r) = v.get("chime_recent_styles") {
-                if !r.is_null() {
-                    recent = r.clone();
+    match std::fs::read_to_string(path) {
+        // No file yet: nothing to preserve, silent.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => errlog::note_io(
+            "state-corrupt",
+            &format!("cannot read {} to keep chime_recent_styles; history reset", path.display()),
+            &e,
+        ),
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Err(e) => errlog::note(
+                "state-corrupt",
+                &format!("{} unparseable ({}); chime_recent_styles history reset", path.display(), e),
+            ),
+            Ok(v) => {
+                if let Some(r) = v.get("chime_recent_styles") {
+                    if !r.is_null() {
+                        recent = r.clone();
+                    }
                 }
             }
-        }
+        },
     }
-    let flair: Value = serde_json::from_str(if s.flair.is_empty() { "true" } else { &s.flair })
-        .unwrap_or(Value::Bool(true));
+    let flair_src = if s.flair.is_empty() { "true" } else { &s.flair };
+    let flair: Value = match serde_json::from_str(flair_src) {
+        Ok(v) => v,
+        Err(e) => {
+            errlog::note("state-flair", &format!("flair value {:?} is not JSON ({}); written as true", flair_src, e));
+            Value::Bool(true)
+        }
+    };
     let mut obj = serde_json::Map::new();
     obj.insert("mode".into(), Value::String(s.mode.clone()));
     obj.insert("width".into(), Value::String(s.width.clone()));
@@ -186,34 +222,79 @@ fn write_state(path: &Path, s: &State) {
     atomic_write(path, &jqx::pretty(&Value::Object(obj)));
 }
 
-fn atomic_write(path: &Path, contents: &str) {
+/// Write via temp + rename. Failure is logged (key `state-write`) and the
+/// orphan temp removed; the return value tells the caller whether it landed.
+fn atomic_write(path: &Path, contents: &str) -> bool {
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, contents).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    let res = std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path));
+    match res {
+        Ok(()) => {
+            errlog::ok("state-write");
+            true
+        }
+        Err(e) => {
+            errlog::note_io("state-write", &format!("{} not updated; settings/last_session not persisted", path.display()), &e);
+            if let Err(e2) = std::fs::remove_file(&tmp) {
+                if e2.kind() != std::io::ErrorKind::NotFound {
+                    errlog::note_io("state-write", &format!("orphan {}", tmp.display()), &e2);
+                }
+            }
+            false
+        }
     }
 }
 
 /// `_nf_update_field <field> <value>` — jq `.field = $v`, atomic via rename.
 pub fn update_field(path: &Path, state: &State, field: &str, value: &str) {
+    // The caller retries on EVERY render while last_session differs, so after a
+    // failed write back off for a minute instead of hammering a broken disk
+    // several times a second per session. (The log line is rate limited
+    // separately.)
+    if errlog::recent("state-write-retry", 60) {
+        return;
+    }
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            errlog::note_io("state-write", &format!("cannot create {}", dir.display()), &e);
+            errlog::touch("state-write-retry");
+            return;
+        }
     }
     if !path.is_file() {
         write_state(path, state);
     }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(_) => return,
+        Err(e) => {
+            errlog::note_io("state-write", &format!("cannot read {} for update", path.display()), &e);
+            errlog::touch("state-write-retry");
+            return;
+        }
     };
+    // A corrupt file is reported by read_state on this same render; the bash
+    // twin copies it to state.json.corrupt and rebuilds, Rust leaves it alone
+    // (output parity does not depend on it), so say that it was left.
     let mut v: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
-        Err(_) => return, // jq fails, `>` truncates tmp only, mv never runs
+        Err(e) => {
+            errlog::note("state-corrupt", &format!("{} unparseable ({}); {} not updated", path.display(), e, field));
+            errlog::touch("state-write-retry");
+            return; // jq fails, `>` truncates tmp only, mv never runs
+        }
     };
     match &mut v {
         Value::Object(m) => {
             m.insert(field.to_string(), Value::String(value.to_string()));
         }
-        _ => return,
+        _ => {
+            errlog::note("state-corrupt", &format!("{} is JSON but not an object; {} not updated", path.display(), field));
+            errlog::touch("state-write-retry");
+            return;
+        }
     }
-    atomic_write(path, &jqx::pretty(&v));
+    if atomic_write(path, &jqx::pretty(&v)) {
+        errlog::clear("state-write-retry");
+    } else {
+        errlog::touch("state-write-retry");
+    }
 }
