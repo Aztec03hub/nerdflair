@@ -24,3 +24,12 @@ With scripts, rust/src, band, tests stashed (src only plus build), silent-failur
 - claude plugin test band: 11 pass, 0 fail (the first try failed 1 test because the back-off hid a good refresh; back-off now applies only without a cache)
 
 Not done: 6 (symlink-safe caches), the two other lows in 10 (chime label duplicate path, `.err` redirect wording).
+
+# Round 20 fixes (uncommitted, on e472314)
+1. Rust logs `cwd-cd` and skips git when the payload cwd is not a directory (main.rs, `cwd_ok`). `cwd-cd-fails` now runs for both impls (stdout byte-identical). New corpus payload 163 (nonexistent cwd; gen-payloads.sh updated). Old code: `cwd-cd-fails [rust]` FAILED. difftest runs from a neutral non-repo cwd, so it was 163/163 on old code too; the silent-failures case is the real guard.
+2. lib.sh `_nf_err` memo is now `[[ "$_NF_MEM" == *" $_k "* ]]` (literal). New test with keys `spawn:abc`, `spawn:*`, `spawn:xyz` expects 3 lines; it FAILED on old code.
+3. register.tsx: dropped the `cache ||` gate; `lastFailAt = await $.clock.now()` after the refresh settles. New test "spawned once per 5 s, even while a stale cache exists" FAILED on old code. The existing stale test advances 6 s instead of 3 s so the back-off has expired before the good refresh.
+4. `multi-cache-read` logged in both renderers when the multi cache read fails with no computation in hand (quiet after a git timeout). No dedicated test added.
+5. mklayout.py cards-check: O_NOFOLLOW seed, OSError gives a clear message and exit, file removed in `finally` (checked with a planted symlink: "Too many levels of symbolic links" message). Side fix: cards-check now feeds the corpus with `@@REPO:x@@` pointed at a throwaway dirty repo; before, the `dirty` readout was reached only by accident through Rust running git in the process cwd, which finding 1 removed (this also explains the earlier flaky `tmux` failure).
+
+Final runs after rebuild: silent-failures PASS; difftest 163/163 identical; bridge-selfchecks PASS (run after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 12 pass, 0 fail. `git stash list` empty.

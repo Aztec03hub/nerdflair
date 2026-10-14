@@ -546,8 +546,12 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
     _multi_off_count=$_mb_off
     _multi_branch_list=$_mb_list
   else
-    IFS= read -r _multi_off_count < "$_multi_cache_file" 2>/dev/null
-    _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file" 2>/dev/null)
+    if [[ -r "$_multi_cache_file" ]]; then
+      IFS= read -r _multi_off_count < "$_multi_cache_file"
+      _multi_branch_list=$(sed -n '2,$p' "$_multi_cache_file" 2>/dev/null)
+    elif [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
+      _nf_err multi-cache-read "cannot read $_multi_cache_file"
+    fi
   fi
   _multi_off_count=${_multi_off_count:-0}
   _multi_branch_list=$(_sanitize "$_multi_branch_list")

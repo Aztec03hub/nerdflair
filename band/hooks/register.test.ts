@@ -148,8 +148,29 @@ test('after a failed refresh the old figures stay but carry "stale Ns: reason"; 
   expect(stale).toContain('renderer down')
 
   healthy = true
-  await clock.advance(3000)
+  await clock.advance(6000)
   expect(textOf(await $.ui.render(BAND as never))).not.toContain('stale')
+})
+
+test('a renderer that keeps failing is spawned once per 5 s, even while a stale cache exists', async ($, on) => {
+  let healthy = true
+  let spawns = 0
+  const { clock } = world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    if (!healthy) spawns++
+    return healthy ? result(0, GOOD) : result(1, '', 'renderer down')
+  })
+
+  await $.ui.render(BAND as never)
+  healthy = false
+  await clock.advance(3000)
+  await $.ui.render(BAND as never) // fails: one spawn
+  await clock.advance(3000)
+  await $.ui.render(BAND as never) // 3 s after the failure: backed off
+  expect(spawns).toBe(1)
+  await clock.advance(3000)
+  await $.ui.render(BAND as never) // 6 s after: tries again
+  expect(spawns).toBe(2)
 })
 
 test('the payload omits what the host did not give instead of inventing 200000, 0 and $0', async ($, on) => {

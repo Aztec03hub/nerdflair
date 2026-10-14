@@ -111,7 +111,7 @@ _nf_log_line() {
 }
 _nf_err() {
   local _k="$1" _st
-  case "$_NF_MEM" in *" "${_k}" "*) return 0 ;; esac    # once per process whatever the stamp says
+  [[ "$_NF_MEM" == *" $_k "* ]] && return 0    # once per process whatever the stamp says
   _NF_MEM+="${_k} "
   _nf_stamp "$_k"
   _st="$_NF_STAMP"

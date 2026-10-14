@@ -310,5 +310,7 @@ emit "stress: full mode, everything populated, COLUMNS=150" \
   "$(mut '.effort.level="max"|.fast_mode=true|.output_style.name="Explanatory"')" \
   "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=150" "CASE_MCP=many" "CASE_SEED_MCPHEALTH=5:1:0" \
   'CASE_SEED_CCUSAGE=$12.40 block (2h 15m left) $8.75/hr' "CASE_TMUX=%9" "CASE_SEED_TMUX=nf"
+emit "payload cwd does not exist: both renderers log cwd-cd and draw no git UI" \
+  "$(mut '.workspace={"current_dir":"/nonexistent/nf-difftest-gone","project_dir":"/nonexistent/nf-difftest-gone"}')" "${E_FULL[@]}"
 
 echo "generated $N payloads in $OUT"

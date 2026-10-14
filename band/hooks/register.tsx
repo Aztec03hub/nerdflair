@@ -374,7 +374,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   // A render that arrives while the lookup runs waits for it, rather than finding
   // HOME empty and drawing a false "no recorded reason" error.
   if (homeLookup) await homeLookup
-  if (HOME && (!cache || now - cache.at > TTL_MS) && (cache || now - lastFailAt > FAIL_BACKOFF_MS)) {
+  if (HOME && (!cache || now - cache.at > TTL_MS) && now - lastFailAt > FAIL_BACKOFF_MS) {
     // One refresh at a time: renders arrive faster than the renderer returns,
     // and each would otherwise spawn its own.
     const segs = await (inflight ??= (async () => {
@@ -543,7 +543,9 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       // A renderer that keeps failing must not leave figures frozen as if
       // they were live: until 30 s pass the old ones stay, marked `stale`
       // below with the reason; after that they go and the red error shows.
-      lastFailAt = now // back off: a renderer that fails is not re-run on every render
+      // Back off: a renderer that fails is not re-run on every render. Stamped AFTER the
+      // refresh settled (a 5 s timeout would otherwise leave a stamp 5 s old, no back-off).
+      lastFailAt = await $.clock.now()
       if (cache && now - cache.at > STALE_MS) cache = null
     }
   }

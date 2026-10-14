@@ -514,10 +514,12 @@ fn render_inner(input: &str) -> Result<String, String> {
     // directory the shell was already in. Model that shell cwd explicitly.
     let mut shell_cwd: PathBuf =
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    if !cwd.is_empty() {
-        if Path::new(&cwd).is_dir() {
-            shell_cwd = PathBuf::from(&cwd);
-        }
+    let cwd_ok = cwd.is_empty() || Path::new(&cwd).is_dir();
+    if !cwd_ok {
+        errlog::note("cwd-cd", &format!("cannot cd to {}; git UI skipped", cwd));
+    }
+    if !cwd.is_empty() && cwd_ok {
+        shell_cwd = PathBuf::from(&cwd);
         let run_dir = shell_cwd.clone();
         // "not a git repository" is the normal answer for a plain directory and
         // stays silent; any other failure (dubious ownership, corrupt repo) is
@@ -656,7 +658,16 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         let content = match computed_multi {
             Some(t) => t,
-            None => std::fs::read_to_string(&cache_file).unwrap_or_default(),
+            None => match std::fs::read_to_string(&cache_file) {
+                Ok(t) => t,
+                Err(e) => {
+                    // After a git timeout the skipped write is expected: already logged.
+                    if !proc::timed_out() {
+                        errlog::note_io("multi-cache-read", &cache_file.display().to_string(), &e);
+                    }
+                    String::new()
+                }
+            },
         };
         let mut lines = content.splitn(2, '\n');
         let first = lines.next().unwrap_or("").to_string();

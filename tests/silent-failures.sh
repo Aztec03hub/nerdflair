@@ -310,8 +310,8 @@ run_case git-hangs                timeout:git:inside-work-tree 1 s_git_hang
 run_case git-partial-hang          timeout:git:status 1 s_git_partial_hang chk_git_not_cached
 run_case git-fast-control          -   0 s_git_fast chk_git_cached
 run_case git-hang-backoff          timeout:git:inside-work-tree 0 s_git_backoff
-IMPLS=bash
 run_case cwd-cd-fails              cwd-cd 1 s_cwd_gone
+IMPLS=bash
 run_case mktemp-fails              buf-mktemp 1 s_mktemp_bad
 IMPLS="rust bash"
 run_case missing-transcript       ctx-transcript-missing 1 s_transcript_missing
@@ -321,6 +321,13 @@ run_case nonnumeric-tunable       env-bad:NERDFLAIR_BURN_WINDOW 1 s_env_bad
 IMPLS="rust"
 run_case panic                    panic                  1 s_panic chk_panic
 IMPLS="rust bash"
+
+# _nf_err's once-per-process memo must compare keys literally: 'spawn:*' is a new key
+# after 'spawn:abc', not a glob that matches it (nor may it silence later keys).
+_memo_lines=$( ( export HOME="$WORK/memo-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/memo-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR"
+  source "$REPO/scripts/lib.sh"; _nf_err 'spawn:abc' one; _nf_err 'spawn:*' two; _nf_err 'spawn:xyz' three
+  wc -l < "$HOME/.claude/nerdflair-errors.log" ) 2>/dev/null )
+check "lib.sh _nf_err memo: keys with glob characters are literal (3 lines)" 3 "${_memo_lines//[[:space:]]/}"
 
 echo
 echo "NOISE (must stay completely silent):"

@@ -329,14 +329,57 @@ def cards_check():
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
     tcache = f"/tmp/nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}"
-    with open(tcache, "w") as fh:
-        fh.write("cards")
+    try:
+        # O_NOFOLLOW: a pre-planted symlink at this predictable name must not be written through.
+        fd = os.open(tcache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("cards")
+    except OSError as e:
+        sys.exit(f"cards-check: cannot seed the tmux cache {tcache}: {e}")
+    try:
+        _cards_check_body(root, binary, pane)
+    finally:
+        try:
+            os.remove(tcache)
+        except OSError:
+            pass
+
+
+def _cards_check_body(root, binary, pane):
+    import glob
     env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane)
+    seen, misses, rows = set(), {}, 0
+    # The corpus names fixture repos (@@REPO:x@@). Point them all at one throwaway
+    # dirty repo: the renderer draws no git readouts for a cwd that does not exist.
+    import shutil, tempfile
+    repo = tempfile.mkdtemp(prefix="nf-cards-")
+    try:
+        g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
+        with open(os.path.join(repo, "a.txt"), "w") as fh:
+            fh.write("a\n")
+        subprocess.run(g + ["add", "."], check=True)
+        subprocess.run(g + ["commit", "-q", "-m", "init"], check=True)
+        with open(os.path.join(repo, "a.txt"), "w") as fh:
+            fh.write("a\nb\n")
+        seen, misses, rows = _cards_run(root, binary, env, repo, glob)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+    assert rows, "the renderer printed no status rows; is it built?"
+    assert not misses, f"readouts with no card: {misses}"
+    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
+    # remote_control is drawn by the band, and ahead shares a piece with dirty.
+    assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
+    print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
+
+
+def _cards_run(root, binary, env, repo, glob):
     seen, misses, rows = set(), {}, 0
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:
-            out = subprocess.run([binary], stdin=fh, capture_output=True,
-                                 encoding="utf-8", errors="replace", env=env).stdout
+            payload = re.sub(r"@@REPO:[a-z0-9_-]+@@", repo, fh.read())
+        out = subprocess.run([binary], input=payload, capture_output=True,
+                             encoding="utf-8", errors="replace", env=env).stdout
         for line in ANSI.sub("", out).split("\n"):
             if CONTEXT_ROW.search(line):
                 seen.add("context")
@@ -348,12 +391,7 @@ def cards_check():
                 seen.add(sid)
                 if sid is None:
                     misses[text] = misses.get(text, 0) + 1
-    assert rows, "the renderer printed no status rows; is it built?"
-    assert not misses, f"readouts with no card: {misses}"
-    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
-    # remote_control is drawn by the band, and ahead shares a piece with dirty.
-    assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
-    print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
+    return seen, misses, rows
 
 
 def main():
