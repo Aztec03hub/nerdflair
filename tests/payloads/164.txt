@@ -1,0 +1,1 @@
+state chime_volume is not a number (loud): both renderers show 100% and log chime-volume

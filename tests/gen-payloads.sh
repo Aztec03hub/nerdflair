@@ -313,4 +313,6 @@ emit "stress: full mode, everything populated, COLUMNS=150" \
 emit "payload cwd does not exist: both renderers log cwd-cd and draw no git UI" \
   "$(mut '.workspace={"current_dir":"/nonexistent/nf-difftest-gone","project_dir":"/nonexistent/nf-difftest-gone"}')" "${E_FULL[@]}"
 
+emit "state chime_volume is not a number (loud): both renderers show 100% and log chime-volume" \
+  "$(mut '.cost.total_cost_usd=0')" "CASE_STATE=$(st full vibrant auto random loud)" "CASE_COLUMNS=120"
 echo "generated $N payloads in $OUT"

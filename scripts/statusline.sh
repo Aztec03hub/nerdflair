@@ -35,6 +35,13 @@ if command -v timeout >/dev/null 2>&1; then
   [[ "$_nf_ms" =~ ^[0-9]+$ ]] || _nf_ms=10000
   printf -v _NF_TMO '%d.%03d' $(( _nf_ms / 1000 )) $(( _nf_ms % 1000 ))
   _NF_TCMD=(timeout -k 1 "$_NF_TMO")
+elif command -v gtimeout >/dev/null 2>&1; then
+  _nf_ms=${NERDFLAIR_PROC_TIMEOUT_MS:-10000}
+  [[ "$_nf_ms" =~ ^[0-9]+$ ]] || _nf_ms=10000
+  printf -v _NF_TMO '%d.%03d' $(( _nf_ms / 1000 )) $(( _nf_ms % 1000 ))
+  _NF_TCMD=(gtimeout -k 1 "$_NF_TMO")
+else
+  _nf_err no-timeout "timeout(1) not found; git runs without a deadline"
 fi
 # _nf_cmd LABEL QUIET_ERE cmd args...   stdout -> $_NF_OUT, returns the command's rc.
 # Cannot-run (126/127) and timeout (124) are always logged. A plain non-zero exit
@@ -53,7 +60,7 @@ _nf_cmd() {
     _e=$(< "$_SL_BUF.err")
     if (( _rc == 126 || _rc == 127 )); then
       _nf_err "spawn:$1" "cannot run $1 (rc=$_rc): ${_e%%$'\n'*}"
-    elif (( _rc == 124 )); then
+    elif (( _rc == 124 || _rc == 137 )); then   # 137: timeout had to SIGKILL (child ignored TERM)
       if [[ "$1" == git ]]; then _NF_GIT_TIMED_OUT=1; _nf_touch git-hung; fi
       _nf_err "timeout:${_l/#-/$1}" "$* still running after ${_NF_TMO}s, killed"
     elif [[ "$_l" != "-" ]] && { [[ -z "$_q" ]] || [[ ! "$_e" =~ $_q ]]; }; then
@@ -95,6 +102,10 @@ _SL_WIDTH="$NF_CUR_WIDTH"
 _SL_COLOR_MODE="$NF_CUR_COLOR"
 _SL_TERMINAL_BELL="$NF_CUR_TERMINAL_BELL"
 _SL_CHIME_VOLUME="$NF_CUR_CHIME_VOLUME"
+if [[ -n "$_SL_CHIME_VOLUME" && ! "$_SL_CHIME_VOLUME" =~ ^[0-9]*\.?[0-9]+$ ]]; then
+  _nf_err chime-volume "chime_volume \"$_SL_CHIME_VOLUME\" is not a number; shown as 100%"
+  _SL_CHIME_VOLUME=1
+fi
 _SL_CHIME_STYLE="$NF_CUR_CHIME_STYLE"
 _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 # Per-session data (chime style) is stored in ~/.claude/nerdflair/sessions/<session_id>
@@ -123,7 +134,10 @@ IFS=$'\x1f' read -r cwd project_dir raw_model worktree_branch cost total_duratio
 
 
 # Resolve symlinks so the path matches the key stored in ~/.claude.json
-[[ -n "$project_dir" && -d "$project_dir" ]] && project_dir=$(cd "$project_dir" && pwd -P)
+if [[ -n "$project_dir" && -d "$project_dir" ]]; then
+  _pd=$(cd "$project_dir" 2>/dev/null && pwd -P) && project_dir="$_pd" \
+    || _nf_err project-dir-resolve "cannot resolve $project_dir; keeping the raw path"
+fi
 
 # Model: prefer the display_name Claude Code provides; fall back to parsing the ID.
 # Parse out just the family + version so suffixes like "(1M context)" or a date
@@ -882,6 +896,12 @@ else
       u_cache_create=$(echo "$last_usage" | jq -r '.cache_creation_input_tokens // 0')
       u_cache_read=$(echo "$last_usage" | jq -r '.cache_read_input_tokens // 0')
       u_output=$(echo "$last_usage" | jq -r '.output_tokens // 0')
+      for _uf in u_input u_cache_create u_cache_read u_output; do
+        if [[ ! "${!_uf}" =~ ^[0-9]+$ ]]; then
+          _nf_err ctx-usage-type "usage.${_uf#u_} = ${!_uf} is not an integer; counted as 0"
+          printf -v "$_uf" 0
+        fi
+      done
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
       (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
@@ -2142,7 +2162,7 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
     (( _tx_age < 60 )) && _tmux_name=$(<"$_tx_cache")
   fi
   if [[ -z "$_tmux_name" ]]; then
-    _nf_cmd - '' tmux display-message -p '#S' \
+    _nf_cmd tmux '' tmux display-message -p '#S' \
       || _nf_err tmux "tmux display-message failed; session name segment hidden"
     _tmux_name="$_NF_OUT"
     if [[ -n "$_tmux_name" ]]; then
@@ -2189,7 +2209,7 @@ if [[ -n "${_SL_CHIME_VOLUME:-1}" && "${_SL_CHIME_VOLUME:-1}" != 0 && "${_SL_CHI
     _chime_label="$_session_resolved"
   elif [[ "$_SL_CHIME_STYLE" == "random" && -f "$NF_STATE_FILE" ]]; then
     # No per-session style yet — show the last entry from chime_recent_styles
-    _last_recent=$(jq -r '.chime_recent_styles // [] | last // empty' "$NF_STATE_FILE" 2>/dev/null || true)
+    _nf_jq chime-label-read -r '.chime_recent_styles // [] | last // empty' "$NF_STATE_FILE" && _last_recent="$_NF_JQ_OUT" || _last_recent=""
     _chime_label="${_last_recent:-random}"
   elif [[ -n "$_SL_CHIME_STYLE" ]]; then
     _chime_label="$_SL_CHIME_STYLE"
@@ -2205,7 +2225,7 @@ if [[ -n "$_chime_label" ]]; then
     _show_label=true
   fi
   printf -v _vol_icon '\xef\x80\xa8'  # U+F028  volume icon
-  _vol_pct=$(awk "BEGIN {printf \"%g\", ${_SL_CHIME_VOLUME:-1} * 100}")
+  _vol_pct=$(awk -v v="${_SL_CHIME_VOLUME:-1}" 'BEGIN {printf "%g", v * 100}')
   if [[ "$_show_label" == "true" ]]; then
     if [[ "$_vol_pct" != "100" ]]; then
       _chime_segment="${MAUVE}${_vol_icon}  ${_chime_label} ${_vol_pct}%${RESET}"
@@ -2849,7 +2869,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
   _compact_mark=80
   # In compact mode, show cost right-aligned inside the bar's empty area
   _bell_icon=""
-  if awk "BEGIN {exit (${_SL_CHIME_VOLUME:-1} <= 0) ? 0 : 1}"; then
+  if awk -v v="${_SL_CHIME_VOLUME:-1}" 'BEGIN {exit (v <= 0) ? 0 : 1}'; then
     printf -v _bell_icon '\xf3\xb0\xe5\xa9'  # U+F0969 speaker-off
   fi
 

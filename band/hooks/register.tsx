@@ -307,6 +307,7 @@ export function resetStateForTests(): void {
   cache = null
   lastError = ''
   inflight = null
+  lastFailAt = 0
   seen.clear()
   rcSince = 0
   rcLeftAt = 0
@@ -533,7 +534,9 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       inflight = null
     }))
     if (segs) {
-      cache = { at: now, segs }
+      // Stamped when the refresh FINISHED: a 2 s+ renderer would otherwise cache figures
+      // that are already past TTL_MS and get re-run by the very next render.
+      cache = { at: await $.clock.now(), segs }
       // A good refresh ends the failure; forget its log line so a later
       // recurrence is logged again rather than swallowed as a duplicate.
       if (lastError) seen.delete(lastError)

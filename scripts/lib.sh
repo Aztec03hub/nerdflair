@@ -58,6 +58,14 @@ _nf_stamp_dir() {
     # Ours but possibly lax (an old umask): tighten rather than reject, like errlog::stamp_dir.
     [[ -w "$_d" ]] && chmod 700 "$_d" 2>/dev/null
     _NF_SDIR="$_d"
+  else
+    # Unusable (symlink, file, other owner): back-offs and rate limits are per-render only.
+    # Say so once an hour, via a marker in ~/.claude (twin of errlog::stamp_dir_bad).
+    local _m="${_h%/}/.claude/.nerdflair-stamp-dir-bad"
+    if [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
+      _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only"
+      [[ -L "$_m" ]] || : > "$_m" 2>/dev/null
+    fi
   fi
   return 0
 }
@@ -284,6 +292,10 @@ _nf_write_state() {
     if ! recent_styles=$(jq -c '.chime_recent_styles // []' "$NF_STATE_FILE" 2>/dev/null); then
       recent_styles="[]"
       _nf_err "state-corrupt" "$NF_STATE_FILE unparseable; chime_recent_styles history reset"
+    elif [[ -z "$recent_styles" ]]; then
+      # jq exits 0 with NO output for an empty file: --argjson "" would fail every write.
+      recent_styles="[]"
+      _nf_err "state-empty" "$NF_STATE_FILE is empty; chime_recent_styles history reset"
     fi
   fi
 

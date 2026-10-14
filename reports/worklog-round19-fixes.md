@@ -33,3 +33,21 @@ Not done: 6 (symlink-safe caches), the two other lows in 10 (chime label duplica
 5. mklayout.py cards-check: O_NOFOLLOW seed, OSError gives a clear message and exit, file removed in `finally` (checked with a planted symlink: "Too many levels of symbolic links" message). Side fix: cards-check now feeds the corpus with `@@REPO:x@@` pointed at a throwaway dirty repo; before, the `dirty` readout was reached only by accident through Rust running git in the process cwd, which finding 1 removed (this also explains the earlier flaky `tmux` failure).
 
 Final runs after rebuild: silent-failures PASS; difftest 163/163 identical; bridge-selfchecks PASS (run after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 12 pass, 0 fail. `git stash list` empty.
+
+# Round 21 fixes (uncommitted, on defbf00)
+Skipped (as instructed): the /tmp git-cache symlink item. Not testable: the second bash `cwd-cd` (adopted repo vanishing between detection and the cache call) is a race; the Rust twin now returns None and clears `git_dir` like bash, covered by code only.
+1. Bash `_nf_cmd` treats rc 137 (`timeout -k` had to KILL) as a timeout. New case `git-term-ignored` (both impls, git ignores TERM, expects one `timeout:git:status` and no cache file).
+2. lib.sh `_nf_write_state`: an empty state.json (jq rc 0, no output) now resets history to `[]` and logs `state-empty`; the file is rebuilt. Case `state-empty-file`: bash rebuilds valid JSON with no `state-write` line, Rust logs `state-corrupt` (it never rewrites).
+3. Non-numeric `chime_volume`: both twins validate `^[0-9]*\.?[0-9]+$`, log `chime-volume`, use 1 (100%); bash passes the value to awk with `-v` (no splicing). Case `chime-volume-bad` and difftest payload 164.
+4. Bash non-integer usage fields log `ctx-usage-type` and count as 0 (case `usage-not-integer`).
+5. Bash `cd "$project_dir"` is quiet and logs `project-dir-resolve`, keeping the raw path; Rust notes the same key and now uses `can_enter` (is_dir plus the execute bit) for both project_dir and cwd, so a mode-000 dir gives `cwd-cd` in both. Cases `cwd-not-enterable`, `project-dir-locked`.
+6. Unusable stamp dir: Rust `stamp_dir_bad` (direct `emit` plus an O_NOFOLLOW marker `~/.claude/.nerdflair-stamp-dir-bad`, hourly) and the bash twin in `_nf_stamp_dir` log `stamp-dir`. Case `stamp-dir-symlink`.
+7. Bash with no `timeout` tries `gtimeout`, else logs `no-timeout`.
+8. Rust `git_cache` returns `Option`: a git_dir that cannot be entered logs `cwd-cd`, and `git_dir` is cleared (no git run in the parent dir).
+9. register.tsx: successful refresh caches at the post-refresh clock; `lastFailAt` reset in `resetStateForTests` (used by the test `world()`). Tests: slow failing renderer backed off from its failure, and slow successful renderer leaves a fresh cache (the latter failed on old code; the former guards the round 20 stamp placement).
+10. mklayout cards-check: fixtures now include a wrapper of two repos, a linked worktree, detached HEAD and a no-origin repo, with the difftest token regex `[a-z0-9-]+`; GIT_* stripped, signing off, git failures give a one-line `sys.exit`; dead code removed. This exposed a real gap: multi-branch list pieces (`bravo:bugfix/bravo`) had no card, so the branch card now also matches `name:branch`.
+11. `uid()` is `libc::getuid()` (no silent 0 fallback); errlog `trim` writes each failure to stderr; `tmux display-message` uses `out_chk` label `tmux` (reason in the log); the chime-label state re-read logs `chime-label-read` in both twins. Case `multi-cache-unreadable` added (it already passed, since round 20 logs it).
+
+Old-code check (scripts, rust/src, register.tsx, mklayout.py stashed; tests kept): silent-failures failed on git-term-ignored [bash], cwd-not-enterable [rust], project-dir-locked [both], chime-volume-bad [both], usage-not-integer [bash], state-empty-file [bash], stamp-dir-symlink [both]; difftest failed; band test "slow renderer that succeeds leaves a cache that is fresh" failed. Stash popped, list empty.
+
+Final runs after rebuild: silent-failures PASS; difftest 164/164 identical; bridge-selfchecks PASS (after difftest); golden-mutation PASS; empty-home PASS; install-rc PASS; launcher-logging PASS; popup-errors PASS; claude plugin test band 14 pass, 0 fail.

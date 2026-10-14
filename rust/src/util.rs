@@ -297,22 +297,8 @@ pub fn uid() -> u32 {
 }
 
 fn uid_uncached() -> u32 {
-    // Avoids a libc dependency for one getuid().
-    if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
-        for line in s.lines() {
-            if let Some(rest) = line.strip_prefix("Uid:") {
-                if let Some(first) = rest.split_whitespace().next() {
-                    if let Ok(v) = first.parse::<u32>() {
-                        return v;
-                    }
-                }
-            }
-        }
-    }
-    match std::process::Command::new("id").arg("-u").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0),
-        Err(_) => 0,
-    }
+    // getuid() cannot fail: no /proc or `id` fallback that could quietly answer 0.
+    unsafe { libc::getuid() }
 }
 
 /// bash `${v//[^a-zA-Z0-9]/_}`

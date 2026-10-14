@@ -373,7 +373,11 @@ fn render_inner(input: &str) -> Result<String, String> {
     let sl_mode = st.mode.clone();
     let sl_width = st.width.clone();
     let color_mode = st.color.clone();
-    let chime_volume = st.chime_volume.clone();
+    let mut chime_volume = st.chime_volume.clone();
+    if !chime_volume.is_empty() && !is_plain_number(&chime_volume) {
+        errlog::note("chime-volume", &format!("chime_volume {:?} is not a number; shown as 100%", chime_volume));
+        chime_volume = "1".into();
+    }
     let chime_style = st.chime_style.clone();
     let last_session = st.last_session.clone();
 
@@ -401,8 +405,9 @@ fn render_inner(input: &str) -> Result<String, String> {
     let cwd = f.cwd.clone();
     let mut project_dir = f.project_dir.clone();
     if !project_dir.is_empty() && Path::new(&project_dir).is_dir() {
-        if let Ok(p) = std::fs::canonicalize(&project_dir) {
-            project_dir = p.to_string_lossy().into_owned();
+        match std::fs::canonicalize(&project_dir) {
+            Ok(p) if can_enter(&project_dir) => project_dir = p.to_string_lossy().into_owned(),
+            _ => errlog::note("project-dir-resolve", &format!("cannot resolve {}; keeping the raw path", project_dir)),
         }
     }
     let model = parse_model(&f.raw_model);
@@ -514,7 +519,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // directory the shell was already in. Model that shell cwd explicitly.
     let mut shell_cwd: PathBuf =
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let cwd_ok = cwd.is_empty() || Path::new(&cwd).is_dir();
+    let cwd_ok = cwd.is_empty() || can_enter(&cwd);
     if !cwd_ok {
         errlog::note("cwd-cd", &format!("cannot cd to {}; git UI skipped", cwd));
     }
@@ -567,7 +572,10 @@ fn render_inner(input: &str) -> Result<String, String> {
     // ── Git cache ────────────────────────────────────────────────
     let mut gc = GitCache::default();
     if !git_dir.is_empty() {
-        gc = git_cache(&git_dir, &mut shell_cwd);
+        match git_cache(&git_dir, &mut shell_cwd) {
+            Some(g) => gc = g,
+            None => git_dir.clear(), // bash: cd failed, git UI skipped
+        }
     }
 
     // ── Uncommitted files segment ────────────────────────────────
@@ -1692,7 +1700,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
             }
             if name.is_empty() {
-                let (n, ok) = proc::out("tmux", &["display-message", "-p", "#S"], None);
+                let (n, ok) = proc::out_chk("tmux", &["display-message", "-p", "#S"], None, "tmux", &[]);
                 if !ok {
                     errlog::note("tmux", "tmux display-message failed; session name segment hidden");
                 }
@@ -1772,8 +1780,9 @@ fn render_inner(input: &str) -> Result<String, String> {
             chime_label = session_chime.clone();
         } else if chime_style == "random" && state_path.is_file() {
             let last = std::fs::read_to_string(&state_path)
+                .map_err(|e| errlog::note_io("chime-label-read", &state_path.display().to_string(), &e))
                 .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| errlog::note("chime-label-read", &format!("{} is not JSON: {}", state_path.display(), e))).ok())
                 .and_then(|v| match v.get("chime_recent_styles") {
                     Some(Value::Array(a)) => a.last().map(jqx::tostring),
                     _ => None,
@@ -2098,13 +2107,17 @@ struct GitCache {
     behind: String,
 }
 
-fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
+fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
     let cache_file = PathBuf::from(format!("/tmp/nerdflair-git-{}", cksum(git_dir.as_bytes())));
     let fresh = cache_file.is_file() && file_age(&cache_file) < GIT_CACHE_TTL;
     let mut computed: Option<String> = None;
     if !fresh {
-        if Path::new(git_dir).is_dir() {
+        if can_enter(git_dir) {
             *shell_cwd = PathBuf::from(git_dir);
+        } else {
+            // Twin of bash: never run git in whatever directory we were in before.
+            errlog::note("cwd-cd", &format!("cannot cd to {}; git UI skipped", git_dir));
+            return None;
         }
         let d: &Path = shell_cwd.as_path();
         let (status, _) = proc::out_raw_chk(
@@ -2245,7 +2258,7 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
         },
     };
     let p = read_ifs_unit(&content, 8);
-    GitCache {
+    Some(GitCache {
         dirty: p[0].clone(),
         added: p[1].clone(),
         removed: p[2].clone(),
@@ -2254,6 +2267,29 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> GitCache {
         worktree: p[5].clone(),
         ahead: p[6].clone(),
         behind: p[7].clone(),
+    }
+)
+}
+
+/// What bash's `cd` needs: a directory we may search (execute bit).
+fn can_enter(p: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    Path::new(p).is_dir()
+        && std::ffi::CString::new(Path::new(p).as_os_str().as_bytes())
+            .map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
+            .unwrap_or(false)
+}
+
+/// ^[0-9]*\.?[0-9]+$ (twin of the bash check on chime_volume).
+fn is_plain_number(s: &str) -> bool {
+    let (int, frac) = match s.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (s, None),
+    };
+    let digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    match frac {
+        Some(f) => digits(int) && !f.is_empty() && digits(f),
+        None => !int.is_empty() && digits(int),
     }
 }
 

@@ -268,6 +268,40 @@ s_git_backoff() {   # a hang was seen 10 s ago: this render must not run git at 
 }
 s_cwd_gone() { PAYLOAD=${PAYLOAD//"$CASE_DIR/work"/"$CASE_DIR/gone"}; }
 s_mktemp_bad() { CASE_ENV+=(TMPDIR=/nonexistent/nf); }
+s_git_term_ignored() {   # a git that ignores SIGTERM: bash's `timeout -k` ends it with KILL (rc 137), which is still a timeout
+  printf '#!/bin/sh\ncase "$1" in rev-parse) case "$*" in *is-inside-work-tree*) echo true; exit 0 ;; *--git-dir*) echo .git; exit 0 ;; esac ;; esac\ntrap "" TERM\nexec sleep 30\n' > "$CASE_DIR/bin/git"
+  chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
+  CASE_PATH="$CASE_DIR/bin:$PATH"; CASE_ENV+=(NERDFLAIR_PROC_TIMEOUT_MS=300)
+  rm -f -- "$(git_cache_path)"
+}
+s_cwd_locked() { mkdir "$CASE_DIR/locked"; chmod 000 "$CASE_DIR/locked"; PAYLOAD=${PAYLOAD//"$CASE_DIR/work"/"$CASE_DIR/locked"}; }
+s_project_locked() { mkdir "$CASE_DIR/locked"; chmod 000 "$CASE_DIR/locked"; PAYLOAD=${PAYLOAD/\"project_dir\":\"$CASE_DIR\/work\"/\"project_dir\":\"$CASE_DIR\/locked\"}; }
+s_multi_cache_locked() {   # a wrapper of two repos whose (fresh) multi-branch cache file cannot be read
+  mkdir -p "$CASE_DIR/work/a/.git" "$CASE_DIR/work/b/.git"
+  local f="/tmp/nerdflair-multibranch-$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"
+  rm -f -- "$f"; printf '0\n' > "$f"; chmod 000 "$f"
+  MULTI_CACHE_FILE="$f"
+}
+chk_multi_cache_rm() { chmod 644 -- "$MULTI_CACHE_FILE" 2>/dev/null; rm -f -- "$MULTI_CACHE_FILE"; }
+s_chime_volume_bad() {
+  printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"on","chime_sound":"Glass","chime_volume":"loud","chime_style":"random","chime_events":"Notification,Stop","color":"vibrant","last_session":"","chime_recent_styles":[]}' > "$CASE_DIR/home/.claude/nerdflair/state.json"
+}
+s_usage_float() {   # no usage figures in the payload; the transcript's last usage has a fractional count
+  printf '{"message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1,"cache_read_input_tokens":12.5,"output_tokens":3}}}\n' > "$CASE_DIR/t.jsonl"
+  PAYLOAD=$(printf '{"session_id":"%s-u","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s","project_dir":"%s"},"transcript_path":"%s/t.jsonl","context_window":{"context_window_size":200000},"cost":{"total_cost_usd":1.25}}' "$TAG" "$CASE_DIR/work" "$CASE_DIR/work" "$CASE_DIR")
+}
+s_state_empty() { : > "$CASE_DIR/home/.claude/nerdflair/state.json"; }
+chk_state_empty() {   # bash rebuilds the file (and no write may fail); Rust leaves it and must log it
+  local st="$CASE_DIR/home/.claude/nerdflair/state.json"
+  if [[ "$1" == bash ]]; then
+    check "state-empty-file [bash]: state.json rebuilt as valid JSON" ok "$(jq -e . "$st" >/dev/null 2>&1 && echo ok || echo bad)"
+  else
+    contains "state-empty-file [rust]: the unusable file is logged" "state-corrupt"
+  fi
+}
+s_stamp_symlink() {   # the default stamp dir is a symlink: unusable, and that must be said (the override env is blanked)
+  ln -s "$CASE_DIR/tmp" "$CASE_DIR/home/.claude/.nerdflair-stamps"; CASE_ENV+=(NERDFLAIR_ERR_STAMP_DIR=)
+}
 s_transcript_missing() {
   PAYLOAD=$(printf '{"session_id":"%s-tm","model":{"display_name":"Opus 5"},"workspace":{"current_dir":"%s","project_dir":"%s"},"transcript_path":"%s/nope.jsonl","cost":{"total_cost_usd":1.25}}' \
     "$TAG" "$CASE_DIR/work" "$CASE_DIR/work" "$CASE_DIR")
@@ -309,8 +343,16 @@ run_case git-not-installed        spawn:git              1 s_git_missing
 run_case git-hangs                timeout:git:inside-work-tree 1 s_git_hang
 run_case git-partial-hang          timeout:git:status 1 s_git_partial_hang chk_git_not_cached
 run_case git-fast-control          -   0 s_git_fast chk_git_cached
+run_case git-term-ignored          timeout:git:status 1 s_git_term_ignored chk_git_not_cached
 run_case git-hang-backoff          timeout:git:inside-work-tree 0 s_git_backoff
 run_case cwd-cd-fails              cwd-cd 1 s_cwd_gone
+run_case cwd-not-enterable         cwd-cd 1 s_cwd_locked
+run_case project-dir-locked        project-dir-resolve 1 s_project_locked
+run_case multi-cache-unreadable    multi-cache-read 1 s_multi_cache_locked chk_multi_cache_rm
+run_case chime-volume-bad          chime-volume 1 s_chime_volume_bad
+run_case usage-not-integer         ctx-usage-type 1 s_usage_float
+run_case state-empty-file          state-write 0 s_state_empty chk_state_empty
+run_case stamp-dir-symlink         stamp-dir 1 s_stamp_symlink
 IMPLS=bash
 run_case mktemp-fails              buf-mktemp 1 s_mktemp_bad
 IMPLS="rust bash"

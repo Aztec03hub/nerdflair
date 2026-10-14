@@ -236,3 +236,35 @@ test('two renders that overlap the HOME lookup draw the band, not a false "no re
   }
   expect(w.logs.some(l => l.includes('no recorded reason'))).toBe(false)
 })
+
+test('a slow failing renderer is backed off from when it FAILED, not from when it started', async ($, on) => {
+  let healthy = true
+  let spawns = 0
+  const { clock } = world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    if (healthy) return result(0, GOOD)
+    spawns++
+    return clock.advance(5000).then(() => result(1, '', 'renderer down')) // a 5 s run that then fails
+  })
+
+  await $.ui.render(BAND as never)
+  healthy = false
+  await clock.advance(3000)
+  await $.ui.render(BAND as never) // fails after 5 s: spawn 1
+  await clock.advance(3000)
+  await $.ui.render(BAND as never) // 3 s after it FAILED: backed off (stamped at its start it would re-run)
+  expect(spawns).toBe(1)
+})
+
+test('a slow renderer that succeeds leaves a cache that is fresh when it returns', async ($, on) => {
+  let spawns = 0
+  const { clock } = world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    spawns++
+    return clock.advance(3000).then(() => result(0, GOOD)) // slower than TTL_MS
+  })
+
+  await $.ui.render(BAND as never)
+  await $.ui.render(BAND as never)
+  expect(spawns).toBe(1)
+})

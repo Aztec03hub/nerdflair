@@ -49,9 +49,17 @@ fn stamp_dir() -> Option<&'static PathBuf> {
         let dir = log_path().parent()?.join(".nerdflair-stamps");
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
-        let m = std::fs::symlink_metadata(&dir).ok()?;
+        let m = match std::fs::symlink_metadata(&dir) {
+            Ok(m) => m,
+            Err(e) => {
+                stamp_dir_bad(&dir, &e.to_string());
+                return None;
+            }
+        };
         if !(m.is_dir() && m.uid() == uid()) {
-            return None; // a symlink, a file, or someone else's directory: not ours to trust
+            // a symlink, a file, or someone else's directory: not ours to trust
+            stamp_dir_bad(&dir, "not a real directory owned by this user");
+            return None;
         }
         if m.mode() & 0o077 != 0 {
             // Ours but lax (an old umask): tighten it rather than reject it, or stamps
@@ -62,6 +70,19 @@ fn stamp_dir() -> Option<&'static PathBuf> {
         Some(dir)
     })
     .as_ref()
+}
+
+/// The stamp directory cannot be trusted, so every back-off and rate limit is
+/// per-process only. Say so, once an hour. Written DIRECTLY (emit + a marker
+/// file in ~/.claude, O_NOFOLLOW): note() would call stamp_dir() from inside its
+/// own OnceLock initialiser and deadlock. Twin of lib.sh `_nf_stamp_dir`.
+fn stamp_dir_bad(dir: &std::path::Path, why: &str) {
+    let marker = dir.with_file_name(".nerdflair-stamp-dir-bad");
+    if marker.exists() && file_age(&marker) < RATE_SECS {
+        return;
+    }
+    emit("stamp-dir", &format!("{} is unusable ({}); rate limits and back-offs work per render only", dir.display(), why));
+    let _ = write_stamp(&marker); // failing only loses the hourly limit
 }
 
 pub fn stamp_path(key: &str) -> Option<PathBuf> {
@@ -110,7 +131,13 @@ fn iso_now() -> String {
 fn trim(path: &PathBuf) {
     let len = match std::fs::metadata(path) {
         Ok(m) => m.len(),
-        Err(_) => return,
+        Err(e) => {
+            // A log that does not exist yet is normal.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                let _ = writeln!(std::io::stderr(), "nerdflair: cannot stat {} to trim it: {}", path.display(), e);
+            }
+            return;
+        }
     };
     if len <= CAP_BYTES {
         return;
@@ -120,14 +147,22 @@ fn trim(path: &PathBuf) {
         f.seek(SeekFrom::Start(len - KEEP_BYTES))?;
         f.read_to_end(&mut tail)
     });
-    if read.is_err() {
+    if let Err(e) = read {
+        let _ = writeln!(std::io::stderr(), "nerdflair: cannot read {} to trim it: {}", path.display(), e);
         return;
     }
     // Start at the next whole line.
     let from = tail.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
     let tmp = path.with_extension(format!("log.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, &tail[from..]).is_ok() {
-        if std::fs::rename(&tmp, path).is_err() {
+    match std::fs::write(&tmp, &tail[from..]) {
+        Ok(()) => {
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                let _ = writeln!(std::io::stderr(), "nerdflair: cannot replace {} with its trimmed copy: {}", path.display(), e);
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {} to trim the log: {}", tmp.display(), e);
             let _ = std::fs::remove_file(&tmp);
         }
     }

@@ -51,7 +51,7 @@ CARDS = [
     ("folder", "\U000f024b|\uf1bb", "Folder", (125, 211, 252), [
         "workspace.project_dir, else current_dir",
     ]),
-    ("branch", "\U000f062c", "Branch", (125, 211, 252), [
+    ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.-]+$", "Branch", (125, 211, 252), [
         "branch from `git rev-parse --abbrev-ref HEAD`, cached 5s",
         "a worktree branch in the payload wins over git",
     ]),
@@ -347,24 +347,15 @@ def cards_check():
 
 def _cards_check_body(root, binary, pane):
     import glob
+    import shutil
+    import tempfile
     env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane)
-    seen, misses, rows = set(), {}, 0
-    # The corpus names fixture repos (@@REPO:x@@). Point them all at one throwaway
-    # dirty repo: the renderer draws no git readouts for a cwd that does not exist.
-    import shutil, tempfile
-    repo = tempfile.mkdtemp(prefix="nf-cards-")
+    base = tempfile.mkdtemp(prefix="nf-cards-")
     try:
-        g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"]
-        subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
-        with open(os.path.join(repo, "a.txt"), "w") as fh:
-            fh.write("a\n")
-        subprocess.run(g + ["add", "."], check=True)
-        subprocess.run(g + ["commit", "-q", "-m", "init"], check=True)
-        with open(os.path.join(repo, "a.txt"), "w") as fh:
-            fh.write("a\nb\n")
-        seen, misses, rows = _cards_run(root, binary, env, repo, glob)
+        fixtures = _cards_fixtures(base)
+        seen, misses, rows = _cards_run(root, binary, env, fixtures, glob)
     finally:
-        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
     want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
@@ -373,11 +364,54 @@ def _cards_check_body(root, binary, pane):
     print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
 
 
-def _cards_run(root, binary, env, repo, glob):
+def _cards_fixtures(base):
+    """The corpus names fixture repos (@@REPO:x@@). Build the shapes the readouts
+    need (dirty, wrapper of several repos, linked worktree, detached HEAD, no
+    origin); any other name gets the dirty one. GIT_* is stripped and signing is
+    off, so a hook's or the user's environment cannot break the setup."""
+    genv = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    genv.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+
+    def git(repo, *args):
+        cmd = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t",
+               "-c", "commit.gpgsign=false", *args]
+        r = subprocess.run(cmd, env=genv, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"cards-check: fixture setup failed: {' '.join(args)} in {repo}: "
+                     f"{(r.stderr or r.stdout).strip()[:200]}")
+
+    def mkrepo(path, branch="main", dirty=False):
+        os.makedirs(path, exist_ok=True)
+        git(path, "init", "-q", "-b", branch)
+        with open(os.path.join(path, "a.txt"), "w") as fh:
+            fh.write("a\n")
+        git(path, "add", ".")
+        git(path, "commit", "-q", "-m", "init")
+        if dirty:
+            with open(os.path.join(path, "a.txt"), "w") as fh:
+                fh.write("a\nb\n")
+        return path
+
+    dirty = mkrepo(os.path.join(base, "dirty"), dirty=True)
+    git(dirty, "remote", "add", "origin", "https://example.com/x/dirty.git")
+    wrap = os.path.join(base, "wrap")
+    mkrepo(os.path.join(wrap, "alpha"), "feature/alpha")
+    mkrepo(os.path.join(wrap, "bravo"), "bugfix/bravo")
+    main = mkrepo(os.path.join(base, "wtmain"))
+    git(main, "worktree", "add", "-q", "-b", "wt/linked", os.path.join(base, "wt"))
+    det = mkrepo(os.path.join(base, "det"))
+    git(det, "checkout", "-q", "--detach")
+    return {"dirty": dirty, "wrap-many": wrap, "wt-linked": os.path.join(base, "wt"),
+            "detached": det, "noremote": mkrepo(os.path.join(base, "noremote"), dirty=True)}
+
+
+def _cards_run(root, binary, env, fixtures, glob):
     seen, misses, rows = set(), {}, 0
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:
-            payload = re.sub(r"@@REPO:[a-z0-9_-]+@@", repo, fh.read())
+            # Same token shape as tests/difftest.sh (resolve_repo): [a-z0-9-]+
+            payload = re.sub(r"@@REPO:([a-z0-9-]+)@@",
+                             lambda m: fixtures.get(m.group(1), fixtures["dirty"]), fh.read())
         out = subprocess.run([binary], input=payload, capture_output=True,
                              encoding="utf-8", errors="replace", env=env).stdout
         for line in ANSI.sub("", out).split("\n"):
