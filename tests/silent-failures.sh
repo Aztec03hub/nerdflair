@@ -11,7 +11,8 @@
 #     (logging must never touch stdout),
 #   * the NOISE cases (lock contention, not-a-repo, missing optional files)
 #     stay completely silent.
-# Rate-limit stamps go to a per-case dir (NERDFLAIR_ERR_STAMP_DIR), so nothing
+# Rate-limit stamps go to a per-case dir (NERDFLAIR_ERR_STAMP_DIR) and every
+# renderer cache to a per-case private dir (NERDFLAIR_CACHE_DIR), so nothing
 # here shares state with a real session. Nothing touches the real HOME.
 #
 # The panic case needs NERDFLAIR_TEST_PANIC=1, a TEST-ONLY switch in the Rust
@@ -90,6 +91,7 @@ PAYLOAD=""
 CASE_PATH=""
 CASE_ENV=()
 CASE_ULIMIT_F=""
+CASE_UMASK=""
 IMPLS="rust bash"
 
 payload() { # session-suffix [extra-json-fields]
@@ -105,11 +107,12 @@ render() { # impl n
   # file-size limit (ENOSPC stand-in, see s_ledger_write) is inherited, with
   # SIGXFSZ ignored so an over-limit write returns EFBIG instead of killing.
   ( [[ -n "$CASE_ULIMIT_F" ]] && { ulimit -f "$CASE_ULIMIT_F"; trap '' XFSZ; }
+    [[ -n "${CASE_UMASK:-}" ]] && umask "$CASE_UMASK"
     cd "$CASE_DIR/work" && printf '%s' "$PAYLOAD" | timeout 30 env -i \
       PATH="${CASE_PATH:-$PATH}" HOME="$CASE_DIR/home" TMPDIR="$CASE_DIR/tmp" \
       LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC COLUMNS=120 \
       NERDFLAIR_ERR_STAMP_DIR="$CASE_DIR/stamps" NERDFLAIR_MCP_HEALTH=0 \
-      NERDFLAIR_MCP_CACHE="$CASE_DIR/mcpcache" \
+      NERDFLAIR_MCP_CACHE="$CASE_DIR/mcpcache" NERDFLAIR_CACHE_DIR="$CASE_DIR/cache" \
       ${args[@]+"${args[@]}"} "${cmd[@]}" >"$CASE_DIR/out.$n" 2>"$CASE_DIR/err.$n" ) 2>/dev/null
   echo $? > "$CASE_DIR/rc.$n"
 }
@@ -135,6 +138,7 @@ have_line() { [[ "$(log_count "$KEY")" -ge 1 ]]; }
 setup_dirs() { # name impl
   CASE_DIR="$WORK/$1-$2"
   mkdir -p "$CASE_DIR/home/.claude/nerdflair" "$CASE_DIR/stamps" "$CASE_DIR/tmp" "$CASE_DIR/work" "$CASE_DIR/bin"
+  mkdir -m 700 "$CASE_DIR/cache"
 }
 
 # run_case NAME KEY WANT_COUNT SETUP_FN [CHECK_FN]
@@ -145,7 +149,7 @@ run_case() {
   for impl in $IMPLS; do
     setup_dirs "$name" "$impl"
     PAYLOAD=$(payload "$name")
-    CASE_PATH=""; CASE_ENV=(); CASE_ULIMIT_F=""
+    CASE_PATH=""; CASE_ENV=(); CASE_ULIMIT_F=""; CASE_UMASK=""
     "$setup" "$impl"
     for (( n = 1; n <= RENDERS; n++ )); do
       render "$impl" "$n"
@@ -251,7 +255,7 @@ s_git_hang() {
 # A git that answers "inside a work tree" at once but hangs on everything else (a stalled
 # filesystem under the repo): the call that times out must not leave a cached "clean,
 # no branch" for the repository, because that would be served for the cache TTL.
-git_cache_path() { printf '/tmp/nerdflair-git-%s' "$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"; }
+git_cache_path() { printf '%s/cache/nerdflair-git-%s' "$CASE_DIR" "$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"; }
 s_git_partial_hang() {
   printf '#!/bin/sh\ncase "$1" in rev-parse) case "$*" in *is-inside-work-tree*) echo true; exit 0 ;; *--git-dir*) echo .git; exit 0 ;; esac ;; esac\nexec sleep 30\n' > "$CASE_DIR/bin/git"
   chmod +x "$CASE_DIR/bin/git"; mkdir -p "$CASE_DIR/work/.git"
@@ -290,7 +294,7 @@ s_cwd_locked() { mkdir "$CASE_DIR/locked"; chmod 000 "$CASE_DIR/locked"; PAYLOAD
 s_project_locked() { mkdir "$CASE_DIR/locked"; chmod 000 "$CASE_DIR/locked"; PAYLOAD=${PAYLOAD/\"project_dir\":\"$CASE_DIR\/work\"/\"project_dir\":\"$CASE_DIR\/locked\"}; }
 s_multi_cache_locked() {   # a wrapper of two repos whose (fresh) multi-branch cache file cannot be read
   mkdir -p "$CASE_DIR/work/a/.git" "$CASE_DIR/work/b/.git"
-  local f="/tmp/nerdflair-multibranch-$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"
+  local f="$CASE_DIR/cache/nerdflair-multibranch-$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)"
   rm -f -- "$f"; printf '0\n' > "$f"; chmod 000 "$f"
   MULTI_CACHE_FILE="$f"
 }
@@ -352,6 +356,73 @@ s_noise_lock() {   # the compactor "holds" the ledger lock: skipping a sample is
 s_none() { :; }
 chk_noise_lock() { kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null; HOLDER_PID=""; }
 
+
+# ── private cache directory (every renderer cache, never /tmp) ────
+# Cache files a case may leave in world-writable /tmp (old code); also removed.
+tmp_leftovers() {
+  local h; h=$(printf '%s' "$CASE_DIR/work" | cksum | cut -d' ' -f1)
+  ls -d /tmp/nerdflair-git-"$h" /tmp/nerdflair-multibranch-"$h" /tmp/nerdflair-*"$TAG"* 2>/dev/null
+}
+s_cache_default() {   # the DEFAULT location (override blanked), made under the tmux server's umask
+  printf '#!/bin/sh\necho nfsession\n' > "$CASE_DIR/bin/tmux"; chmod +x "$CASE_DIR/bin/tmux"
+  printf '%s\tother\twork\t1.00\n' "$NOW" > "$CASE_DIR/ledger.tsv"
+  CASE_PATH="$CASE_DIR/bin:$PATH"; CASE_UMASK=0117; rmdir "$CASE_DIR/cache"
+  ( cd "$CASE_DIR/work" && git init -q . ) >/dev/null 2>&1
+  CASE_ENV+=(NERDFLAIR_CACHE_DIR= "TMUX_PANE=%$TAG" NERDFLAIR_REPO_COST_FILE="$CASE_DIR/ledger.tsv" NERDFLAIR_REPO_COST_TTL=0)
+}
+s_cache_default_multi() {   # a wrapper of two repos: the multi-branch cache
+  mkdir -p "$CASE_DIR/work/a" "$CASE_DIR/work/b"
+  ( cd "$CASE_DIR/work/a" && git init -q . ) >/dev/null 2>&1; ( cd "$CASE_DIR/work/b" && git init -q . ) >/dev/null 2>&1
+  CASE_UMASK=0117; rmdir "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_CACHE_DIR= NERDFLAIR_REPO_COST=0)
+}
+CACHE_WANT=""
+chk_cache_default() {   # every wanted cache is in the 0700 dir under $HOME/.cache, none in /tmp
+  local d="$CASE_DIR/home/.cache/nerdflair" w left
+  check "cache-private [$1]: dir mode is 700" 700 "$(stat -c %a "$d" 2>/dev/null)"
+  for w in $CACHE_WANT; do
+    check "cache-private [$1]: $w cache is in the private dir" yes "$(compgen -G "$d/nerdflair-$w-*" >/dev/null && echo yes || echo no)"
+  done
+  left=$(tmp_leftovers); check "cache-private [$1]: nothing left in /tmp" "" "$left"
+  [[ -n "$left" ]] && rm -f -- $left
+}
+chk_cache_default_single() { CACHE_WANT="git tmux sample repocost repocost-total"; chk_cache_default "$1"; }
+chk_cache_default_multi() { CACHE_WANT="multibranch"; chk_cache_default "$1"; }
+
+# A reference render with a healthy cache dir, to compare a degraded first render with.
+ref_render() { # impl -> sets REF_OUT
+  local save=("${CASE_ENV[@]}"); mkdir -m 700 "$CASE_DIR/refcache"
+  CASE_ENV+=("NERDFLAIR_CACHE_DIR=@DIR@/refcache"); render "$1" ref; CASE_ENV=("${save[@]}")
+  REF_OUT=$(cat "$CASE_DIR/out.ref")
+}
+chk_cache_refused() {   # refused dir: rendered fine, same bytes as a healthy cold run, nothing written into it
+  local got; got=$(rg -c . "$CASE_DIR/out.1" 2>/dev/null || echo 0)
+  check "cache-refused [$1]: render exits 0" 0 "$(cat "$CASE_DIR/rc.1")"
+  check "cache-refused [$1]: render printed a status line" yes "$([[ "$got" -ge 1 ]] && echo yes || echo no)"
+  ref_render "$1"
+  check "cache-refused [$1]: output equals a healthy first render" "$REF_OUT" "$(cat "$CASE_DIR/out.1")"
+  check "cache-refused [$1]: nothing written into the refused dir" "" "$(ls -A "$CASE_DIR/symtarget" 2>/dev/null)$(ls -A "$CASE_DIR/cache" 2>/dev/null)"
+}
+s_cache_symlink() {   # the cache dir path is a symlink to a real directory
+  mkdir "$CASE_DIR/symtarget"; rmdir "$CASE_DIR/cache"; ln -s "$CASE_DIR/symtarget" "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
+}
+s_cache_lax() { chmod 777 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }
+s_cache_nohome() { rmdir "$CASE_DIR/cache"; CASE_ENV+=(HOME= NERDFLAIR_CACHE_DIR= NERDFLAIR_REPO_COST=0); }
+chk_cache_nohome() {   # no HOME, no override: the line goes to stderr (the log is unwritable), once; nothing written
+  local n; n=$(cat "$CASE_DIR"/err.* 2>/dev/null | rg -cF 'cache-dir: ')
+  check "cache-nohome [$1]: exactly one cache-dir line in total" 1 "${n:-0}"
+  check "cache-nohome [$1]: render exits 0" 0 "$(cat "$CASE_DIR/rc.1")"
+  check "cache-nohome [$1]: nothing written in cwd, HOME or cache" "" "$(ls -A "$CASE_DIR/work" "$CASE_DIR/cache" "$CASE_DIR/home/.cache" 2>/dev/null | rg -v '^$|:$')"
+}
+s_cache_leaf_link() {   # a symlink planted where a cache FILE goes must be replaced, never written through
+  printf 'v2 0\n1 2 3\n' > "$CASE_DIR/victim"   # a VALID sample file, so reading it is harmless
+  ln -s "$CASE_DIR/victim" "$CASE_DIR/cache/nerdflair-sample-$(id -u)-${TAG}_cache_leaf_symlink"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
+}
+chk_cache_leaf_link() {
+  local leaf="$CASE_DIR/cache/nerdflair-sample-$(id -u)-${TAG}_cache_leaf_symlink"
+  check "cache-leaf [$1]: the symlink target is untouched" "v2 0 1 2 3" "$(tr '\n' ' ' < "$CASE_DIR/victim" | sed 's/ $//')"
+  check "cache-leaf [$1]: the leaf is now a real file with the sample" yes "$([[ -f "$leaf" && ! -L "$leaf" ]] && rg -q '^v2 ' "$leaf" && echo yes || echo no)"
+}
+
 # ── the cases ─────────────────────────────────────────────────────
 echo "silent-failures: $RENDERS renders per case, throwaway HOME, both renderers"
 echo
@@ -397,6 +468,12 @@ run_case nonnumeric-tunable       env-bad:NERDFLAIR_BURN_WINDOW 1 s_env_bad
 IMPLS="rust"
 run_case panic                    panic                  1 s_panic chk_panic
 IMPLS="rust bash"
+run_case cache-private-single     -  0 s_cache_default chk_cache_default_single
+run_case cache-private-multi      -  0 s_cache_default_multi chk_cache_default_multi
+run_case cache-dir-symlink        cache-dir 1 s_cache_symlink chk_cache_refused
+run_case cache-dir-lax-mode       cache-dir 1 s_cache_lax chk_cache_refused
+run_case cache-dir-no-home        -  0 s_cache_nohome chk_cache_nohome
+run_case cache-leaf-symlink       -  0 s_cache_leaf_link chk_cache_leaf_link
 
 # _nf_err's once-per-process memo must compare keys literally: 'spawn:*' is a new key
 # after 'spawn:abc', not a glob that matches it (nor may it silence later keys).

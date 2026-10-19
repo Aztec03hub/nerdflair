@@ -90,11 +90,13 @@ exec 9>"$LOCKFILE"
 flock -w 300 9 || { echo "difftest: another run holds the lock" >&2; exit 2; }
 
 # ── Shared /tmp caches the script hard-codes: snapshot and restore ───────────
-# statusline.sh writes /tmp/nerdflair-ccusage-$UID and /tmp/nerdflair-mcphealth-$UID
-# with no override hook. Those are Phil's LIVE caches. Save them now, restore on
+# The (retired) ccusage cache is a hard-coded /tmp path. It is Phil's LIVE cache. Save them now, restore on
 # exit, so a difftest run never leaves the real statusline holding our fixtures.
 RUN_DIR=$(mktemp -d /tmp/nerdflair-difftest.XXXXXX)
-SHARED_CACHES=("/tmp/nerdflair-ccusage-${UID}" "/tmp/nerdflair-mcphealth-${UID}")
+SHARED_CACHES=("/tmp/nerdflair-ccusage-${UID}")
+# Every renderer cache lives in this private dir (NERDFLAIR_CACHE_DIR), never in the user's real one.
+CACHE_DIR="$RUN_DIR/cache"
+mkdir -m 700 "$CACHE_DIR"
 for f in "${SHARED_CACHES[@]}"; do
   [[ -e "$f" ]] && cp -a "$f" "$RUN_DIR/$(basename "$f").orig"
 done
@@ -270,7 +272,7 @@ _collect_cache_paths() {
   local d h
   while IFS= read -r d; do
     h=$(printf '%s' "$d" | cksum | cut -d' ' -f1)
-    GIT_CACHE_PATHS+=("/tmp/nerdflair-git-${h}" "/tmp/nerdflair-multibranch-${h}")
+    GIT_CACHE_PATHS+=("$CACHE_DIR/nerdflair-git-${h}" "$CACHE_DIR/nerdflair-multibranch-${h}")
   done < <(find "$FIXROOT" -mindepth 1 -maxdepth 2 -type d ! -name '.git' 2>/dev/null; printf '%s\n' "$FIXROOT")
 }
 _collect_cache_paths
@@ -371,11 +373,11 @@ run_side() {
   rm -f "${GIT_CACHE_PATHS[@]}" 2>/dev/null
   rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
   rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
-  rm -f /tmp/nerdflair-mcphealth-${UID} /tmp/nerdflair-mcphealth-${UID}.tmp 2>/dev/null
-  rmdir /tmp/nerdflair-mcphealth-${UID}.lock 2>/dev/null
-  rm -f /tmp/nerdflair-repocost-${UID}-* /tmp/nerdflair-repocost-total-${UID}-* 2>/dev/null
-  rm -f /tmp/nerdflair-sample-${UID}-* /tmp/nerdflair-sample-${UID}-*.tmp 2>/dev/null
-  rm -f /tmp/nerdflair-tmux-${UID}-* 2>/dev/null
+  rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" 2>/dev/null
+  rmdir "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-sample-${UID}-* 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-tmux-${UID}-* 2>/dev/null
 
   # ── seed the async caches this case asks for ────────────────────────────
   local -a extra_env=()
@@ -385,19 +387,20 @@ run_side() {
   fi
   if [[ -n "${CASE_SEED_MCPHEALTH:-}" ]]; then
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"
-    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "/tmp/nerdflair-mcphealth-${UID}"
+    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}"
     extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")
   fi
   if [[ -n "${CASE_TMUX:-}" && -n "${CASE_SEED_TMUX:-}" ]]; then
-    printf '%s' "$CASE_SEED_TMUX" > "/tmp/nerdflair-tmux-${UID}-${CASE_TMUX//[^a-zA-Z0-9]/_}"
+    printf '%s' "$CASE_SEED_TMUX" > "$CACHE_DIR/nerdflair-tmux-${UID}-${CASE_TMUX//[^a-zA-Z0-9]/_}"
   fi
 
   # ── the pinned environment ──────────────────────────────────────────────
   local -a envargs=(
     -i
     HOME="$sbox"
+    NERDFLAIR_CACHE_DIR="$CACHE_DIR"
     TMPDIR="$sbox/tmp"
     PATH="$sbox/bin:/usr/local/bin:/usr/bin:/bin"
     SHELL=/bin/bash
@@ -519,9 +522,9 @@ for id in "${CASES[@]}"; do
     CASE_EXTRA_ENV="HOME=$SHARED_HOME"
   fi
 
-  # A case is run, and on ANY mismatch run once more. /tmp/nerdflair-ccusage-$UID
-  # and /tmp/nerdflair-mcphealth-$UID are hard-coded paths shared with the user's
-  # LIVE Claude Code sessions, which can refresh them between our two sides. A
+  # A case is run, and on ANY mismatch run once more. The retired
+  # /tmp/nerdflair-ccusage-$UID is a hard-coded path shared with the user's
+  # LIVE Claude Code sessions, which can refresh it between our two sides. A
   # genuine divergence reproduces; a transient one does not. Cases that only pass
   # on the retry are reported as UNSTABLE, never silently swallowed.
   _attempt=0

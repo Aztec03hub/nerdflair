@@ -328,28 +328,29 @@ def cards_check():
     # The tmux readout comes from a per-pane cache, else from a live tmux; seed
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
-    tcache = f"/tmp/nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}"
+    # A private (0700) cache dir of our own, handed to the renderer: never the user's real one.
+    import shutil
+    import tempfile
+    cdir = tempfile.mkdtemp(prefix="nf-cards-cache-")
+    tcache = os.path.join(cdir, f"nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}")
     try:
-        # O_NOFOLLOW: a pre-planted symlink at this predictable name must not be written through.
-        fd = os.open(tcache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as fh:
+        with open(tcache, "w") as fh:
             fh.write("cards")
-    except OSError as e:
-        sys.exit(f"cards-check: cannot seed the tmux cache {tcache}: {e}")
-    try:
-        _cards_check_body(root, binary, pane)
+        # Seed a FRESH mcp health cache too (it used to be the user's live /tmp one), so the
+        # readout is drawn and no real `claude mcp list` probe is spawned.
+        with open(os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"), "w") as fh:
+            fh.write("3\x1f1\x1f0\x1fa\x1eb")
+        _cards_check_body(root, binary, pane, cdir)
     finally:
-        try:
-            os.remove(tcache)
-        except OSError:
-            pass
+        shutil.rmtree(cdir, ignore_errors=True)
 
 
-def _cards_check_body(root, binary, pane):
+def _cards_check_body(root, binary, pane, cdir):
     import glob
     import shutil
     import tempfile
-    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane)
+    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
+               NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
     base = tempfile.mkdtemp(prefix="nf-cards-")
     try:
         fixtures = _cards_fixtures(base)

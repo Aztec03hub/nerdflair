@@ -369,3 +369,84 @@ pub fn sort_fold(names: &mut [String]) {
         fa.cmp(&fb).then_with(|| a.cmp(b))
     });
 }
+
+/// The private per-user directory every renderer cache lives in (never /tmp: it
+/// is shared and the names were predictable, so another local user or a stale
+/// symlink could redirect a write or plant a cache we then trust).
+/// `$NERDFLAIR_CACHE_DIR`, else `$XDG_CACHE_HOME/nerdflair`, else
+/// `$HOME/.cache/nerdflair`. Created 0700 (explicit mode, not the umask) and
+/// verified once per process: a real directory, ours, no group/other bits.
+/// None means "no caches this render": every caller computes without them. The
+/// reason is logged under key `cache-dir` (once an hour). Twin of lib.sh `_nf_cache_dir`.
+pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let dir = if let Some(d) = env("NERDFLAIR_CACHE_DIR") {
+            std::path::PathBuf::from(d)
+        } else if let Some(x) = env("XDG_CACHE_HOME").filter(|x| x.starts_with('/')) {
+            std::path::PathBuf::from(x).join("nerdflair")
+        } else if let Some(h) = env("HOME") {
+            std::path::PathBuf::from(h).join(".cache/nerdflair")
+        } else {
+            crate::errlog::note("cache-dir", "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped");
+            return None;
+        };
+        // Create what is missing, top down, with an explicit chmod after each mkdir:
+        // a mkdir mode is still masked by the umask (the tmux server's is 0117, which
+        // would leave a directory nobody can enter). An existing directory is never chmod-ed.
+        let mut missing: Vec<&std::path::Path> = dir.ancestors().take_while(|a| std::fs::symlink_metadata(a).is_err()).collect();
+        missing.reverse();
+        for m in missing {
+            use std::os::unix::fs::PermissionsExt;
+            if std::fs::DirBuilder::new().mode(0o700).create(m).is_ok() {
+                let _ = std::fs::set_permissions(m, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.is_dir() && m.uid() == uid() && m.mode() & 0o077 == 0 => Some(dir),
+            Ok(m) => {
+                let why = if !m.is_dir() {
+                    "not a real directory"
+                } else if m.uid() != uid() {
+                    "not owned by this user"
+                } else {
+                    "mode allows group/other access"
+                };
+                crate::errlog::note("cache-dir", &format!("{} is unusable ({}); caches skipped", dir.display(), why));
+                None
+            }
+            Err(e) => {
+                crate::errlog::note("cache-dir", &format!("cannot use {} ({}); caches skipped", dir.display(), e));
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
+pub fn cache_path(name: &str) -> Option<std::path::PathBuf> {
+    cache_dir().map(|d| d.join(name))
+}
+
+/// Write a cache file without ever following a symlink at the leaf: a fresh
+/// O_EXCL|O_NOFOLLOW temp file, then rename (which replaces a planted link).
+pub fn cache_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = std::path::PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let r = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(data))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}

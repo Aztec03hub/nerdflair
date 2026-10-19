@@ -152,6 +152,56 @@ _nf_recent() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" && ( -e "$_NF_STAMP" || -L "$_
 _nf_touch() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && _nf_stamp_write "$_NF_STAMP"; return 0; }
 _nf_clear() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && rm -f "$_NF_STAMP" 2>/dev/null; return 0; }
 
+# ── Private cache directory ──────────────────────────────────────
+# Every renderer cache (git, multibranch, tmux, sample, repocost, mcphealth and
+# the chime lock) lives in ONE per-user directory, never in world-writable /tmp
+# where the names were predictable (another local user, or a stale symlink,
+# could redirect a write or plant a cache the renderer then trusts).
+# $NERDFLAIR_CACHE_DIR, else $XDG_CACHE_HOME/nerdflair, else $HOME/.cache/nerdflair.
+# Created 0700 with an explicit mode (the tmux server's umask is 0117) and checked
+# once per process: a real directory (not a symlink), ours, no group/other bits.
+# Anything else, or an empty HOME with no override: _NF_CDIR stays empty, callers
+# skip their caches and compute without them, and the reason is logged under key
+# cache-dir (once an hour). Twin of util::cache_dir.
+_nf_cache_dir() {
+  [[ -n "${_NF_CDIR_DONE:-}" ]] && return 0
+  _NF_CDIR_DONE=1; _NF_CDIR=""
+  local _d _m _why=""
+  if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then _d="$NERDFLAIR_CACHE_DIR"
+  elif [[ "${XDG_CACHE_HOME:-}" == /* ]]; then _d="${XDG_CACHE_HOME}/nerdflair"
+  elif [[ -n "${HOME:-}" ]]; then _d="${HOME}/.cache/nerdflair"
+  else _nf_err cache-dir "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped"; return 0
+  fi
+  [[ -d "$_d" ]] || mkdir -p -m 700 "$_d" 2>/dev/null
+  if [[ -L "$_d" || ! -d "$_d" ]]; then _why="not a real directory"
+  elif [[ ! -O "$_d" ]]; then _why="not owned by this user"
+  else
+    _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
+    (( 8#${_m} & 8#077 )) && _why="mode allows group/other access"
+  fi
+  if [[ -n "$_why" ]]; then
+    _nf_err cache-dir "$_d is unusable ($_why); caches skipped"
+  else
+    _NF_CDIR="$_d"
+  fi
+  return 0
+}
+# _nf_cache_path name: sets _NF_CP to the file inside the cache dir, or "" when there is none.
+_nf_cache_path() { _nf_cache_dir; _NF_CP=""; [[ -n "$_NF_CDIR" ]] && _NF_CP="$_NF_CDIR/$1"; return 0; }
+# _nf_cache_put file data: write via a fresh noclobber temp file, then rename. A
+# planted symlink at the leaf is replaced by the rename, never written through.
+_nf_cache_put() {
+  local _t="$1.tmp.$$"
+  rm -f "$_t" 2>/dev/null
+  set -o noclobber
+  { printf '%s' "$2" > "$_t"; } 2>/dev/null
+  local _rc=$?
+  set +o noclobber
+  (( _rc == 0 )) && mv -f "$_t" "$1" 2>/dev/null && return 0
+  rm -f "$_t" 2>/dev/null
+  return 1
+}
+
 # ── jq check ─────────────────────────────────────────────────────
 _nf_require_jq() {
   if ! command -v jq &>/dev/null; then
@@ -424,17 +474,22 @@ _nf_play_audio() {
   # just louder. Skip rather than queue, so the alert stays timely.
   # Opt out with NERDFLAIR_ALLOW_OVERLAP=1.
   if [[ "${NERDFLAIR_ALLOW_OVERLAP:-0}" != "1" ]]; then
-    local _snd_lock="/tmp/nerdflair-chime-${UID:-$(id -u)}.lock"
-    # Stale lock (player killed, machine slept): clear anything older than 30s,
-    # comfortably longer than the 4.6s of the longest clip.
-    if [[ -d "$_snd_lock" ]]; then
-      local _sl_age=$(( ${EPOCHSECONDS:-$(date +%s)} - $(stat -c %Y "$_snd_lock" 2>/dev/null || stat -f %m "$_snd_lock" 2>/dev/null || echo 0) ))
-      (( _sl_age > 30 )) && rmdir "$_snd_lock" 2>/dev/null
+    # No private cache dir: play without the overlap lock (logged as cache-dir)
+    # rather than lose the chime.
+    _nf_cache_path "nerdflair-chime-${UID:-$(id -u)}.lock"
+    local _snd_lock="$_NF_CP"
+    if [[ -n "$_snd_lock" ]]; then
+      # Stale lock (player killed, machine slept): clear anything older than 30s,
+      # comfortably longer than the 4.6s of the longest clip.
+      if [[ -d "$_snd_lock" ]]; then
+        local _sl_age=$(( ${EPOCHSECONDS:-$(date +%s)} - $(stat -c %Y "$_snd_lock" 2>/dev/null || stat -f %m "$_snd_lock" 2>/dev/null || echo 0) ))
+        (( _sl_age > 30 )) && rmdir "$_snd_lock" 2>/dev/null
+      fi
+      # mkdir is atomic; pgrep was check-then-act and lost the race.
+      mkdir "$_snd_lock" 2>/dev/null || return 0
+      ( sleep 6; rmdir "$_snd_lock" 2>/dev/null ) &>/dev/null &
+      disown 2>/dev/null || true
     fi
-    # mkdir is atomic; pgrep was check-then-act and lost the race.
-    mkdir "$_snd_lock" 2>/dev/null || return 0
-    ( sleep 6; rmdir "$_snd_lock" 2>/dev/null ) &>/dev/null &
-    disown 2>/dev/null || true
   fi
   if command -v afplay &>/dev/null; then
     nohup afplay --volume "$volume" "$file" &>/dev/null &
