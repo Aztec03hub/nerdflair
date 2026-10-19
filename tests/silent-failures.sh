@@ -433,7 +433,16 @@ chk_cache_open_nonutf8() {   # bytes, not U+FFFD: the hint must name the real pa
   if [[ "$log" == *"$want"* ]]; then printf '  PASS  cache-open-nonutf8 [%s]: the hint holds the raw path bytes\n' "$1"
   else printf '  FAIL  cache-open-nonutf8 [%s]: the hint lacks the raw path bytes\n' "$1"; fail=1; fi
 }
-s_cache_lax_noproc() { s_cache_lax; CASE_ENV+=(NERDFLAIR_TEST_NO_PROC=1); }   # as if /proc were not mounted (Rust test switch)
+s_cache_hostile() {   # a path with an invalid byte, a raw 0x9b and U+009B CSI: none may reach the log as a control
+  local d="$CASE_DIR/c-"$'\xff\x9b\xc2\x9b'"[2Jx"; rmdir "$CASE_DIR/cache"; mkdir -m 755 "$d"
+  CASE_ENV+=("NERDFLAIR_CACHE_DIR=$d" NERDFLAIR_REPO_COST=0)
+}
+chk_cache_hostile() {
+  local log; log=$(LC_ALL=C cat "$CASE_DIR/home/.claude/nerdflair-errors.log" 2>/dev/null)
+  if ( LC_ALL=C; [[ "$log" != *$'\x9b'* && "$log" == *"cache-dir: "* && "$log" == *"[2Jx"* ]] ); then
+    printf '  PASS  cache-hostile [%s]: logged, and no 0x9b byte (raw or inside U+009B) is in the log\n' "$1"
+  else printf '  FAIL  cache-hostile [%s]: a C1 byte reached the log (or nothing was logged)\n' "$1"; fail=1; fi
+}
 s_cache_open_explicit() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # an explicit override is never narrowed
 chk_cache_open_explicit() {
   check "cache-open-explicit [$1]: the dir is still 755" 755 "$(stat -c %a "$CASE_DIR/cache")"
@@ -563,7 +572,7 @@ run_case cache-dir-symlink        cache-dir 1 s_cache_symlink chk_cache_refused
 run_case pin-cache-dir-lax-mode   cache-dir-repaired 1 s_cache_lax chk_cache_lax
 run_case cache-dir-mode-055       cache-dir-repaired 1 s_cache_lax055 chk_cache_lax055
 run_case cache-dir-open-nonutf8   cache-dir 1 s_cache_open_nonutf8 chk_cache_open_nonutf8
-run_case cache-dir-no-proc        cache-dir-repaired 1 s_cache_lax_noproc chk_cache_lax
+run_case cache-dir-hostile-bytes  cache-dir 1 s_cache_hostile chk_cache_hostile
 run_case cache-dir-open-quoted    cache-dir 1 s_cache_open_quoted chk_cache_open_quoted
 run_case cache-dir-open-explicit  cache-dir 1 s_cache_open_explicit chk_cache_open_explicit
 run_case cache-dir-foreign-owner  cache-dir 1 s_cache_foreign chk_cache_refused

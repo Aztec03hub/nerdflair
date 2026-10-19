@@ -353,6 +353,7 @@ def _cards_check_body(root, binary, pane, cdir):
     # extra "random" readout that has no card) and writes its error log and ledger there.
     home = os.path.join(cdir, "home")
     os.makedirs(os.path.join(home, ".claude", "nerdflair"), exist_ok=True)
+    # TODO N13: the "random" chime readout still needs a hover card (then run this twice, once with it).
     # Pinned chime settings: a style of "random" draws a volume-icon readout (before any cost)
     # that has no card yet, so the result would depend on whoever's state.json this ran against.
     with open(os.path.join(home, ".claude", "nerdflair", "state.json"), "w") as fh:

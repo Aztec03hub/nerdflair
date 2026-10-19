@@ -204,7 +204,22 @@ fn emit_bytes(key: &str, reason: &[u8]) -> bool {
             clean.into_bytes()
         }
         Err(_) => {
-            let mut v: Vec<u8> = reason.iter().map(|b| if *b < 0x20 || *b == 0x7f { b' ' } else { *b }).collect();
+            // Valid chunks get the same filter as the UTF-8 branch (C1 controls such as U+009B CSI
+            // become a space); invalid bytes are copied as they are, except raw 0x80..0x9f, which
+            // a terminal may also read as C1 controls. ESC, newline and the rest of C0 cannot be
+            // invalid bytes, so the chunks cover them.
+            let mut v: Vec<u8> = Vec::new();
+            for ch in reason.utf8_chunks() {
+                for c in ch.valid().chars() {
+                    if c.is_control() {
+                        v.push(b' ');
+                    } else {
+                        let mut buf = [0u8; 4];
+                        v.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                    }
+                }
+                v.extend(ch.invalid().iter().map(|&b| if (0x80..=0x9f).contains(&b) { b' ' } else { b }));
+            }
             if v.len() > MAX_REASON {
                 v.truncate(MAX_REASON);
                 v.extend_from_slice(b"...");

@@ -518,7 +518,12 @@ fn tighten_dir(dir: &std::path::Path) -> bool {
         return true;
     }
     // No O_PATH, or no /proc (a container or chroot): the lstat-checked path chmod bash uses.
-    // A symlink swapped in between the check and the chmod needs write access to our own parent.
+    tighten_dir_path(dir)
+}
+
+/// lstat-checked chmod 700: a real directory of ours only. A symlink swapped in between the
+/// check and the chmod needs write access to our own parent directory (the window bash has too).
+fn tighten_dir_path(dir: &std::path::Path) -> bool {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     match std::fs::symlink_metadata(dir) {
         Ok(m) if m.is_dir() && m.uid() == uid() => {}
@@ -531,10 +536,6 @@ fn tighten_dir(dir: &std::path::Path) -> bool {
 fn tighten_dir_fd(dir: &std::path::Path) -> bool {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    // Test-only switch: behave as if /proc were not mounted (exercises the fallback above).
-    if std::env::var_os("NERDFLAIR_TEST_NO_PROC").is_some() {
-        return false;
-    }
     let Ok(f) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY)
@@ -548,4 +549,39 @@ fn tighten_dir_fd(dir: &std::path::Path) -> bool {
     }
     let Ok(p) = std::ffi::CString::new(format!("/proc/self/fd/{}", f.as_raw_fd())) else { return false };
     unsafe { libc::fchmodat(libc::AT_FDCWD, p.as_ptr(), 0o700, 0) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tighten_dir_path;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("nf-util-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn fallback_tightens_a_real_dir_of_ours() {
+        let d = tmp("open");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(tighten_dir_path(&d));
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn fallback_refuses_a_symlink_and_leaves_the_target_alone() {
+        let target = tmp("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = std::env::temp_dir().join(format!("nf-util-test-{}-link", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(!tighten_dir_path(&link));
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o755);
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&target).unwrap();
+    }
 }

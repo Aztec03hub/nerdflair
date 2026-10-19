@@ -96,8 +96,13 @@ _nf_stamp_write() {
 }
 # Appends one line. Returns 0 when it was written, 1 when it fell back to stderr.
 _nf_log_line() {
-  local _k="$1" _r="${2:-}" _sz _tmp
+  local _k="$1" _r="${2:-}" _sz _tmp LC_ALL=C
+  # Byte-wise (LC_ALL=C), twin of errlog::emit_bytes: C0 and DEL, the 2-byte form of a C1
+  # control (U+0080..U+009F), and any raw 0x80..0x9f byte become a space, so a path in the
+  # reason can never put a terminal control sequence (CSI, OSC, DCS) into the log.
   _r="${_r//[[:cntrl:]]/ }"
+  _r="${_r//$'\xc2'[$'\x80'-$'\x9f']/ }"
+  _r="${_r//[$'\x80'-$'\x9f']/ }"
   (( ${#_r} > 400 )) && _r="${_r:0:400}..."
   mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null
   # Cap: keep the last 64 KB once over 256 KB. Only on the (rate limited) write path.
