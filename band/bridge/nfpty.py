@@ -367,6 +367,8 @@ class Highlight:
         self.last = 0.0
         self.retry_at = 0.0     # after a failed on(): no new attempt before this
         self.busy = 0.0         # how long the last refresh blocked the relay loop
+        self.settled = lambda: True     # False while our own writes are still queued behind an unfinished engine sequence
+        self.redo = None        # (key, tries, due): a restore that may have landed stale, to be repainted from the shadow
 
     def _cells(self, key):
         row, x, w, rgb = key
@@ -378,6 +380,9 @@ class Highlight:
         return (cut(line, x, w, hl).replace("{row}", str(row), 1), cut(line, x, w).replace("{row}", str(row), 1))
 
     def _paint(self, s, keep=False):
+        # CSI s / CSI u share the engine's single save slot (ESC 7 / ESC 8). We only write at sequence
+        # boundaries, so this is safe unless the engine keeps a save outstanding across reads, which
+        # Claude Code's renderer does not do; Panel makes the same assumption.
         self.write(f"{ESC}[s{ESC}[?25l{s}{self.cursor()}{ESC}[u", keep=keep)
 
     def on(self, key):
@@ -393,7 +398,7 @@ class Highlight:
                                                "highlighted (its card still works)")
             return
         self.cur, self.plain, self.last = key, got[1], now
-        self._paint(got[0])
+        self._paint(got[0], keep=True)      # small, and a dropped frame would leave the highlight missing
 
     def off(self):
         if self.cur is None:
@@ -405,8 +410,30 @@ class Highlight:
             plain = self.plain
         else:
             plain = got[1]
-        self.cur = None
+        key, self.cur = self.cur, None
         self._paint(plain, keep=True)
+        if got is None or not self.settled():
+            # The paint above is the saved copy, or waits behind an unfinished engine sequence: either way
+            # it can land on top of newer engine output. Repaint from the shadow once things are clean.
+            self.redo = (key, 0, 0.0)
+
+    def recheck(self):
+        """Repaint a possibly stale restore from the shadow (see off). Called every loop pass; cheap when idle."""
+        if self.redo is None or not self.settled():
+            return
+        key, tries, due = self.redo
+        if time.monotonic() < due or self.cur is not None:
+            return
+        got = self._cells(key)
+        if got is not None:
+            self.redo = None
+            self._paint(got[1], keep=True)
+        elif tries >= 4:
+            self.redo = None
+            note_rate("highlight-restore-stale", "highlight: the shadow screen never answered after a restore, so a "
+                                                 "readout may show an old value until the engine redraws it")
+        else:
+            self.redo = (key, tries + 1, time.monotonic() + 0.5)
 
     def sync(self, key):
         if key == self.cur:
@@ -437,13 +464,14 @@ class Highlight:
                                            "repainted after the engine drew (it may be missing until the next read)")
             return
         self.plain = got[1]
-        self._paint(got[0])
+        self._paint(got[0], keep=True)
 
     def forget(self):
         """Geometry changed: the engine repaints everything, so write nothing."""
-        self.cur = None
+        self.cur = self.redo = None
 
 
+ALT_SCREEN = re.compile(rb"\033\[\?(?:1049|1047|47)[hl]")
 CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
@@ -810,6 +838,23 @@ def selfcheck():
     assert abs(hh.gap() - 0.75) < 1e-9, "a refresh that blocked the relay 50 ms spaces the next out to 0.75 s (under 7% duty)"
     hh.busy = 9
     assert hh.gap() == 2.0, "capped"
+    # A restore that may land on newer engine output is repainted from the shadow once things are clean.
+    state = {"ok": False}
+    wq = []
+    sh2 = FakeShadow(line)
+    h2 = Highlight(lambda s, keep=False: wq.append((s, keep)), sh2)
+    h2.settled = lambda: state["ok"]
+    h2.sync((2, 3, 2, RGB))
+    assert wq and wq[-1][1] is True, "highlight paints are keep=True"
+    h2.sync(None)
+    assert h2.redo is not None, "a restore queued behind an unfinished sequence is flagged for a re-check"
+    n2 = len(wq)
+    h2.recheck()
+    assert len(wq) == n2, "no re-check while the engine is mid-sequence"
+    state["ok"] = True
+    sh2.text = f"ab{ESC}[38;5;9mXZ{ESC}[0m cd"          # the engine changed a cell meanwhile
+    h2.recheck()
+    assert len(wq) == n2 + 1 and "XZ" in wq[-1][0] and "XY" not in wq[-1][0] and h2.redo is None, wq[-1]
     # Wide characters at the range edges are included whole, never half-painted.
     wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
     assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
@@ -984,6 +1029,7 @@ def main():
     panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
     layout = Layout(pane, shadow)
     hl = Highlight(write, shadow, lambda: panel._show_cursor())
+    hl.settled = lambda: not pending and clean[0]
     shown_seg = [None]          # the readout the open card belongs to
     shown_prev = [None]         # for an id-less readout: the text of the readout just left of it
     shown_twin = [False]        # ... and whether another readout on the line had the same text
@@ -997,6 +1043,8 @@ def main():
         if seg is not None:
             shown_prev[0] = left_of(seg)
             shown_twin[0] = sum(1 for t in layout.segs if t["id"].startswith("row") and t["body"][0] == seg["body"][0]) > 1
+    worked_box = [False]        # this pass read tmux for the highlight (so it is timed)
+    hl_next = [0.0]             # the dirty re-read does not run before this (it is spaced whether or not it painted)
     hl_dirty = [False]          # the engine wrote since the highlight was painted: re-read and repaint it
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
     panel.backdrop.settled = lambda: not pending
@@ -1149,6 +1197,12 @@ def main():
                 if not data:
                     break
                 guarded("note_modes", note_modes, data, dbg)
+                if panel.shown and ALT_SCREEN.search(data):
+                    # The engine is about to swap screens. Whatever we painted on the main screen (card and
+                    # highlight) comes back with it when it returns, so take both down FIRST, before the
+                    # switch is forwarded. The pointer has to move again to bring a card back.
+                    guarded("panel.erase", panel.erase)
+                    guarded("highlight.alt", hl.off)
                 out.write(data)
                 out.flush()
                 clean[0] = stream.feed(data)
@@ -1259,7 +1313,17 @@ def main():
 
             def sync_hl():
                 t_work = time.monotonic()
-                if panel.shown and hl_dirty[0] and now - hl.last >= hl.gap():
+                try:
+                    _sync_hl()
+                finally:
+                    if worked_box[0]:
+                        worked_box[0] = False
+                        hl.busy = time.monotonic() - t_work      # the relay loop was blocked this long: space the next one out
+                        hl_next[0] = time.monotonic() + hl.gap()
+
+            def _sync_hl():
+                if panel.shown and hl_dirty[0] and now >= hl_next[0]:
+                    worked_box[0] = True
                     # The engine drew while a card is up: is its readout still there, and where?
                     # (a dialog over the line, or a figure that changed width, with the pointer still)
                     covered = set(range(panel.rect[1], panel.rect[1] + panel.rect[3])) if panel.rect else set()
@@ -1290,11 +1354,17 @@ def main():
                     note_once("highlight-card-over-row", "highlight: the card covers its own readout's row "
                                                          "(terminal too small); not highlighting")
                     seg = None
-                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None)
-                if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.gap():
+                key = (seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None
+                if key != hl.cur:
+                    worked_box[0] = True                     # a transition reads tmux too
+                hl.sync(key)
+                hl.recheck()
+                if hl.cur is None:
+                    hl_dirty[0] = False                      # nothing is up to repaint (covered row, failed on(), resize)
+                elif hl_dirty[0] and now >= hl_next[0]:
+                    worked_box[0] = True
                     hl_dirty[0] = False
                     hl.refresh()
-                    hl.busy = time.monotonic() - t_work      # the relay loop was blocked this long: space the next one out
             guarded("highlight", sync_hl)
 
             if now - last >= FRAME:

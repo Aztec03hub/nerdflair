@@ -364,6 +364,12 @@ def t_nfpty():
                "terminal write failed")
     check("guard: that line is not a bug report", not any("Traceback" in ln for ln in lines()), str(lines()))
 
+    def guard_epipe():
+        g = nfpty.Guard(lambda: None, lambda: None)
+        g.run("paint", lambda: (_ for _ in ()).throw(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+        check("guard: EPIPE turns decoration off too", g.ok is False)
+    expect_one("guard: EPIPE is said once as well", guard_epipe, "terminal write failed")
+
     def kill_esrch():
         undo = stub(os, "kill", lambda p, s: (_ for _ in ()).throw(ProcessLookupError()))
         try:
