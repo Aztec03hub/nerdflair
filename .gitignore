@@ -1,3 +1,9 @@
 .DS_Store
 .serena/
 __pycache__/
+
+# Build output of the closed inspector experiment (81 MB Bun runtime); rebuild: bun build --compile app.ts --outfile app-compiled
+band/bridge/inspector-lab/app-compiled
+
+# Process files (reviews, audits, worklogs) stay local, not on the public remote
+reports/
