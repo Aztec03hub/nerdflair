@@ -1649,8 +1649,9 @@ fn render_inner(input: &str) -> Result<String, String> {
     // ── Persist this sample ──────────────────────────────────────
     if let Some(sp) = smp_path.as_ref() {
         // Already reported above when it is bad (same field).
-        let api_now = match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 };
-        let u_now = used10.unwrap_or(0);
+        // Never write what read_ring refuses (fractional, negative, 16+ digits, leading zero): 0, as statusline.sh does.
+        let api_now = if canon_num(&f.total_api_ms) { match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 } } else { 0 };
+        let u_now = used10.filter(|u| canon_num(&u.to_string())).unwrap_or(0);
         let moved = prev.map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
         if moved {
             let keep = env_int("NERDFLAIR_SAMPLES", 16).max(2) as usize;
@@ -1661,7 +1662,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             let fresh = Sample { epoch: now, used10: u_now, api_ms: api_now };
             hist.push(&fresh);
             let start = hist.len().saturating_sub(keep);
-            let mut body = format!("v2 {}\n", rate_show);
+            let mut body = format!("v2 {}\n", if canon_num(&rate_show.to_string()) { rate_show } else { 0 });
             for h in &hist[start..] {
                 body.push_str(&format!("{} {} {}\n", h.epoch, h.used10, h.api_ms));
             }
@@ -2625,6 +2626,12 @@ fn sample_path(uid: u32, session: &str) -> Option<PathBuf> {
 /// then rewritten as v2, so the two renderers can share a file across upgrades.
 struct Ring { rate: i64, hist: Vec<Sample> }
 
+/// 0 or 1-15 digits with no leading zero: the only integers the sample file may hold
+/// (twin of `_SMP_NUM` in statusline.sh; '08' is an invalid octal in bash arithmetic).
+fn canon_num(w: &str) -> bool {
+    w == "0" || ((1..=15).contains(&w.len()) && !w.starts_with('0') && w.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn read_ring(path: &Path) -> Ring {
     let mut r = Ring { rate: 0, hist: Vec::new() };
     let t = match std::fs::read_to_string(path) {
@@ -2639,7 +2646,7 @@ fn read_ring(path: &Path) -> Ring {
     // non-empty line is dropped and logged once (bash would otherwise evaluate it in (( ))).
     let nums = |l: &str, n: usize| -> Option<Vec<i64>> {
         let f: Vec<&str> = l.split(' ').collect();
-        if f.len() != n || !f.iter().all(|w| (1..=15).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_digit())) {
+        if f.len() != n || !f.iter().all(|w| canon_num(w)) {
             return None;
         }
         Some(f.iter().map(|w| w.parse::<i64>().unwrap_or(0)).collect())

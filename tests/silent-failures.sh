@@ -400,18 +400,49 @@ chk_cache_refused() {   # refused dir: rendered fine, same bytes as a healthy co
   local got; got=$(rg -c . "$CASE_DIR/out.1" 2>/dev/null || echo 0)
   check "cache-refused [$1]: render exits 0" 0 "$(cat "$CASE_DIR/rc.1")"
   check "cache-refused [$1]: render printed a status line" yes "$([[ "$got" -ge 1 ]] && echo yes || echo no)"
+  [[ -d "$CASE_DIR/symtarget" ]] && check "cache-refused [$1]: the symlink target mode is untouched" 755 "$(stat -c %a "$CASE_DIR/symtarget")"
   ref_render "$1"
   check "cache-refused [$1]: output equals a healthy first render" "$REF_OUT" "$(cat "$CASE_DIR/out.1")"
   check "cache-refused [$1]: nothing written into the refused dir" "" "$(ls -A "$CASE_DIR/symtarget" 2>/dev/null)$(ls -A "$CASE_DIR/cache" 2>/dev/null)"
 }
 s_cache_symlink() {   # the cache dir path is a symlink to a real directory
-  mkdir "$CASE_DIR/symtarget"; rmdir "$CASE_DIR/cache"; ln -s "$CASE_DIR/symtarget" "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
+  mkdir "$CASE_DIR/symtarget"; chmod 755 "$CASE_DIR/symtarget"; rmdir "$CASE_DIR/cache"; ln -s "$CASE_DIR/symtarget" "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
 }
-s_cache_lax() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # ours but open: tightened, not refused
+s_cache_lax() {   # the DEFAULT location, ours but open: tightened
+  rmdir "$CASE_DIR/cache"; mkdir -p "$CASE_DIR/home/.cache/nerdflair"; chmod 755 "$CASE_DIR/home/.cache/nerdflair"
+  CASE_ENV+=(NERDFLAIR_CACHE_DIR= NERDFLAIR_REPO_COST=0)
+}
 chk_cache_lax() {
-  check "cache-repaired [$1]: the dir is now 700" 700 "$(stat -c %a "$CASE_DIR/cache")"
-  check "cache-repaired [$1]: caches are written into it" yes "$(compgen -G "$CASE_DIR/cache/nerdflair-sample-*" >/dev/null && echo yes || echo no)"
+  local d="$CASE_DIR/home/.cache/nerdflair"
+  check "cache-repaired [$1]: the dir is now 700" 700 "$(stat -c %a "$d")"
+  check "cache-repaired [$1]: caches are written into it" yes "$(compgen -G "$d/nerdflair-sample-*" >/dev/null && echo yes || echo no)"
 }
+s_cache_open_explicit() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # an explicit override is never narrowed
+chk_cache_open_explicit() {
+  check "cache-open-explicit [$1]: the dir is still 755" 755 "$(stat -c %a "$CASE_DIR/cache")"
+  contains "cache-open-explicit [$1]: the log says what to run" "run: chmod 700 $CASE_DIR/cache"
+  check "cache-open-explicit [$1]: nothing written into it" "" "$(ls -A "$CASE_DIR/cache")"
+}
+# Sample files: boundaries the reader must agree on in both renderers. SAMPLE_BODY is written
+# verbatim; the case name's session id picks the file.
+SAMPLE_BODY=""
+s_sample_in() {
+  local sid; sid=$(printf '%s' "$PAYLOAD" | jq -r .session_id)
+  printf "$SAMPLE_BODY" > "$CASE_DIR/cache/nerdflair-sample-$(id -u)-${sid//[^a-zA-Z0-9]/_}"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
+}
+chk_sample_rc0() { check "sample-input [$1]: every render exits 0" "0 0 0 0" "$(cat "$CASE_DIR"/rc.[1-4] | tr '\n' ' ' | sed 's/ $//')"; }
+chk_sample_v1() {
+  chk_sample_rc0 "$1"
+  check "sample-v1 [$1]: migrated to v2" yes "$(rg -q '^v2 ' "$CASE_DIR"/cache/nerdflair-sample-* && echo yes || echo no)"
+}
+s_sample_frac() {   # fractional api ms: the writer must not emit what its reader refuses
+  PAYLOAD=${PAYLOAD/\"total_api_duration_ms\":1000/\"total_api_duration_ms\":5000.5}; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
+}
+chk_sample_frac() {
+  chk_sample_rc0 "$1"
+  check "sample-frac [$1]: every line of the file is canonical" 0 "$(rg -cv '^(v2 (0|[1-9][0-9]{0,14})|(0|[1-9][0-9]{0,14}) (0|[1-9][0-9]{0,14}) (0|[1-9][0-9]{0,14}))$' "$CASE_DIR"/cache/nerdflair-sample-* | awk -F: '{n+=$NF} END{print n+0}')"
+}
+chk_stamps_untouched() { check "healthy [$1]: the stamp dir is untouched" "" "$(ls -A "$CASE_DIR/stamps")"; }
 s_cache_foreign() { CASE_ENV+=(NERDFLAIR_CACHE_DIR=/tmp NERDFLAIR_REPO_COST=0); }   # /tmp is root's: never ours to use
 s_cache_rel() { CASE_ENV+=(NERDFLAIR_CACHE_DIR=rel/c NERDFLAIR_REPO_COST=0); }
 chk_cache_rel() { check "cache-relative [$1]: nothing created in the cwd" "" "$(ls -A "$CASE_DIR/work")"; }
@@ -427,6 +458,9 @@ chk_cache_non_utf8() { check "cache-non-utf8 [$1]: no fallback to ~/.cache" no "
 s_cache_recovers() { s_cache_symlink; }
 chk_cache_recovers() {   # the dir is fixed: the next render says so, once
   rm -f "$CASE_DIR/cache"; mkdir -m 700 "$CASE_DIR/cache"; render "$1" 5; render "$1" 6
+  local before after; before=$(stat -c '%n %Y %y' "$CASE_DIR"/stamps/* | sort)
+  render "$1" 7; render "$1" 8; after=$(stat -c '%n %Y %y' "$CASE_DIR"/stamps/* | sort)
+  check "cache-recovered [$1]: healthy renders after the recovery leave the stamps alone" "$before" "$after"
   check "cache-recovered [$1]: one 'recovered: cache-dir' line" 1 "$(rg -cF 'recovered: cache-dir' "$CASE_DIR/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
 }
 s_cache_ledger_degraded() {   # no cache dir: the stamp dir still rate limits the ledger append (one row in 4 renders)
@@ -510,6 +544,7 @@ run_case cache-private-single     -  0 s_cache_default chk_cache_default_single
 run_case cache-private-multi      -  0 s_cache_default_multi chk_cache_default_multi
 run_case cache-dir-symlink        cache-dir 1 s_cache_symlink chk_cache_refused
 run_case cache-dir-lax-mode       cache-dir-repaired 1 s_cache_lax chk_cache_lax
+run_case cache-dir-open-explicit  cache-dir 1 s_cache_open_explicit chk_cache_open_explicit
 run_case cache-dir-foreign-owner  cache-dir 1 s_cache_foreign chk_cache_refused
 run_case cache-dir-relative       cache-dir 1 s_cache_rel chk_cache_rel
 run_case cache-dir-relative-xdg   cache-dir-xdg 1 s_cache_rel_xdg chk_cache_rel_xdg
@@ -519,6 +554,13 @@ run_case cache-dir-recovers       cache-dir 1 s_cache_recovers chk_cache_recover
 run_case cache-ledger-degraded    cache-dir 1 s_cache_ledger_degraded chk_cache_ledger_degraded
 run_case cache-ledger-skipped     repocost-skipped 4 s_cache_ledger_skipped chk_cache_ledger_skipped
 run_case sample-corrupt           sample-read 1 s_sample_corrupt chk_sample_corrupt
+SAMPLE_BODY='v2 5\n123456789012345 1 2\n';  run_case sample-in-15-digits sample-read 0 s_sample_in chk_sample_rc0
+SAMPLE_BODY='v2 5\n1234567890123456 1 2\n'; run_case sample-in-16-digits sample-read 1 s_sample_in chk_sample_rc0
+SAMPLE_BODY='v2 -3\n1 2 3\n';               run_case sample-in-negative sample-read 1 s_sample_in chk_sample_rc0
+SAMPLE_BODY='v2 5\n08 1 2\n';               run_case sample-in-leading0 sample-read 1 s_sample_in chk_sample_rc0
+SAMPLE_BODY='1 2 3 4\n';                     run_case sample-in-v1       sample-read 0 s_sample_in chk_sample_v1
+run_case sample-api-fractional    sample-read 0 s_sample_frac chk_sample_frac
+run_case cache-healthy-quiet      -  0 s_none chk_stamps_untouched
 run_case cache-dir-no-home        -  0 s_cache_nohome chk_cache_nohome
 run_case cache-leaf-symlink       -  0 s_cache_leaf_link chk_cache_leaf_link
 
@@ -545,6 +587,24 @@ _ncs=$( ( export HOME="$WORK/nc-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/nc-stamps";
   _nf_cache_put "$WORK/nc-c/a" x; [[ -o noclobber ]] && printf 'on ' || printf 'off '
   set -o noclobber; _nf_cache_put "$WORK/nc-c/b" y; [[ -o noclobber ]] && printf 'on ' || printf 'off '; umask ) 2>/dev/null )
 check "lib.sh _nf_cache_put: restores noclobber (off, on) and umask 022" "off on 0022" "$(printf '%s' "$_ncs" | tr -s ' \n' ' ' | sed 's/ $//')"
+
+# A healthy _nf_cache_dir after a recovered failure must cost exactly what it costs with no
+# failure history (no extra fork): counted in a private pid namespace, where pids are exact.
+_forks() { # dir mode(clean|recovered) -> forks one _nf_cache_dir call costs
+  local d=$1 m=$2
+  mkdir -p "$d/h/.claude" "$d/st"
+  if [[ $m == recovered ]]; then   # fail once, fix it, let a render report the recovery
+    ln -s "$d/nowhere" "$d/c"
+    ( export HOME="$d/h" NERDFLAIR_ERR_STAMP_DIR="$d/st" NERDFLAIR_CACHE_DIR="$d/c"; source "$REPO/scripts/lib.sh"; _nf_cache_dir ) >/dev/null 2>&1
+    rm -f "$d/c"; mkdir -m 700 "$d/c"
+    ( export HOME="$d/h" NERDFLAIR_ERR_STAMP_DIR="$d/st" NERDFLAIR_CACHE_DIR="$d/c"; source "$REPO/scripts/lib.sh"; _nf_cache_dir ) >/dev/null 2>&1
+  else mkdir -m 700 "$d/c"; fi
+  unshare -U --map-user="$(id -u)" -pf --mount-proc env -i PATH="$PATH" HOME="$d/h" NERDFLAIR_ERR_STAMP_DIR="$d/st" NERDFLAIR_CACHE_DIR="$d/c" \
+    bash -c 'source "$1/scripts/lib.sh"; a=$(echo $BASHPID); _nf_cache_dir; b=$(echo $BASHPID); echo $((b-a-1))' _ "$REPO" 2>/dev/null
+}
+_f_clean=$(_forks "$WORK/fk-clean" clean); _f_rec=$(_forks "$WORK/fk-rec" recovered)
+if [[ -z "$_f_clean" ]]; then printf '  SKIP  fork count (no user/pid namespaces here)\n'
+else check "lib.sh _nf_cache_dir: a healthy call after a recovered failure forks no more than a clean one" "$_f_clean" "$_f_rec"; fi
 
 echo
 echo "NOISE (must stay completely silent):"

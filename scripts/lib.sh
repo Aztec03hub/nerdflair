@@ -193,10 +193,18 @@ _nf_cache_dir() {
   else
     _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
     if (( 8#${_m} & 8#077 )); then
-      chmod 700 "$_d" 2>/dev/null
-      _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
-      if (( 8#${_m} & 8#077 )); then _why="mode allows group/other access and chmod 700 failed"
-      else _nf_err cache-dir-repaired "$_d had group/other access; tightened to 0700"
+      if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then
+        # An explicit override may name a directory the owner uses for other things (HOME, a
+        # project): never narrow it behind their back, say what to do.
+        _why="mode allows group/other access; run: chmod 700 $_d"
+      else
+        # The default location is ours alone. Re-test right before the chmod; bash has no
+        # fchmod, so a swap in that instant needs write access to our own parent directory.
+        [[ ! -L "$_d" && -O "$_d" ]] && chmod 700 "$_d" 2>/dev/null
+        _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
+        if (( 8#${_m} & 8#077 )); then _why="mode allows group/other access and chmod 700 failed"
+        else _nf_err cache-dir-repaired "$_d had group/other access; tightened to 0700"
+        fi
       fi
     fi
   fi
@@ -205,8 +213,12 @@ _nf_cache_dir() {
   else
     _NF_CDIR="$_d"
     # Healthy path: touch the stamp dir only if this key ever failed (no fork, no mkdir).
-    _x="${HOME:-}"
-    [[ -e "${NERDFLAIR_ERR_STAMP_DIR:-${_x%/}/.claude/.nerdflair-stamps}/nerdflair-err-${_NF_UID}-cache_dir" ]] && _nf_ok cache-dir
+    # Only while a failure is not yet reported as recovered: tests only, no fork, no disk.
+    # (_nf_ok keeps the failure stamp a week, so "stamp exists" alone would stay true.)
+    _x="${HOME:-}"; _x="${NERDFLAIR_ERR_STAMP_DIR:-${_x%/}/.claude/.nerdflair-stamps}/nerdflair-err-${_NF_UID}-"
+    if [[ -e "${_x}cache_dir" ]] && ! { [[ -e "${_x}recovered_cache_dir" ]] && [[ ! "${_x}cache_dir" -nt "${_x}recovered_cache_dir" ]]; }; then
+      _nf_ok cache-dir
+    fi
   fi
   return 0
 }
@@ -217,18 +229,11 @@ _nf_cache_path() { _nf_cache_dir; _NF_CP=""; [[ -n "$_NF_CDIR" ]] && _NF_CP="$_N
 _nf_cache_or_stamp() { _nf_cache_path "$1"; [[ -n "$_NF_CP" ]] && return 0; _nf_stamp "$2"; _NF_CP="$_NF_STAMP"; return 0; }
 # _nf_cache_put file data: write via a fresh noclobber temp file (mode 0600 whatever the
 # umask), then rename. A planted symlink at the leaf is replaced by the rename, never
-# written through. Leaves umask and noclobber as it found them.
+# written through. The umask and noclobber changes live in a subshell: nothing leaks.
 _nf_cache_put() {
-  local _t="$1.tmp.$$" _rc _nc=0
-  [[ -o noclobber ]] && _nc=1
-  [[ -n "${_NF_UM+x}" ]] || _NF_UM=$(umask)
+  local _t="$1.tmp.$$"
   rm -f "$_t" 2>/dev/null
-  umask 077; set -o noclobber
-  { printf '%s' "$2" > "$_t"; } 2>/dev/null
-  _rc=$?
-  (( _nc )) || set +o noclobber
-  umask "$_NF_UM"
-  (( _rc == 0 )) && mv -f "$_t" "$1" 2>/dev/null && return 0
+  ( umask 077; set -o noclobber; printf '%s' "$2" > "$_t" ) 2>/dev/null && mv -f "$_t" "$1" 2>/dev/null && return 0
   rm -f "$_t" 2>/dev/null
   return 1
 }

@@ -278,8 +278,13 @@ pub fn ok_if_stamped(key: &str) {
     };
     let mut slug = slugify(key);
     slug.truncate(100);
-    if dir.join(format!("nerdflair-err-{}-{}", uid(), slug)).exists() {
-        ok(key);
+    let fail = dir.join(format!("nerdflair-err-{}-{}", uid(), slug));
+    let rec = dir.join(format!("nerdflair-err-{}-{}", uid(), slugify(&format!("recovered-{}", key))));
+    let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified());
+    match (mtime(&fail), mtime(&rec)) {
+        (Ok(f), Ok(r)) if r >= f => {} // already reported as recovered: nothing to do
+        (Ok(_), _) => ok(key),
+        _ => {}
     }
 }
 

@@ -1734,6 +1734,7 @@ printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 # oldest first. One file per session_id, so the many concurrent Claude Code
 # sessions never contend; written temp-then-rename so a reader never tears.
 _SMP_KEEP=${NERDFLAIR_SAMPLES:-16}
+_SMP_NUM='(0|[1-9][0-9]{0,14})'   # canonical non-negative integer, no leading zero
 _smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
 _smp_hist=()
 _smp_file=""
@@ -1741,22 +1742,22 @@ if [[ -n "$session_id" ]]; then
   _nf_cache_path "nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"; _smp_file="$_NF_CP"   # empty: no cache dir, no history
   if [[ -n "$_smp_file" && -r "$_smp_file" ]]; then
     _smp_ln=0; _smp_bad=""
-    _n='[0-9]{1,15}'   # digits only: these words reach (( )) below, where a bare word is evaluated as a variable name
+    # canonical digits only (no leading zero: '08' is invalid octal in (( ))): these words reach (( )) below, where a bare word is evaluated as a variable name
     while IFS= read -r _sl || [[ -n "$_sl" ]]; do
       if (( _smp_ln == 0 )); then
         if [[ "$_sl" == v2\ * ]]; then
-          if [[ "${_sl#v2 }" =~ ^$_n$ ]]; then _smp_prev_rate="${_sl#v2 }"; else _smp_bad=1; fi
+          if [[ "${_sl#v2 }" =~ ^$_SMP_NUM$ ]]; then _smp_prev_rate="${_sl#v2 }"; else _smp_bad=1; fi
         else
           # v1: "api used10 epoch rate" on one line. Read it, then let it be
           # rewritten in v2 on this render.
-          if [[ "$_sl" =~ ^$_n\ $_n\ $_n\ $_n$ ]]; then
+          if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then
             IFS=' ' read -r _smp_v1_api _smp_v1_used10 _smp_v1_epoch _smp_prev_rate <<< "$_sl"
             _smp_hist+=("$_smp_v1_epoch $_smp_v1_used10 $_smp_v1_api")
           elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
           break
         fi
       else
-        if [[ "$_sl" =~ ^$_n\ $_n\ $_n$ ]]; then _smp_hist+=("$_sl")
+        if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then _smp_hist+=("$_sl")
         elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
       fi
       (( _smp_ln++ ))
@@ -2153,10 +2154,16 @@ fi
 # Only when something actually moved, so an idle pane re-rendering on the 30s
 # timer does not churn the disk or pollute the slope set with zero-delta pairs.
 if [[ -n "$_smp_file" ]]; then
+  # Never write a value the reader above refuses (fractional, negative, 16+ digits, leading
+  # zero): it would drop the whole history next render. Twin of main.rs (writes 0).
+  _smp_api_w=${total_api_ms:-0}; _smp_u_w=${_used10:-0}; _smp_r_w=${_rate_show:-0}
+  [[ "$_smp_api_w" =~ ^$_SMP_NUM$ ]] || _smp_api_w=0
+  [[ "$_smp_u_w" =~ ^$_SMP_NUM$ ]] || _smp_u_w=0
+  [[ "$_smp_r_w" =~ ^$_SMP_NUM$ ]] || _smp_r_w=0
   _smp_moved=0
   if (( ${#_smp_hist[@]} == 0 )); then
     _smp_moved=1
-  elif [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
+  elif [[ "${_smp_api_w} ${_smp_u_w}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
     _smp_moved=1
   fi
   if (( _smp_moved )); then
@@ -2165,11 +2172,11 @@ if [[ -n "$_smp_file" ]]; then
     if [[ -n "$_ctx_dropped" ]]; then
       _smp_hist=()
     fi
-    _smp_hist+=("${EPOCHSECONDS} ${_used10:-0} ${total_api_ms:-0}")
+    _smp_hist+=("${EPOCHSECONDS} ${_smp_u_w} ${_smp_api_w}")
     while (( ${#_smp_hist[@]} > _SMP_KEEP )); do
       _smp_hist=("${_smp_hist[@]:1}")
     done
-    printf -v _smp_body 'v2 %s\n' "${_rate_show:-0}"
+    printf -v _smp_body 'v2 %s\n' "$_smp_r_w"
     printf -v _smp_lines '%s\n' "${_smp_hist[@]}"
     _nf_cache_put "$_smp_file" "${_smp_body}${_smp_lines}" \
       && _nf_ok sample-write \

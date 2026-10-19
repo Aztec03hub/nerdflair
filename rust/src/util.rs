@@ -384,7 +384,7 @@ pub fn sort_fold(names: &mut [String]) {
 pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
         // var_os, not var: a non-UTF-8 path is still a path (var() would drop it and fall back silently)
         let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
         let fail = |dir: &std::path::Path, why: &str| {
@@ -430,7 +430,7 @@ pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
             }
         }
         unsafe { libc::umask(old) };
-        let mut m = match std::fs::symlink_metadata(&dir) {
+        let m = match std::fs::symlink_metadata(&dir) {
             Ok(m) => m,
             Err(_) => return fail(&dir, &format!("cannot create it: {}", mkerr.unwrap_or_else(|| "No such file or directory".into()))),
         };
@@ -441,13 +441,27 @@ pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
             return fail(&dir, "not owned by this user");
         }
         if m.mode() & 0o077 != 0 {
-            // Ours (not a symlink, so no path is redirected) but open to others: close it.
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-            m = match std::fs::symlink_metadata(&dir) {
-                Ok(m) => m,
-                Err(_) => return fail(&dir, "mode allows group/other access and chmod 700 failed"),
-            };
-            if m.mode() & 0o077 != 0 {
+            if std::env::var_os("NERDFLAIR_CACHE_DIR").map_or(false, |v| !v.is_empty()) {
+                // An explicit override may name a directory the owner uses for other things
+                // (HOME, a project): never narrow it behind their back, say what to do.
+                return fail(&dir, &format!("mode allows group/other access; run: chmod 700 {}", dir.display()));
+            }
+            // The default location is ours alone. fchmod an O_NOFOLLOW|O_DIRECTORY fd that is
+            // verified to be ours, so a path swapped after the check can never be chmod-ed.
+            let fixed = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+                .open(&dir)
+                .ok()
+                .and_then(|f| {
+                    let fm = f.metadata().ok()?;
+                    if !fm.is_dir() || fm.uid() != uid() {
+                        return None;
+                    }
+                    f.set_permissions(std::fs::Permissions::from_mode(0o700)).ok()?;
+                    f.metadata().ok()
+                });
+            if fixed.map_or(true, |fm| fm.mode() & 0o077 != 0) {
                 return fail(&dir, "mode allows group/other access and chmod 700 failed");
             }
             crate::errlog::note("cache-dir-repaired", &format!("{} had group/other access; tightened to 0700", dir.display()));
