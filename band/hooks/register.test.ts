@@ -302,3 +302,83 @@ test('a slow renderer that succeeds leaves a cache that is fresh when it returns
   await $.ui.render(BAND as never)
   expect(spawns).toBe(1)
 })
+
+const ABORTED = (cmd: string) => ({ deny: `HooksError: nerdflair-band: $.process.run(${cmd}) aborted` })
+
+test('two renders sharing one aborted refresh are both treated as superseded: no back-off for either', async ($, on) => {
+  let spawns = 0
+  const { w } = world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    return ++spawns === 1 ? ABORTED('/h/nerdflair-statusline') : result(0, GOOD)
+  })
+
+  await Promise.all([drawOrEngine($), drawOrEngine($)]) // one inflight refresh, aborted, awaited by both
+  const c = await drawOrEngine($) // same instant: a back-off stamped by either render would block this spawn
+
+  expect(spawns, 'the third render retried at once').toBe(2)
+  expect(c).toContain('myrepo main')
+  expect(w.logs.some(l => l.includes('refresh failed'))).toBe(false)
+})
+
+test('a renderer timeout whose message contains "aborted" is a timeout: reported and backed off, not retried as superseded', async ($, on) => {
+  let spawns = 0
+  const { w } = world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    spawns++
+    return { deny: 'HooksError: nerdflair-band: $.process.run(/h/nerdflair-statusline) aborted: still running after 5000ms' }
+  })
+
+  const a = await drawOrEngine($)
+  await drawOrEngine($)
+
+  expect(a).toContain('renderer timed out')
+  expect(spawns, 'backed off for 5 s').toBe(1)
+  expect(w.logs.filter(l => l.includes('renderer timed out')).length).toBe(1)
+})
+
+test('a message that says timed out and also ends in "aborted" is a timeout', async ($, on) => {
+  let spawns = 0
+  world(on, argv => {
+    if (argv[0] === 'printenv') return ok(argv)
+    spawns++
+    return { deny: 'spawn timed out: $.process.run(x) aborted' }
+  })
+  expect(await drawOrEngine($)).toContain('renderer timed out')
+  await drawOrEngine($)
+  expect(spawns, 'backed off').toBe(1)
+})
+
+test('ENOENT is tested before abort, even when the path contains "abort"', async ($, on) => {
+  world(on, argv => (argv[0] === 'printenv' ? ok(argv) : { deny: 'failed to start: ENOENT: $.process.run(/home/abort/x) aborted' }))
+  expect(await drawOrEngine($)).toContain('renderer not found')
+})
+
+test('a printenv timeout that mentions "aborted" is a failure, reported at once', async ($, on) => {
+  world(on, argv => (argv[0] === 'printenv' ? { deny: 'HooksError: x: $.process.run(printenv) aborted: still running after 2000ms' } : ok(argv)))
+  expect(await drawOrEngine($)).toContain('printenv HOME failed')
+})
+
+test('the abort report text is stable: logged once at the threshold across many renders, with a recovered note', async ($, on) => {
+  let spawns = 0
+  const { w } = world(on, argv => (argv[0] === 'printenv' ? ok(argv) : ++spawns <= 8 ? ABORTED('/h/r') : result(0, GOOD)))
+
+  for (let i = 0; i < 8; i++) await drawOrEngine($)
+  expect(w.logs.filter(l => l.includes('refresh aborted')).length, 'one line for 8 aborts').toBe(1)
+  expect(w.logs.find(l => l.includes('refresh aborted'))).toContain('5 renders in a row')
+
+  expect(await drawOrEngine($)).toContain('myrepo main')
+  expect(w.logs.some(l => l.includes('recovered after 8 aborted renders'))).toBe(true)
+})
+
+test('a real failure between aborts resets the streak, so non-consecutive aborts are not reported as a run', async ($, on) => {
+  const seq: unknown[] = []
+  const { w, clock } = world(on, argv => (argv[0] === 'printenv' ? ok(argv) : seq.shift()))
+  seq.push(...[1, 2, 3, 4].map(() => ABORTED('/h/r')), result(1, '', 'down'), ABORTED('/h/r'))
+
+  for (let i = 0; i < 4; i++) await drawOrEngine($)
+  await drawOrEngine($) // real failure (exit 1)
+  await clock.advance(6000) // past the 5 s back-off
+  await drawOrEngine($) // abort number 5 overall, but 1 since the failure
+
+  expect(w.logs.some(l => l.includes('refresh aborted'))).toBe(false)
+})
