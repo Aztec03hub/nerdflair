@@ -377,6 +377,17 @@ def t_nfpty():
         st.feed(b"\x1b]0;" + b"a" * 5000)
     expect_one("a >4096-byte 'sequence' is logged", seq_cap, "over 4096 bytes")
 
+    def highlight_degrade():
+        class Dead:
+            def capture(self, *a):
+                return None
+        wrote = []
+        h = nfpty.Highlight(lambda s, keep=False: wrote.append(s), Dead())
+        h.sync((2, 3, 4))
+        h.sync((2, 3, 4))
+        check("highlight: an unreadable shadow paints nothing", wrote == [] and h.cur is None, str(wrote))
+    expect_one("highlight: shadow cannot answer is logged once", highlight_degrade, "the readout is not highlighted")
+
 
 def main():
     t_rate()

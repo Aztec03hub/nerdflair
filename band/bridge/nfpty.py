@@ -293,6 +293,116 @@ class Layout:
         return None
 
 
+RESET = f"{ESC}[0m"
+# The band plugin's hover look (register.tsx: bold on LIT #1f2937): the same on the main status line.
+HL = f"{ESC}[1m{ESC}[48;2;31;41;55m"
+_TOK = re.compile(r"(\x1b\[[0-9;:]*m)|(\x1b\[[0-9;:?]*[@-~])|(.)", re.S)
+
+
+def cut(line, x, w, hl=""):
+    """Escapes that paint the cells [x, x+w) (1-based) of one `capture-pane -e`
+    line, keeping each cell's own colours and adding `hl` on top. Only the SGR
+    state is tracked, so the cells are repainted exactly as the engine had them
+    (hl="" restores). Cells past the end of a trimmed line are painted blank."""
+    state, col, used, out = "", 1, 0, []
+    for m in _TOK.finditer(line):
+        if used >= w:
+            break
+        sgr, other, ch = m.groups()
+        if sgr:
+            state = "" if sgr in (f"{ESC}[m", RESET) else state + sgr
+            if out:
+                out.append(sgr + hl)
+        elif ch is not None:
+            cw = mklayout.cells(ch)
+            if x <= col < x + w and used < w:
+                if not out:
+                    out.append(RESET + state + hl)
+                out.append(ch)
+                used += cw
+            col += cw
+    if not out:
+        out.append(RESET + state + hl)
+    out.append(" " * max(0, w - used))
+    return f"{ESC}[{{row}};{x}H" + "".join(out) + RESET
+
+
+class Highlight:
+    """The readout under an open card, painted like the band's own hover.
+
+    Painted from outside the engine (tty writes), with the cells read from the
+    shadow screen, which has the engine's true content and attributes and none
+    of our paint. It follows `sync(key)` where key is (row, x, w) of the readout
+    whose card is up, or None: one readout at a time, and None (or any other
+    key) puts the cells back from a fresh read, falling back to the copy taken
+    when the highlight went on so it can never be left stuck.
+    """
+
+    REFRESH = 0.1
+
+    def __init__(self, write, shadow, cursor=lambda: ""):
+        self.write, self.shadow, self.cursor = write, shadow, cursor
+        self.cur = None
+        self.plain = ""
+        self.last = 0.0
+
+    def _cells(self, key):
+        row, x, w = key
+        r = self.shadow.capture("-e", "-S", str(row - 1), "-E", str(row - 1)) if self.shadow is not None else None
+        if r is None:
+            return None
+        line = r.stdout.split("\n")[0]
+        return (cut(line, x, w, HL).replace("{row}", str(row), 1), cut(line, x, w).replace("{row}", str(row), 1))
+
+    def _paint(self, s, keep=False):
+        self.write(f"{ESC}[s{ESC}[?25l{s}{self.cursor()}{ESC}[u", keep=keep)
+
+    def on(self, key):
+        got = self._cells(key)
+        if got is None:
+            note_rate("highlight-degrade", "highlight: the shadow screen could not answer, so the readout is not "
+                                           "highlighted (its card still works)")
+            return
+        self.cur, self.plain, self.last = key, got[1], time.monotonic()
+        self._paint(got[0])
+
+    def off(self):
+        if self.cur is None:
+            return
+        got = self._cells(self.cur)
+        if got is None:
+            note_rate("highlight-restore", "highlight: the shadow screen could not answer at restore time; put back the "
+                                           "cells saved when the highlight went on (the readout may show an old value until it repaints)")
+            plain = self.plain
+        else:
+            plain = got[1]
+        self.cur = None
+        self._paint(plain, keep=True)
+
+    def sync(self, key):
+        if key == self.cur:
+            return
+        self.off()
+        if key is not None:
+            self.on(key)
+
+    def refresh(self):
+        """The engine repainted: put the highlight back over what it drew.
+        ponytail: a tmux read per 0.1 s while a card is up; a dirty-cell check if that ever shows."""
+        now = time.monotonic()
+        if self.cur is None or now - self.last < self.REFRESH:
+            return
+        got = self._cells(self.cur)
+        self.last = now
+        if got is not None:
+            self.plain = got[1]
+            self._paint(got[0])
+
+    def forget(self):
+        """Geometry changed: the engine repaints everything, so write nothing."""
+        self.cur = None
+
+
 CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
@@ -611,6 +721,41 @@ def selfcheck():
             "a covered status line must leave no hoverable regions"
     finally:
         mklayout.build_ex = real
+    # The highlight: cut() keeps each cell's own colours, adds the look on top, and the
+    # same cut without it restores exactly.
+    line = f"ab{ESC}[38;5;9mXY{ESC}[0m cd{ESC}[1;32mEF"
+    on, off = cut(line, 3, 2, HL), cut(line, 3, 2)
+    assert on == f"{ESC}[{{row}};3H{RESET}{ESC}[38;5;9m{HL}XY{RESET}", repr(on)
+    assert off == f"{ESC}[{{row}};3H{RESET}{ESC}[38;5;9mXY{RESET}", repr(off)
+    assert HL not in off
+    mid = cut(line, 4, 4, HL)       # an SGR inside the range gets the look re-applied after it
+    assert mid.count(HL) == 2, mid
+    assert f"{ESC}[1;32m{HL}EF" in cut(line, 8, 3, HL) or f"{ESC}[1;32m{HL}EF" in cut(line, 8, 2, HL), cut(line, 8, 2, HL)
+    assert cut("ab", 5, 3, HL).endswith("   " + RESET), "cells past a trimmed line are painted blank"
+
+    class FakeShadow:
+        def __init__(self, text):
+            self.text = text
+
+        def capture(self, *a):
+            return None if self.text is None else type("R", (), {"stdout": self.text})
+
+    wr = []
+    sh = FakeShadow(line)
+    h = Highlight(lambda s, keep=False: wr.append((s, keep)), sh)
+    h.sync((2, 3, 2))
+    assert h.cur == (2, 3, 2) and HL in wr[-1][0] and "XY" in wr[-1][0], wr
+    sh.text = None                    # the shadow dies while it is on: still taken down, from the saved copy
+    h.sync(None)
+    assert h.cur is None and HL not in wr[-1][0] and wr[-1][1] is True and "XY" in wr[-1][0], wr[-1]
+    n = len(wr)
+    h.sync((2, 3, 2))
+    assert h.cur is None and len(wr) == n, "an unreadable shadow degrades: nothing painted, nothing stuck"
+    sh.text = line
+    h.sync((2, 3, 2)); h.sync((2, 8, 3))        # A -> B: A is restored, then B painted
+    assert h.cur == (2, 8, 3) and HL not in wr[-2][0] and HL in wr[-1][0], wr[-2:]
+    h.forget()
+    assert h.cur is None
     print("nfpty ok")
 
 
@@ -765,6 +910,9 @@ def main():
     pane = os.environ.get("TMUX_PANE")
     panel = Panel(write, rows, cols, backdrop=Backdrop(pane, shadow), keeps=True)
     layout = Layout(pane, shadow)
+    hl = Highlight(write, shadow, lambda: panel._show_cursor())
+    shown_seg = [None]          # the readout the open card belongs to
+    hl_dirty = [False]          # the engine drew since the highlight was painted
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
     panel.backdrop.settled = lambda: not pending
     panel.warn = note_once
@@ -809,7 +957,10 @@ def main():
             panel.erase()         # a card left up with hover off would stay for ever
         finally:
             panel.reset()
-            flush_pending()
+            try:
+                hl.off()          # a highlight left on would be stuck for ever
+            finally:
+                flush_pending()
     guard = Guard(lambda: dbg, _drop_card)
     guarded = guard.run
 
@@ -856,6 +1007,8 @@ def main():
                     hide_at[0] = due
         else:
             hide_at[0] = None          # back on a readout
+            if hit["id"] == panel.shown:
+                shown_seg[0] = hit     # follows the readout when the line shifts
             if hit["id"] != panel.shown:
                 # Opening or switching: judge the readout on the screen as it is
                 # NOW (the cached layout may be MIN_INTERVAL old), and not at
@@ -870,6 +1023,7 @@ def main():
                 panel.show(hit["id"], hit["title"], hit["body"],
                            tuple(hit["rgb"]), hit["x"],
                            hit["row"])
+                shown_seg[0] = hit if panel.shown == hit["id"] else None
                 if panel.shown != hit["id"]:
                     retry[0] = (col, row, time.monotonic())   # deferred: try again once the queue drains
 
@@ -883,6 +1037,7 @@ def main():
                 if shadow is not None:
                     shadow.resize(rows, cols)
                 panel.reset()         # its rect and saved rows are in the old geometry
+                hl.forget()
 
             ready, _, _ = select.select([stdin_fd, master], [], [],
                                         select_timeout(panel.shown or panel.rect, hide_at[0], tail, pending, quit_sig[0]))
@@ -938,6 +1093,7 @@ def main():
                 # against the engine's own frame.
                 if panel.rect:
                     guarded("panel.redraw", panel.redraw)
+                hl_dirty[0] = hl.cur is not None
 
             if stdin_fd in ready:
                 try:
@@ -1015,6 +1171,14 @@ def main():
                 # no-op for it, which is why the old version left holes.
                 guarded("panel.erase", panel.erase)
 
+            def sync_hl():
+                seg = shown_seg[0] if panel.shown else None
+                hl.sync((seg["row"], seg["x"], seg["w"]) if seg else None)
+                if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
+                    hl_dirty[0] = False
+                    hl.refresh()
+            guarded("highlight", sync_hl)
+
             if now - last >= FRAME:
                 last = now
                 # The head moves every frame whatever else is going on, so a
@@ -1025,6 +1189,7 @@ def main():
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.
         try:
+            hl.off()              # EIO/EPIPE (terminal gone) is handled below, with the reset
             clean[0] = True
             flush_pending()
             out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
