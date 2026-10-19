@@ -40,7 +40,7 @@ Hover a readout on the status line and a small card floats over the screen, sayi
 
 `/nerdflair install` turns it on. It needs `python3` and **tmux**, and a new shell afterwards. A bare `claude` then starts under a small pty wrapper (`band/bridge/nfpty.py`) that watches the pointer on its way through and paints the card. To use it without the installer, run `band/hover/install.sh`; to remove it, `band/hover/install.sh uninstall`.
 
-While a card is open, its readout on the status line is painted in the same highlight the band's own readouts get on hover (bold on a dark slate background), and put back cell for cell when the card goes. It is read from the shadow screen and written to the terminal, nothing is injected. It follows the readout if the line shifts, goes with the card if a dialog covers the line, and without the shadow (`NFPTY_SHADOW=0`, or the shadow failing) there is no highlight, the card still works, and the reason is in `nfpty-error.log`.
+While a card is open, its readout on the status line is painted in the same highlight the band's own readouts get on hover (the readout's own card colour as the fill, dark bold text on it), and put back cell for cell when the card goes. It is read from the shadow screen and written to the terminal, nothing is injected. It follows the readout if the line shifts, goes with the card if a dialog covers the line, and without the shadow (`NFPTY_SHADOW=0`, or the shadow failing) there is no highlight, the card still works, and the reason is in `nfpty-error.log`.
 
 How it stays out of the way:
 

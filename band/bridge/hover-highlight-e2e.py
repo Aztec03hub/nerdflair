@@ -24,8 +24,9 @@ sys.path.insert(0, HERE)
 import mklayout  # noqa: E402
 
 ROW = 48
-HLBG = "2;31;41;55"        # the band's LIT background, as 48;<this>
-LITSEQ = "48;" + HLBG
+INK = "2;31;41;55"         # dark bold text on the lit cells: 38;<this>
+OLDBG = "2;31;41;55"       # the first attempt's fill: same colour as the terminal's background, invisible
+LITSEQ = "38;" + INK
 
 FAKE = r'''
 import os, signal, subprocess, sys, time
@@ -132,8 +133,16 @@ def cells(line):
     return out
 
 
-def lit(cs, i):
-    return ("bg", HLBG) in cs[i][1] and ("1", 1) in cs[i][1]
+def accent(text):
+    """The readout's own card accent, as the fill 48;<this> uses it."""
+    return "2;%d;%d;%d" % tuple(mklayout.classify(text)[2])
+
+
+def lit(cs, i, bg=None):
+    """Lit = dark bold ink; with `bg`, on exactly that accent fill. Never the old invisible fill."""
+    d = dict(cs[i][1])
+    return (d.get("fg") == INK and ("1", 1) in cs[i][1] and d.get("bg") != OLDBG
+            and (bg is None or d.get("bg") == bg))
 
 
 def lit_idx(cs):
@@ -159,20 +168,24 @@ def basic():
     try:
         base = r.row()
         segs = pieces_of(base)
-        check("stand-in drew its status line", len(segs) >= 2, str(segs))
-        for col, w, text in segs[:2]:
+        check("stand-in drew its status line", len(segs) >= 3, str(segs))
+        fills = []
+        for col, w, text in segs[:3]:
             r.hover(col + w // 2)
             during = r.row()
             check(f"{text!r}: card open", r.card())
             inside = set(range(col - 1, col - 1 + w))
-            check(f"{text!r}: its {w} cells carry the highlight, keep text and fg",
-                  all(lit(during, i) and during[i][0] == base[i][0]
-                      and dict(during[i][1]).get("fg") == dict(base[i][1]).get("fg") for i in inside),
+            bg = accent(text)
+            check(f"{text!r}: its {w} cells are 48;{bg} fill, 38;{INK} bold ink, text kept",
+                  all(lit(during, i, bg) and during[i][0] == base[i][0] for i in inside),
                   str([during[i] for i in sorted(inside)][:2]))
+            fills.append(bg)
             check(f"{text!r}: no other cell changed",
                   all(during[i] == base[i] for i in range(len(base)) if i not in inside))
             r.hover(3, 3, 0.8)
             check(f"{text!r}: restored cell for cell after leaving", r.row() == base)
+        check("readouts with different accents get different fills (folder/branch share one; the generic readout does not)", len(set(fills)) >= 2 and fills[0] != fills[2], str(fills))
+        check("the accent is not the invisible old fill", OLDBG not in fills)
         (ca, wa, _), (cb, wb, _) = segs[0], segs[1]
         r.hover(ca + wa // 2)
         r.hover(cb + wb // 2)

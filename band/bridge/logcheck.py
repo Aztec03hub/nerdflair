@@ -383,14 +383,14 @@ def t_nfpty():
                 return None
         wrote = []
         h = nfpty.Highlight(lambda s, keep=False: wrote.append(s), Dead())
-        h.sync((2, 3, 4))
-        h.sync((2, 3, 4))
+        h.sync((2, 3, 4, (1, 2, 3)))
+        h.sync((2, 3, 4, (1, 2, 3)))
         check("highlight: an unreadable shadow paints nothing", wrote == [] and h.cur is None, str(wrote))
     expect_one("highlight: shadow cannot answer is logged once", highlight_degrade, "the readout is not highlighted")
 
     def highlight_no_shadow():
         h = nfpty.Highlight(lambda s, keep=False: None, None)
-        h.sync((2, 3, 4))
+        h.sync((2, 3, 4, (1, 2, 3)))
     expect_silent("highlight: NFPTY_SHADOW=0 (no shadow) adds no log line, startup already said so", highlight_no_shadow)
 
     def highlight_refresh_fails():
@@ -404,7 +404,7 @@ def t_nfpty():
                 return type("R", (), {"stdout": "abc"}) if self.up else None
         sh = Flaky()
         h = nfpty.Highlight(lambda s, keep=False: None, sh)
-        h.sync((2, 1, 2))
+        h.sync((2, 1, 2, (1, 2, 3)))
         sh.up = False
         h.last = 0.0
         h.refresh()

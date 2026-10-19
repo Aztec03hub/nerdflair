@@ -294,8 +294,17 @@ class Layout:
 
 
 RESET = f"{ESC}[0m"
-# The band plugin's hover look (register.tsx: bold on LIT #1f2937): the same on the main status line.
-HL = f"{ESC}[1m{ESC}[48;2;31;41;55m"
+# The band's hover look as measured on screen: the readout's own accent (its card's border colour)
+# as the fill, dark bold text on it. (register.tsx's LIT #1f2937 is that text colour: as a fill it
+# is indistinguishable from the terminal background.)
+INK = "38;2;31;41;55"
+
+
+def hl_for(rgb):
+    return f"{ESC}[1m{ESC}[{INK}m{ESC}[48;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
+
+
+HL = hl_for((96, 165, 250))      # for tests: a sample accent
 _TOK = re.compile(r"(\x1b\[[0-9;:]*m)|(\x1b\[[0-9;:?]*[@-~])|(.)", re.S)
 
 
@@ -303,7 +312,8 @@ def cut(line, x, w, hl=""):
     """Escapes that paint the cells [x, x+w) (1-based) of one `capture-pane -e`
     line, keeping each cell's own colours and adding `hl` on top. Only the SGR
     state is tracked, so the cells are repainted exactly as the engine had them
-    (hl="" restores). Cells past the end of a trimmed line are painted blank.
+    (hl="" restores; a non-empty `hl` REPLACES each cell's own colours, so the dark text reads on the
+    fill). Cells past the end of a trimmed line are painted blank.
     A double-width character that touches either edge is included whole, so
     nothing is ever half-painted (the range then grows by up to a cell a side)."""
     state, col, start, out = "", 1, x, []
@@ -314,17 +324,17 @@ def cut(line, x, w, hl=""):
         if sgr:
             state = "" if sgr in (f"{ESC}[m", RESET) else state + sgr
             if out:
-                out.append(sgr + hl)
+                out.append(hl or sgr)
         elif ch is not None:
             cw = mklayout.cells(ch)
             if col + cw > x:
                 if not out:
                     start = col
-                    out.append(RESET + state + hl)
+                    out.append(RESET + (hl or state))
                 out.append(ch)
             col += cw
     if not out:
-        out.append(RESET + state + hl)
+        out.append(RESET + (hl or state))
         col = x
     out.append(" " * max(0, x + w - col))
     # ESC[s / ESC[u (in _paint) save the attributes as well as the cursor in tmux, where this
@@ -337,8 +347,8 @@ class Highlight:
 
     Painted from outside the engine (tty writes), with the cells read from the
     shadow screen, which has the engine's true content and attributes and none
-    of our paint. It follows `sync(key)` where key is (row, x, w) of the readout
-    whose card is up, or None: one readout at a time, and None (or any other
+    of our paint. It follows `sync(key)` where key is (row, x, w, rgb) of the readout
+    whose card is up plus its accent rgb, or None: one readout at a time, and None (or any other
     key) puts the cells back from a fresh read, falling back to the copy taken
     when the highlight went on so it can never be left stuck.
 
@@ -358,12 +368,13 @@ class Highlight:
         self.retry_at = 0.0     # after a failed on(): no new attempt before this
 
     def _cells(self, key):
-        row, x, w = key
+        row, x, w, rgb = key
+        hl = hl_for(rgb)
         r = self.shadow.capture("-e", "-S", str(row - 1), "-E", str(row - 1)) if self.shadow is not None else None
         if r is None:
             return None
         line = r.stdout.split("\n")[0]
-        return (cut(line, x, w, HL).replace("{row}", str(row), 1), cut(line, x, w).replace("{row}", str(row), 1))
+        return (cut(line, x, w, hl).replace("{row}", str(row), 1), cut(line, x, w).replace("{row}", str(row), 1))
 
     def _paint(self, s, keep=False):
         self.write(f"{ESC}[s{ESC}[?25l{s}{self.cursor()}{ESC}[u", keep=keep)
@@ -747,12 +758,16 @@ def selfcheck():
     # same cut without it restores exactly.
     line = f"ab{ESC}[38;5;9mXY{ESC}[0m cd{ESC}[1;32mEF"
     on, off = cut(line, 3, 2, HL), cut(line, 3, 2)
-    assert on == f"{ESC}[{{row}};3H{RESET}{ESC}[38;5;9m{HL}XY{RESET}", repr(on)
+    assert on == f"{ESC}[{{row}};3H{RESET}{HL}XY{RESET}", repr(on)       # the cell's own fg (38;5;9) is dropped
     assert off == f"{ESC}[{{row}};3H{RESET}{ESC}[38;5;9mXY{RESET}", repr(off)
     assert HL not in off
     mid = cut(line, 4, 4, HL)       # an SGR inside the range gets the look re-applied after it
     assert mid.count(HL) == 2, mid
-    assert f"{ESC}[1;32m{HL}EF" in cut(line, 8, 3, HL) or f"{ESC}[1;32m{HL}EF" in cut(line, 8, 2, HL), cut(line, 8, 2, HL)
+    assert "1;32" not in cut(line, 8, 3, HL) and "38;5;9" not in on and "1;32" in cut(line, 8, 3), "highlight drops the cell's fg; restore keeps it"
+    assert "48;2;96;165;250" in HL and "38;2;31;41;55" in HL and f"{ESC}[1m" in HL, "fill is the accent, ink is dark, bold"
+    assert "48;2;31;41;55" not in hl_for((96, 165, 250)), "the old fill (same colour as the terminal's background) is gone"
+    RGB, RGB2 = (96, 165, 250), (244, 114, 182)
+    assert hl_for(RGB) != hl_for(RGB2)
     assert cut("ab", 5, 3, HL).endswith("   " + RESET), "cells past a trimmed line are painted blank"
 
     class FakeShadow:
@@ -765,20 +780,20 @@ def selfcheck():
     wr = []
     sh = FakeShadow(line)
     h = Highlight(lambda s, keep=False: wr.append((s, keep)), sh)
-    h.sync((2, 3, 2))
-    assert h.cur == (2, 3, 2) and HL in wr[-1][0] and "XY" in wr[-1][0], wr
+    h.sync((2, 3, 2, RGB))
+    assert h.cur == (2, 3, 2, RGB) and HL in wr[-1][0] and "XY" in wr[-1][0], wr
     sh.text = None                    # the shadow dies while it is on: still taken down, from the saved copy
     h.sync(None)
     assert h.cur is None and HL not in wr[-1][0] and wr[-1][1] is True and "XY" in wr[-1][0], wr[-1]
     n = len(wr)
-    h.sync((2, 3, 2))
+    h.sync((2, 3, 2, RGB))
     assert h.cur is None and len(wr) == n, "an unreadable shadow degrades: nothing painted, nothing stuck"
-    h.sync((2, 3, 2))
+    h.sync((2, 3, 2, RGB))
     assert h.cur is None and len(wr) == n, "after a failed on(), no retry inside the backoff"
     sh.text = line
     h.retry_at = 0.0
-    h.sync((2, 3, 2)); h.sync((2, 8, 3))        # A -> B: A is restored, then B painted
-    assert h.cur == (2, 8, 3) and HL not in wr[-2][0] and HL in wr[-1][0], wr[-2:]
+    h.sync((2, 3, 2, RGB)); h.sync((2, 8, 3, RGB2))        # A -> B: A is restored, then B painted
+    assert h.cur == (2, 8, 3, RGB2) and HL not in wr[-2][0] and hl_for(RGB2) in wr[-1][0] and HL not in wr[-1][0], wr[-2:]
     h.forget()
     assert h.cur is None
     # Wide characters at the range edges are included whole, never half-painted.
@@ -1222,7 +1237,7 @@ def main():
                     note_once("highlight-card-over-row", "highlight: the card covers its own readout's row "
                                                          "(terminal too small); not highlighting")
                     seg = None
-                hl.sync((seg["row"], seg["x"], seg["w"]) if seg else None)
+                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None)
                 if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
                     hl_dirty[0] = False
                     hl.refresh()
