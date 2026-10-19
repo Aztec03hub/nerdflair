@@ -356,6 +356,12 @@ def t_nfpty():
     guard_cleanup_fails()
     check("guard: a failing cleanup is logged too", any("cleanup" in ln for ln in lines()), str(lines()))
 
+    def guard_terminal_gone():
+        g = nfpty.Guard(lambda: None, lambda: None)
+        g.run("paint", lambda: (_ for _ in ()).throw(OSError(errno.EIO, "Input/output error")))
+        check("guard: EIO (terminal hung up) turns decoration off", g.ok is False)
+    expect_silent("guard: EIO from a write is the terminal going away, not a bug to log", guard_terminal_gone)
+
     def kill_esrch():
         undo = stub(os, "kill", lambda p, s: (_ for _ in ()).throw(ProcessLookupError()))
         try:

@@ -192,10 +192,19 @@ def _split_keep(s, pat):
 
 def band_drift(tsx):
     """Ids on both sides (this table and the band's CARDS in register.tsx) whose colours differ.
-    The highlight and the card border use this table, the band uses its own: they must agree."""
+    The highlight and the card border use this table, the band uses its own: they must agree.
+    Fails LOUD (AssertionError with the reason) if the table cannot be read in full, so a format
+    change in register.tsx cannot turn this into a guard that checks nothing."""
+    m = re.search(r"^const CARDS\b.*?^\}", tsx, re.M | re.S)
+    assert m, "drift guard: no `const CARDS ... }` table found in register.tsx"
+    heads = list(re.finditer(r"^  (\w+): \{", m.group(0), re.M))
+    assert heads, "drift guard: the CARDS table in register.tsx has no entries"
     band = {}
-    for m in re.finditer(r"^  (\w+): \{\s*title: '[^']*',\s*color: '(#[0-9a-fA-F]{6})'", tsx, re.M):
-        band[m.group(1)] = m.group(2).lower()
+    for k, h in enumerate(heads):
+        end = heads[k + 1].start() if k + 1 < len(heads) else len(m.group(0))
+        c = re.search(r"\bcolor:\s*(['\"])(#[0-9a-fA-F]{6})\1", m.group(0)[h.end():end])
+        assert c, f"drift guard: could not read the colour of CARDS entry {h.group(1)!r} in register.tsx"
+        band[h.group(1)] = c.group(2).lower()
     ours = {c[0]: "#%02x%02x%02x" % tuple(c[3]) for c in CARDS}
     return sorted(f"{i}: band {band[i]} vs ours {ours[i]}" for i in band if i in ours and band[i] != ours[i])
 
@@ -244,10 +253,22 @@ def selfcheck():
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "..", "hooks", "register.tsx"), encoding="utf-8") as f:
         tsx = f.read()
-    assert re.search(r"^  folder: \{", tsx, re.M), "drift guard parsed nothing from register.tsx"
     assert band_drift(tsx) == [], band_drift(tsx)
     assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
     assert classify("\uf094 $1.20")[0] == "block", "the billing block has a card"
+    # The guard itself: it reads either quote style and key order, and fails loud on a short parse.
+    ours_folder = "#%02x%02x%02x" % tuple(next(c[3] for c in CARDS if c[0] == "folder"))
+    mini = lambda body: "const CARDS = {\n" + body + "\n}\n"  # noqa: E731
+    assert band_drift(mini(f'  folder: {{\n    color: "{ours_folder}",\n    title: "F",\n  }},')) == [], "double quotes, color first"
+    assert band_drift(mini("  folder: { title: 'F', color: '#000000' },")) == [f"folder: band #000000 vs ours {ours_folder}"]
+    for bad, why in ((mini(""), "no entries"), ("nothing here", "no table"),
+                     (mini("  folder: { title: 'F', color: '#000000' },\n  model: { title: 'M', color: someVar },"), "unreadable colour")):
+        try:
+            band_drift(bad)
+        except AssertionError as e:
+            assert "drift guard" in str(e), e
+        else:
+            raise AssertionError(f"band_drift must fail loud on: {why}")
     print("mklayout ok")
 
 

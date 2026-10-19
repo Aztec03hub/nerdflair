@@ -38,13 +38,16 @@ def mode():
         return open(flag).read().strip() or "status"
     except OSError:
         return "status"
-def status(pad, clear="\033[2J"):
-    sys.stdout.write(clear + "\033[48;1H  " + G + " nerdflair" + pad + " \033[0m· \033[38;2;200;100;50m\U000f062c main\033[0m · \033[38;5;33;3mx y\033[0m")
+TAIL = " \033[0m· \033[38;2;200;100;50m\U000f062c main\033[0m · \033[38;5;33;3mx y\033[0m"
+def status(pad, clear="\033[2J", tail=TAIL):
+    sys.stdout.write(clear + "\033[48;1H  " + G + " nerdflair" + pad + tail)
 def dialog():
     sys.stdout.write("\033[2J\033[44;1H Bash command - from the general-purpose agent\033[45;1H Do you want to proceed?\033[48;1H" + " " * 80)
 def draw():
     m = mode()
-    {"dialog": dialog, "shift": lambda: status("XXXXXX")}.get(m, lambda: status(""))()
+    DUP = " \033[0m· q one · q one"
+    {"dialog": dialog, "shift": lambda: status("XXXXXX"), "dup": lambda: status("", tail=DUP),
+     "dupshift": lambda: status("XXXXXX", tail=DUP)}.get(m, lambda: status(""))()
     sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
     return m
 signal.signal(signal.SIGWINCH, lambda *_: draw())
@@ -52,6 +55,11 @@ shown = draw()
 while True:
     if mode() != shown:
         shown = draw()
+    elif shown == "exit":
+        subprocess.Popen(["sleep", "30"])      # a descendant keeps the pty slave open: no EIO, the waitpid path
+        sys.exit(0)
+    elif shown == "tickother":         # a spinner on another row only
+        sys.stdout.write("\033[10;1H" + "|/-\\"[int(time.time() * 10) % 4]); sys.stdout.flush()
     elif shown == "tick":              # a ticking band: the same line again every ~0.1 s
         status("", clear=""); sys.stdout.flush()
     time.sleep(0.1)
@@ -256,6 +264,42 @@ def shift_generic():
         r.close()
 
 
+def dup_text():
+    print("two id-less readouts with the same text: the nearest one is followed")
+    r = Run("dup")
+    try:
+        r.mode("dup")
+        time.sleep(1.2)
+        segs = pieces_of(r.row())
+        same = [p for p in segs if p[2] == "q one"]
+        check("two equal-text readouts drawn", len(same) == 2, str(segs))
+        col, w, _ = same[1]
+        r.hover(col + w // 2)
+        r.mode("dupshift")
+        time.sleep(1.5)
+        now = r.row()
+        same = [p for p in pieces_of(now) if p[2] == "q one"]
+        ncol, nw, _ = same[1]
+        check("highlight stays on the SECOND readout after the shift", lit_idx(now) == list(range(ncol - 1, ncol - 1 + nw)),
+              f"{lit_idx(now)} want {ncol - 1}..{ncol - 2 + nw}")
+    finally:
+        r.close()
+
+
+def exit_path():
+    print("the engine exits but a descendant holds the pty (the waitpid path): no highlight left")
+    r = Run("exitp")
+    try:
+        col, w, _ = pieces_of(r.row())[1]
+        r.hover(col + w // 2)
+        check("highlight on", bool(lit_idx(r.row())))
+        r.mode("exit")
+        time.sleep(2.5)
+        check("no lit cell after the wrapper exited", not r.screen_has_lit())
+    finally:
+        r.close()
+
+
 def shift():
     print("status line shifts while the pointer rests")
     r = Run("shift")
@@ -343,7 +387,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, dialog_ticking, shift, shift_generic, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)

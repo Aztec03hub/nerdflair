@@ -342,6 +342,16 @@ def cut(line, x, w, hl=""):
     return f"{ESC}[{{row}};{start}H" + "".join(out) + RESET
 
 
+def touches_row(data, row):
+    """Could this engine chunk have changed screen row `row`? A cursor move to it, a clear, a scroll or a
+    newline can; a spinner redrawn on another row cannot. Gates the re-read of the layout and the repaint after an engine draw, so a
+    spinner on another row costs nothing.
+    ponytail: relative cursor moves onto the row are not recognised, which then costs at most a
+    MIN_INTERVAL-stale read; track the cursor row if an engine ever does that."""
+    return (f"\x1b[{row};".encode() in data or b"\x1b[2J" in data or b"\x1b[J" in data or b"\x1b[3J" in data
+            or b"\n" in data or b"\x1bM" in data or bool(re.search(rb"\x1b\[\d*[ST]", data)))
+
+
 class Highlight:
     """The readout under an open card, painted like the band's own hover.
 
@@ -418,7 +428,9 @@ class Highlight:
         """The engine repainted: put the highlight back over what it drew.
         ponytail: any engine output while a card is up costs a tmux read per REFRESH, and the
         highlight is off between the engine's write and that repaint (up to REFRESH, a blink).
-        Both are bounded to card-open time; filter on the chunk touching the row if it shows."""
+        Bounded to card-open time and to engine writes that touch the highlighted row (touches_row):
+        measured 2026-10-19, an engine rewriting that row every 0.1 s costs ~29 tmux spawns/s, a spinner on
+        another row 0, no card 0."""
         now = time.monotonic()
         if self.cur is None or now - self.last < self.REFRESH:
             return
@@ -796,6 +808,8 @@ def selfcheck():
     assert h.cur == (2, 8, 3, RGB2) and HL not in wr[-2][0] and hl_for(RGB2) in wr[-1][0] and HL not in wr[-1][0], wr[-2:]
     h.forget()
     assert h.cur is None
+    assert touches_row(b"x\x1b[48;3Hhi", 48) and not touches_row(b"\x1b[10;3Hspin", 48), "only the row's own writes count"
+    assert touches_row(b"\x1b[2J", 48) and touches_row(b"a\r\nb", 48) and not touches_row(b"abc", 48)
     # Wide characters at the range edges are included whole, never half-painted.
     wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
     assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
@@ -845,13 +859,21 @@ class Guard:
             return
         try:
             fn(*args)
+        except OSError as e:
+            if e.errno not in (errno.EIO, errno.EPIPE):
+                self._fail(what, e)
+            else:
+                self.ok = False       # the terminal hung up (window closed): the normal end, the main loop sees it too
+        except Exception as e:
+            self._fail(what, e)
+
+    def _fail(self, what, _e):
+        self.ok = False
+        degrade(what, self.get_dbg())          # called from inside the except: the traceback is the live one
+        try:
+            self.cleanup()
         except Exception:
-            self.ok = False
-            degrade(what, self.get_dbg())
-            try:
-                self.cleanup()
-            except Exception:
-                degrade(f"{what} cleanup (a card may be left painted)", self.get_dbg())
+            degrade(f"{what} cleanup (a card may be left painted)", self.get_dbg())
 
 
 def main():
@@ -961,7 +983,15 @@ def main():
     layout = Layout(pane, shadow)
     hl = Highlight(write, shadow, lambda: panel._show_cursor())
     shown_seg = [None]          # the readout the open card belongs to
-    hl_dirty = [False]          # the engine drew since the highlight was painted
+    shown_ord = [0]             # for an id-less readout: which of the equal-text ones on the line it is
+
+    def note_shown(seg):
+        shown_seg[0] = seg
+        if seg is not None:
+            same = sorted((t for t in layout.segs if t["id"].startswith("row") and t["body"][0] == seg["body"][0]),
+                          key=lambda t: (t["row"], t["x"]))
+            shown_ord[0] = same.index(seg) if seg in same else 0
+    hl_dirty = [False]          # the engine may have drawn on the highlighted row since it was painted (touches_row)
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
     panel.backdrop.settled = lambda: not pending
     panel.warn = note_once
@@ -1057,7 +1087,7 @@ def main():
         else:
             hide_at[0] = None          # back on a readout
             if hit["id"] == panel.shown:
-                shown_seg[0] = hit     # follows the readout when the line shifts
+                note_shown(hit)        # follows the readout when the line shifts
             if hit["id"] != panel.shown:
                 # Opening or switching: judge the readout on the screen as it is
                 # NOW (the cached layout may be MIN_INTERVAL old), and not at
@@ -1072,7 +1102,7 @@ def main():
                 panel.show(hit["id"], hit["title"], hit["body"],
                            tuple(hit["rgb"]), hit["x"],
                            hit["row"])
-                shown_seg[0] = hit if panel.shown == hit["id"] else None
+                note_shown(hit if panel.shown == hit["id"] else None)
                 if panel.shown != hit["id"]:
                     retry[0] = (col, row, time.monotonic())   # deferred: try again once the queue drains
 
@@ -1142,7 +1172,8 @@ def main():
                 # against the engine's own frame.
                 if panel.rect:
                     guarded("panel.redraw", panel.redraw)
-                hl_dirty[0] = hl.cur is not None
+                if hl.cur is not None and touches_row(data, hl.cur[0]):
+                    hl_dirty[0] = True
 
             if stdin_fd in ready:
                 try:
@@ -1230,8 +1261,11 @@ def main():
                     cur_seg = next((s for s in layout.segs if s["id"] == panel.shown), None)
                     if cur_seg is None and panel.shown.startswith("row") and shown_seg[0]:
                         # a readout without a card id is known by its text, so it is followed when it shifts
-                        cur_seg = next((s for s in layout.segs if s["id"].startswith("row")
-                                        and s["body"][0] == shown_seg[0]["body"][0]), None)
+                        same = [s for s in layout.segs if s["id"].startswith("row")
+                                and s["body"][0] == shown_seg[0]["body"][0]]
+                        # equal texts: the same one in line order, so a duplicate is not mistaken for its twin
+                        same.sort(key=lambda t: (t["row"], t["x"]))
+                        cur_seg = same[min(shown_ord[0], len(same) - 1)] if same else None
                         if cur_seg is not None:
                             if pending or not clean[0]:
                                 return                 # the card cannot be moved while our writes are queued: next pass
@@ -1239,17 +1273,15 @@ def main():
                                        cur_seg["x"], cur_seg["row"])
                     if cur_seg is None:
                         hide_at[0] = now          # gone: the card goes with it, through the normal erase
-                        shown_seg[0] = None
+                        note_shown(None)
                     else:
-                        shown_seg[0] = cur_seg
+                        note_shown(cur_seg)
                 seg = shown_seg[0] if panel.shown else None
                 if seg and panel.rect and panel.rect[1] <= seg["row"] < panel.rect[1] + panel.rect[3]:
                     note_once("highlight-card-over-row", "highlight: the card covers its own readout's row "
                                                          "(terminal too small); not highlighting")
                     seg = None
-                # "accent": a per-readout override of the card colour (set by whoever knows better, e.g. the
-                # Remote Control chip, whose colour follows its state)
-                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg.get("accent") or seg["rgb"])) if seg else None)
+                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None)
                 if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
                     hl_dirty[0] = False
                     hl.refresh()
