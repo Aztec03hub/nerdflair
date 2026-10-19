@@ -15,13 +15,14 @@
 #     (NF_LOG_NOSTAMP=1 turns the stamp off: install.sh, where a person is waiting);
 #   - capped at 1 MB with one rotated generation;
 #   - it can never fail or block the caller: every step is guarded and it returns 0,
-#     and it sets no shell options, so it is safe under set -e and set -u.
+#     and it sets no shell options and no statement in it can return non-zero, so it is safe under set -e
+#     and set -u (tests/log-sanitizers.sh runs it under set -eu).
 _NF_SEEN=""
 # _nf_log_sanitize text: sets _NF_LOGS to text with every terminal-active control replaced by a space.
 # Byte-wise (LC_ALL=C), twin of errlog::clean: C0 and DEL, the 2-byte form of a C1 control
 # (U+0080..U+009F), and, only in text that is NOT valid UTF-8, any raw 0x80..0x9f byte outside a
 # valid character. Valid UTF-8 (smart quotes, CJK, Cyrillic: their continuation bytes lie in
-# 0x80..0x9f) is kept whole. No fork on ASCII text; iconv runs only when such a byte is present.
+# 0x80..0x9f) is kept whole. No fork at all (pure bash).
 _nf_log_sanitize() {
   local _s="$1" LC_ALL=C _o _i _n _c _w
   local _u2=$'[\xc2-\xdf][\x80-\xbf]'
@@ -29,17 +30,19 @@ _nf_log_sanitize() {
   local _u4=$'(\xf0[\x90-\xbf]|[\xf1-\xf3][\x80-\xbf]|\xf4[\x80-\x8f])[\x80-\xbf][\x80-\xbf]'
   _s="${_s//[[:cntrl:]]/ }"
   _s="${_s//$'\xc2'[$'\x80'-$'\x9f']/ }"
-  if [[ "$_s" == *[$'\x80'-$'\x9f']* ]] \
-     && ! { command -v iconv >/dev/null 2>&1 && printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }; then
+  # Only a raw 0x80..0x9f byte can need replacing, and whether it is a continuation byte of a
+  # valid character is decided by the loop below with Rust's exact rules (no iconv: glibc accepts
+  # sequences above U+10FFFF that Rust rejects). ASCII and 0x80..0x9f-free text never reaches it.
+  if [[ "$_s" == *[$'\x80'-$'\x9f']* ]]; then
     _o=""; _i=0; _n=${#_s}
     while (( _i < _n )); do
       _c="${_s:_i:1}"
       if [[ "$_c" == [$'\x80'-$'\xff'] ]]; then
         _w="${_s:_i:4}"
-        if [[ "$_w" =~ ^($_u4|$_u3|$_u2) ]]; then _o+="${BASH_REMATCH[0]}"; (( _i += ${#BASH_REMATCH[0]} )); continue; fi
+        if [[ "$_w" =~ ^($_u4|$_u3|$_u2) ]]; then _o+="${BASH_REMATCH[0]}"; _i=$((_i + ${#BASH_REMATCH[0]})); continue; fi
         [[ "$_c" == [$'\x80'-$'\x9f'] ]] && _c=" "
       fi
-      _o+="$_c"; (( _i++ ))
+      _o+="$_c"; _i=$((_i + 1))
     done
     _s="$_o"
   fi

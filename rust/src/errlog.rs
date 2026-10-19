@@ -207,20 +207,26 @@ fn clean(reason: &[u8]) -> Vec<u8> {
     v
 }
 
+/// `clean`, then cut to MAX_REASON bytes at a character boundary (never a partial sequence
+/// before the "..."). What a log line's reason is, byte for byte; lib.sh `_nf_log_line` is its twin.
+pub(crate) fn sanitize_reason(reason: &[u8]) -> Vec<u8> {
+    let mut v = clean(reason);
+    if v.len() > MAX_REASON {
+        let mut cut = MAX_REASON;
+        while cut > 0 && (0x80..=0xbf).contains(&v[cut]) {
+            cut -= 1;
+        }
+        v.truncate(cut);
+        v.extend_from_slice(b"...");
+    }
+    v
+}
+
 /// `emit` for a reason that may hold a non-UTF-8 path: the bytes reach the log untouched
 /// (as the bash twin writes them), only control characters become spaces. The key is filtered
 /// the same way, so a future key built from user text cannot bypass it.
 fn emit_bytes(key: &str, reason: &[u8]) -> bool {
-    let mut clean_reason = clean(reason);
-    if clean_reason.len() > MAX_REASON {
-        // cut at a character boundary: never leave a partial sequence before the "..."
-        let mut cut = MAX_REASON;
-        while cut > 0 && (0x80..=0xbf).contains(&clean_reason[cut]) {
-            cut -= 1;
-        }
-        clean_reason.truncate(cut);
-        clean_reason.extend_from_slice(b"...");
-    }
+    let clean_reason = sanitize_reason(reason);
     // One pre-built buffer, one write on an O_APPEND fd, so concurrent
     // renderers cannot interleave inside a line.
     let mut line = format!("{} {} ", iso_now(), std::process::id()).into_bytes();
@@ -372,4 +378,21 @@ pub fn install_panic_hook() {
             .unwrap_or_else(|| "unknown".into());
         note("panic", &format!("{} at {}", msg, loc));
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    /// Feeds tests/log-sanitizers.sh: with NF_SAN_IN (lines of hex) and NF_SAN_OUT set it writes
+    /// the sanitized reason, as hex, per line; without them it does nothing.
+    #[test]
+    fn sanitizer_table() {
+        let (Some(i), Some(o)) = (std::env::var_os("NF_SAN_IN"), std::env::var_os("NF_SAN_OUT")) else { return };
+        let unhex = |s: &str| (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let out: String = std::fs::read_to_string(i)
+            .unwrap()
+            .lines()
+            .map(|l| super::sanitize_reason(&unhex(l)).iter().map(|b| format!("{:02x}", b)).collect::<String>() + "\n")
+            .collect();
+        std::fs::write(o, out).unwrap();
+    }
 }

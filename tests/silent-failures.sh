@@ -656,7 +656,17 @@ if [[ -z "$_f_clean" ]]; then
 else check "lib.sh _nf_cache_dir: a healthy call after a recovered failure forks no more than a clean one" "$_f_clean" "$_f_rec"; fi
 
 # The Rust unit tests (util::tests, the chmod fallback) run here, because this script already needs the build.
-check "cargo test --release: the Rust unit tests pass" ok "$(cargo test --release --manifest-path "$REPO/rust/Cargo.toml" >"$WORK/cargo-test.out" 2>&1 && echo ok || { tail -n 5 "$WORK/cargo-test.out" >&2; echo fail; })"
+SKIPS=${SKIPS:-0}
+if command -v cargo >/dev/null; then
+  check "cargo test --release: the Rust unit tests pass" ok "$(cargo test --release --manifest-path "$REPO/rust/Cargo.toml" >"$WORK/cargo-test.out" 2>&1 && echo ok || { tail -n 5 "$WORK/cargo-test.out" >&2; echo fail; })"
+  bash "$REPO/tests/log-sanitizers.sh" >"$WORK/sanitizers.out" 2>&1; _san=$?
+  if (( _san == 0 )); then printf '  PASS  log-sanitizers.sh: the five filter copies agree on every case\n'
+  else printf '  FAIL  log-sanitizers.sh (rc %s)\n' "$_san"; rg '^  FAIL|log-sanitizers:' "$WORK/sanitizers.out" | head -n 12 | sed 's/^/        /'; fail=1; fi
+elif [[ "${NF_ALLOW_SKIP_CARGO:-0}" == 1 ]]; then
+  printf '  SKIP  cargo test and log-sanitizers (cargo not found; NF_ALLOW_SKIP_CARGO=1)\n'; SKIPS=$((SKIPS + 1))
+else
+  printf '  FAIL  cargo not found: the Rust unit tests cannot run (set NF_ALLOW_SKIP_CARGO=1 to skip them on purpose)\n'; fail=1
+fi
 
 echo
 echo "NOISE (must stay completely silent):"
