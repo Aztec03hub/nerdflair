@@ -33,7 +33,7 @@ def tmux(*a):
 
 def main():
     out = sys.argv[1]
-    exe = sys.argv[2] if len(sys.argv) > 2 else "wezterm"
+    exe = sys.argv[2] if len(sys.argv) > 2 else "wezterm-gui"
     os.makedirs(out, exist_ok=True)
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
