@@ -40,13 +40,25 @@ pub fn log_path() -> PathBuf {
 /// on first use. None when it cannot be made safe: the caller then rate limits
 /// in memory only (once per process) instead of trusting a hostile directory.
 /// NERDFLAIR_ERR_STAMP_DIR overrides it (tests; trusted).
+/// The default stamp directory, as a path only (nothing created or checked).
+fn stamp_dir_path() -> Option<PathBuf> {
+    Some(log_path().parent()?.join(".nerdflair-stamps"))
+}
+
+/// File name of a key's stamp (shared by stamp_path and ok_if_stamped).
+fn stamp_name(key: &str) -> String {
+    let mut slug = slugify(key);
+    slug.truncate(100); // slugify output is ASCII
+    format!("nerdflair-err-{}-{}", uid(), slug)
+}
+
 fn stamp_dir() -> Option<&'static PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        if let Some(d) = std::env::var("NERDFLAIR_ERR_STAMP_DIR").ok().filter(|d| !d.is_empty()) {
+        if let Some(d) = std::env::var_os("NERDFLAIR_ERR_STAMP_DIR").filter(|d| !d.is_empty()) {
             return Some(PathBuf::from(d));
         }
-        let dir = log_path().parent()?.join(".nerdflair-stamps");
+        let dir = stamp_dir_path()?;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
         let m = match std::fs::symlink_metadata(&dir) {
@@ -90,9 +102,7 @@ fn stamp_dir_bad(dir: &std::path::Path, why: &str) {
 }
 
 pub fn stamp_path(key: &str) -> Option<PathBuf> {
-    let mut slug = slugify(key);
-    slug.truncate(100); // slugify output is ASCII
-    Some(stamp_dir()?.join(format!("nerdflair-err-{}-{}", uid(), slug)))
+    Some(stamp_dir()?.join(stamp_name(key)))
 }
 
 /// Key for a failed write to a /tmp cache or stamp file: the file name is part
@@ -269,22 +279,19 @@ pub fn ok(key: &str) {
 /// `ok(key)` for a hot path: does nothing (and creates nothing) unless the key's failure
 /// stamp already exists, so a healthy render never touches the stamp directory.
 pub fn ok_if_stamped(key: &str) {
-    let dir = match std::env::var("NERDFLAIR_ERR_STAMP_DIR").ok().filter(|d| !d.is_empty()) {
+    let dir = match std::env::var_os("NERDFLAIR_ERR_STAMP_DIR").filter(|d| !d.is_empty()) {
         Some(d) => PathBuf::from(d),
-        None => match log_path().parent() {
-            Some(p) => p.join(".nerdflair-stamps"),
+        None => match stamp_dir_path() {
+            Some(p) => p,
             None => return,
         },
     };
-    let mut slug = slugify(key);
-    slug.truncate(100);
-    let fail = dir.join(format!("nerdflair-err-{}-{}", uid(), slug));
-    let rec = dir.join(format!("nerdflair-err-{}-{}", uid(), slugify(&format!("recovered-{}", key))));
     let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified());
-    match (mtime(&fail), mtime(&rec)) {
-        (Ok(f), Ok(r)) if r >= f => {} // already reported as recovered: nothing to do
-        (Ok(_), _) => ok(key),
-        _ => {}
+    // Healthy and never failed: ONE stat (the failure stamp is absent) and out.
+    let Ok(f) = mtime(&dir.join(stamp_name(key))) else { return };
+    match mtime(&dir.join(stamp_name(&format!("recovered-{}", key)))) {
+        Ok(r) if r >= f => {} // already reported as recovered: nothing to do
+        _ => ok(key),
     }
 }
 

@@ -196,7 +196,8 @@ _nf_cache_dir() {
       if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then
         # An explicit override may name a directory the owner uses for other things (HOME, a
         # project): never narrow it behind their back, say what to do.
-        _why="mode allows group/other access; run: chmod 700 $_d"
+        _sq="'"; _qd="'\\''"   # single-quote the path for a shell, as util::shell_quote does
+        _why="mode allows group/other access; run: chmod 700 '${_d//$_sq/$_qd}'"
       else
         # The default location is ours alone. Re-test right before the chmod; bash has no
         # fchmod, so a swap in that instant needs write access to our own parent directory.
@@ -213,7 +214,8 @@ _nf_cache_dir() {
   else
     _NF_CDIR="$_d"
     # Healthy path: touch the stamp dir only if this key ever failed (no fork, no mkdir).
-    # Only while a failure is not yet reported as recovered: tests only, no fork, no disk.
+    # Only while a failure is not yet reported as recovered: pure-bash tests, no fork, no write.
+    # (The mode check above costs one `stat` fork per process; there is no pure-bash mode test.)
     # (_nf_ok keeps the failure stamp a week, so "stamp exists" alone would stay true.)
     _x="${HOME:-}"; _x="${NERDFLAIR_ERR_STAMP_DIR:-${_x%/}/.claude/.nerdflair-stamps}/nerdflair-err-${_NF_UID}-"
     if [[ -e "${_x}cache_dir" ]] && ! { [[ -e "${_x}recovered_cache_dir" ]] && [[ ! "${_x}cache_dir" -nt "${_x}recovered_cache_dir" ]]; }; then

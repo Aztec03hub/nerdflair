@@ -384,7 +384,7 @@ pub fn sort_fold(names: &mut [String]) {
 pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         // var_os, not var: a non-UTF-8 path is still a path (var() would drop it and fall back silently)
         let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
         let fail = |dir: &std::path::Path, why: &str| {
@@ -444,24 +444,10 @@ pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
             if std::env::var_os("NERDFLAIR_CACHE_DIR").map_or(false, |v| !v.is_empty()) {
                 // An explicit override may name a directory the owner uses for other things
                 // (HOME, a project): never narrow it behind their back, say what to do.
-                return fail(&dir, &format!("mode allows group/other access; run: chmod 700 {}", dir.display()));
+                return fail(&dir, &format!("mode allows group/other access; run: chmod 700 {}", shell_quote(&dir.to_string_lossy())));
             }
-            // The default location is ours alone. fchmod an O_NOFOLLOW|O_DIRECTORY fd that is
-            // verified to be ours, so a path swapped after the check can never be chmod-ed.
-            let fixed = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-                .open(&dir)
-                .ok()
-                .and_then(|f| {
-                    let fm = f.metadata().ok()?;
-                    if !fm.is_dir() || fm.uid() != uid() {
-                        return None;
-                    }
-                    f.set_permissions(std::fs::Permissions::from_mode(0o700)).ok()?;
-                    f.metadata().ok()
-                });
-            if fixed.map_or(true, |fm| fm.mode() & 0o077 != 0) {
+            // The default location is ours alone: tighten it (never through a symlink).
+            if !tighten_dir(&dir) || std::fs::symlink_metadata(&dir).map_or(true, |fm| fm.mode() & 0o077 != 0) {
                 return fail(&dir, "mode allows group/other access and chmod 700 failed");
             }
             crate::errlog::note("cache-dir-repaired", &format!("{} had group/other access; tightened to 0700", dir.display()));
@@ -497,4 +483,40 @@ pub fn cache_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     r
+}
+
+/// 'single-quoted' for a shell, as lib.sh writes it in the same message.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// chmod 700 a directory that was just checked to be ours, without following a symlink and
+/// without needing the read bit (mode 055 has none): an O_PATH fd, fstat'ed, then fchmodat on
+/// its /proc/self/fd entry. Other systems have no O_PATH: lstat-checked path chmod instead.
+#[cfg(target_os = "linux")]
+fn tighten_dir(dir: &std::path::Path) -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let Ok(f) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(dir)
+    else {
+        return false;
+    };
+    match f.metadata() {
+        Ok(m) if m.is_dir() && m.uid() == uid() => {}
+        _ => return false,
+    }
+    let Ok(p) = std::ffi::CString::new(format!("/proc/self/fd/{}", f.as_raw_fd())) else { return false };
+    unsafe { libc::fchmodat(libc::AT_FDCWD, p.as_ptr(), 0o700, 0) == 0 }
+}
+#[cfg(not(target_os = "linux"))]
+fn tighten_dir(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() && m.uid() == uid() => {}
+        _ => return false,
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
 }
