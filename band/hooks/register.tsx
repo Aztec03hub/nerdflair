@@ -352,7 +352,10 @@ export const register: Register = on => {
   // the screen nor fail without a trace.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     try {
-      return await band($, e)
+      // null = nothing to draw yet (the first refresh was superseded or is still running):
+      // the engine draws its own empty row, not a false "plugin bug" line.
+      const tree = await band($, e)
+      return tree === null ? next(e) : tree
     } catch (err) {
       report($, 'render failed, engine UI drawn instead', err)
       return next(e)
@@ -599,7 +602,10 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   if (!cache) {
     // No figures to show. Say why in the band. An empty reason cannot happen
     // (every failed refresh sets one), so if it does, that is itself reported.
-    if (!lastError) report($, 'band', 'no figures and no recorded reason (plugin bug)')
+    if (!lastError) {
+      if (runAborted || inflight || abortStreak > 0) return null // superseded or in flight, not a failure
+      report($, 'band', 'no figures and no recorded reason (plugin bug)')
+    }
     return (
       <Box>
         <Text color="#f87171">nerdflair-band: {plain(lastError)}</Text>
