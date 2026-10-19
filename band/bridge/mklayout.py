@@ -108,11 +108,6 @@ CARDS = [
     ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
     ]),
-    ("block", "\uf094", "Billing block", (192, 132, 252), [
-        "spend inside the CURRENT 5-hour rate-limit window",
-        "window is rate_limits.five_hour.resets_at less 5h",
-        "says idle rather than guess when that window has lapsed",
-    ]),
     ("context", r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
         "read from the payload, else the newest usage line in the transcript",
@@ -297,6 +292,7 @@ def selfcheck():
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "..", "hooks", "register.tsx"), encoding="utf-8") as f:
         tsx = f.read()
+    text_drift(os.path.join(here, "..", ".."))     # the card TEXTS of limits and block match register.tsx (colours: band_drift)
     assert band_drift(tsx) == [], band_drift(tsx)
     assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
     assert classify("\uf094 $1.20")[0] == "block", "the billing block has a card"
@@ -404,7 +400,7 @@ def build_ex(target, skip=(), shadow=None):
     return segs, truth
 
 
-def band_drift(root):
+def text_drift(root):
     """The limits and block cards exist twice, here and in band/hooks/register.tsx. Their texts
     must match, or the hover card in the plugin says something else than the bridge card."""
     with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
@@ -433,7 +429,7 @@ def cards_check():
     import glob
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
-    band_drift(root)
+    text_drift(root)
     # The tmux readout comes from a per-pane cache, else from a live tmux; seed
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
@@ -479,9 +475,7 @@ def _cards_check_body(root, binary, pane, cdir):
         shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
-    # block needs a usage-ledger spend inside the 5-hour window, which no fixture payload has: its
-    # pattern is checked against the renderer's own text in selfcheck() instead.
-    want = {c[0] for c in CARDS} - {"remote_control", "ahead", "block"}
+    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
     # remote_control is drawn by the band, and ahead shares a piece with dirty.
     assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
     print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")

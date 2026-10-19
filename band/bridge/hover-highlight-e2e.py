@@ -460,6 +460,30 @@ def failed_switch_cost():
         r.close()
 
 
+def dead_shadow_costs_nothing():
+    print("the shadow dies while a highlight is up: restored, state dropped, then zero tmux spawns")
+    r = Run("deadquiet", count=True)
+    try:
+        base = r.row()
+        col, w, _ = pieces_of(base)[1]
+        r.mode("tickother")
+        time.sleep(0.5)
+        r.hover(col + w // 2, wait=1.0)
+        check("highlight on", bool(lit_idx(r.row())))
+        socks = glob.glob(os.path.join(r.dir, "nf-shadow-*", "s"))
+        check("found the shadow's tmux socket", len(socks) == 1, str(socks))
+        if socks:
+            subprocess.run(["tmux", "-S", socks[0], "kill-server"], capture_output=True)
+        time.sleep(4.0)                       # the engine keeps ticking; the first failed read drops the highlight
+        check("highlight taken down (restored from the saved copy)", not r.screen_has_lit() or not lit_idx(r.row()),
+              str(lit_idx(r.row())))
+        a = r.spawns()
+        time.sleep(4.0)
+        check("then zero tmux spawns in 4 s with the engine still ticking", r.spawns() == a, f"{r.spawns() - a}")
+    finally:
+        r.close()
+
+
 def alt_screen(mode="altswitch"):
     print(f"the engine switches to the alt screen and back while a card is up ({mode}): nothing stays lit")
     r = Run("alt")
@@ -612,7 +636,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)

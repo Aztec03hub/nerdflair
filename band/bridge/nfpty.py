@@ -368,6 +368,7 @@ class Highlight:
         self.retry_at = 0.0     # after a failed on(): no new attempt before this
         self.busy = 0.0         # how long the last refresh blocked the relay loop
         self.settled = lambda: True     # False while our own writes are still queued behind an unfinished engine sequence
+        self.blocked = lambda row: False    # True if the card now covers this row (a re-check must not paint there)
         self.redo = None        # (key, tries, due): a restore that may have landed stale, to be repainted from the shadow
 
     def _cells(self, key):
@@ -390,8 +391,6 @@ class Highlight:
         now = time.monotonic()
         if now < self.retry_at:
             return False
-        if self.redo is not None and self.redo[0][0] != key[0]:
-            self.redo = None            # a stale restore for another row is not worth writing any more
         got = self._cells(key)
         if got is None:
             self.retry_at = now + self.BACKOFF
@@ -430,6 +429,9 @@ class Highlight:
         key, tries, due = self.redo
         if time.monotonic() < due or self.cur is not None:
             return
+        if self.blocked(key[0]):
+            self.redo = None                # the card sits on that row now: leave it alone
+            return
         got = self._cells(key)
         if got is not None:
             self.redo = None
@@ -459,6 +461,8 @@ class Highlight:
 
     def refresh(self):
         """The engine repainted: put the highlight back over what it drew.
+        Returns True if it painted, False if it failed for now (retry), None if the shadow is gone for good
+        (the highlight state is dropped, restored from the saved copy; retrying would only spawn tmux).
         ponytail: ANY engine output while a highlight is up marks it dirty (guessing which writes reach the
         cells needs a terminal emulator, and was wrong in every form tried). Cost is bounded instead:
         one re-read per REFRESH, only while a card is open, zero when the engine is quiet or no card is up;
@@ -468,6 +472,9 @@ class Highlight:
         now = time.monotonic()
         if self.cur is None or now - self.last < self.gap():
             return False
+        if self.shadow is None or not getattr(self.shadow, "ok", True):
+            self.off()
+            return None
         got = self._cells(self.cur)
         self.last = now
         if got is None:
@@ -488,6 +495,9 @@ ALT_SCREEN = re.compile(rb"\033\[\?(?:1049|1047|47)[hl]")
 
 # The start of an alt-screen switch at the very end of a read: the rest comes in the next one, and by then it is
 # too late to take the card down before it. (Shorter prefixes, ESC or ESC [, end reads far too often to act on.)
+# Known limits: a read that ends inside "ESC", "ESC[" or "ESC[?1" is not acted on (so the card may stay painted
+# until the engine redraws; one rate-limited line says so), and the multi-parameter forms ("ESC[?1000;1049h") are
+# not recognised. "ESC[?10" also ends reads before ?1000h and friends: the cost is one erased card.
 ALT_PARTIAL = re.compile(rb"\033\[\?(?:10|104|47|1047|1049)$")
 
 
@@ -911,12 +921,25 @@ def selfcheck():
     h4.sync((2, 3, 2, RGB))
     h4.shadow = FakeShadow(None)
     h4.last = 0.0
-    assert h4.refresh() is False, "refresh reports it did not paint when the shadow cannot answer"
+    assert h4.refresh() is False, "refresh reports it did not paint when the shadow cannot answer (transient)"
     h4.redo = ((2, 3, 2, RGB), 0, 0.0)
     h4.cur = None
     h4.shadow = FakeShadow(line)
     h4.sync((5, 3, 2, RGB))
-    assert h4.redo is None, "a stale re-check for another row is dropped when a new highlight goes up"
+    assert h4.redo is not None, "a pending re-check for another row survives a move A to B (the common case)"
+    h4.cur = None
+    h4.blocked = lambda row: True
+    h4.redo = (h4.redo[0], 0, 0.0)
+    h4.recheck()
+    assert h4.redo is None, "...and is dropped only if the card now covers that row"
+    # A shadow that is gone for good: restore from the saved copy, drop the state, and do not ask again.
+    class Dead2(FakeShadow):
+        ok = False
+    wd2 = []
+    h5 = Highlight(lambda s, keep=False: wd2.append(s), Dead2(None))
+    h5.cur, h5.plain, h5.last = (2, 3, 2, RGB), "SAVED", 0.0
+    assert h5.refresh() is None and h5.cur is None and "SAVED" in wd2[-1], "dead shadow: restored, state dropped, no retry"
+    assert h5.refresh() is False, "nothing left to refresh"
     # Wide characters at the range edges are included whole, never half-painted.
     wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
     assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
@@ -1092,6 +1115,7 @@ def main():
     layout = Layout(pane, shadow)
     hl = Highlight(write, shadow, lambda: panel._show_cursor())
     hl.settled = lambda: not pending and clean[0]
+    hl.blocked = lambda row: bool(panel.rect and panel.rect[1] <= row < panel.rect[1] + panel.rect[3])
     shown_seg = [None]          # the readout the open card belongs to
     shown_prev = [None]         # for an id-less readout: the text of the readout just left of it
     shown_twin = [False]        # ... and whether another readout on the line had the same text
@@ -1436,7 +1460,7 @@ def main():
                 elif hl_dirty[0] and now >= hl_next[0]:
                     worked_box[0] = True
                     hl_dirty[0] = False
-                    if not hl.refresh():
+                    if hl.refresh() is False:
                         hl_dirty[0] = True               # nothing painted (shadow cool): try again at the next gap
             guarded("highlight", sync_hl)
 
