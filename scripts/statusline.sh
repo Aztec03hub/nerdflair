@@ -1382,7 +1382,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
   fi
   [[ -z "$_rc_slug" && -n "$project_dir" ]] && _rc_slug="${project_dir##*/}"
   if [[ -n "$_rc_slug" ]]; then
-    _nf_cache_path "nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}"; _rc_stamp="$_NF_CP"   # empty: no cache dir
+    # No cache dir: the validated stamp dir carries the TTL marker; with neither, say so.
+    _nf_cache_or_stamp "nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}" "repocost-${session_id}"; _rc_stamp="$_NF_CP"
+    [[ -z "$_rc_stamp" ]] && _nf_err repocost-skipped "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append"
     _rc_due=true
     if [[ -n "$_rc_stamp" && -f "$_rc_stamp" ]]; then
       _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_stamp" 2>/dev/null || stat -f %m "$_rc_stamp" 2>/dev/null || echo 0) ))
@@ -1411,9 +1413,8 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # and forever: the same permanent wedge flock was adopted to remove,
     # re-entering through the migration. rmdir only succeeds on an empty dir.
     [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
-    # Without a stamp there is no once-per-TTL limit, so appending would write a
-    # ledger row every render: skip the sample (the column is cumulative; the
-    # total below is still computed from the ledger, just not memoised).
+    # Without any stamp there is no once-per-TTL limit, so appending would write a
+    # ledger row every render: skip the sample (logged above as repocost-skipped).
     if [[ "$_rc_due" == "true" ]] && [[ -n "$_rc_stamp" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
       # Exit 75 = lock held by the compactor: contention, silent (the next
       # sample carries the total). 76 = the append itself failed. Anything else
@@ -1556,7 +1557,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # One awk pass over the log costs ~7ms, which is 14% of the render budget --
     # far too much for a number that moves once a minute. Recompute only on the
     # same cadence as the append, and read the memoised value otherwise.
-    _nf_cache_path "nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}"; _rc_memo="$_NF_CP"   # empty: no cache dir
+    _nf_cache_or_stamp "nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}" "repocost-total-${_rc_slug}"; _rc_memo="$_NF_CP"
     _rc_total=""
     if [[ "$_rc_due" == "false" && -n "$_rc_memo" && -r "$_rc_memo" ]]; then
       _rc_total=$(<"$_rc_memo")
@@ -1739,23 +1740,28 @@ _smp_file=""
 if [[ -n "$session_id" ]]; then
   _nf_cache_path "nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"; _smp_file="$_NF_CP"   # empty: no cache dir, no history
   if [[ -n "$_smp_file" && -r "$_smp_file" ]]; then
-    _smp_ln=0
+    _smp_ln=0; _smp_bad=""
+    _n='[0-9]{1,15}'   # digits only: these words reach (( )) below, where a bare word is evaluated as a variable name
     while IFS= read -r _sl || [[ -n "$_sl" ]]; do
       if (( _smp_ln == 0 )); then
         if [[ "$_sl" == v2\ * ]]; then
-          _smp_prev_rate="${_sl#v2 }"
+          if [[ "${_sl#v2 }" =~ ^$_n$ ]]; then _smp_prev_rate="${_sl#v2 }"; else _smp_bad=1; fi
         else
           # v1: "api used10 epoch rate" on one line. Read it, then let it be
           # rewritten in v2 on this render.
-          IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate <<< "$_sl"
-          [[ -n "$_smp_prev_epoch" ]] && _smp_hist+=("$_smp_prev_epoch $_smp_prev_used10 $_smp_prev_api")
+          if [[ "$_sl" =~ ^$_n\ $_n\ $_n\ $_n$ ]]; then
+            IFS=' ' read -r _smp_v1_api _smp_v1_used10 _smp_v1_epoch _smp_prev_rate <<< "$_sl"
+            _smp_hist+=("$_smp_v1_epoch $_smp_v1_used10 $_smp_v1_api")
+          elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
           break
         fi
       else
-        [[ -n "$_sl" ]] && _smp_hist+=("$_sl")
+        if [[ "$_sl" =~ ^$_n\ $_n\ $_n$ ]]; then _smp_hist+=("$_sl")
+        elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
       fi
       (( _smp_ln++ ))
     done < "$_smp_file"
+    [[ -n "$_smp_bad" ]] && _nf_err sample-read "$_smp_file has malformed lines; ignored (ETA history restarts)"
     # newest entry also feeds the two-point paths below
     if (( ${#_smp_hist[@]} > 0 )); then
       IFS=' ' read -r _smp_prev_epoch _smp_prev_used10 _smp_prev_api <<< "${_smp_hist[-1]}"

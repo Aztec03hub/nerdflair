@@ -266,6 +266,23 @@ pub fn ok(key: &str) {
     let _ = write_stamp(&rec);
 }
 
+/// `ok(key)` for a hot path: does nothing (and creates nothing) unless the key's failure
+/// stamp already exists, so a healthy render never touches the stamp directory.
+pub fn ok_if_stamped(key: &str) {
+    let dir = match std::env::var("NERDFLAIR_ERR_STAMP_DIR").ok().filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => match log_path().parent() {
+            Some(p) => p.join(".nerdflair-stamps"),
+            None => return,
+        },
+    };
+    let mut slug = slugify(key);
+    slug.truncate(100);
+    if dir.join(format!("nerdflair-err-{}-{}", uid(), slug)).exists() {
+        ok(key);
+    }
+}
+
 /// True when `key` was touched less than `secs` ago. For retry back-off.
 pub fn recent(key: &str, secs: i64) -> bool {
     match stamp_path(key) {

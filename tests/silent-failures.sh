@@ -382,6 +382,8 @@ chk_cache_default() {   # every wanted cache is in the 0700 dir under $HOME/.cac
   for w in $CACHE_WANT; do
     check "cache-private [$1]: $w cache is in the private dir" yes "$(compgen -G "$d/nerdflair-$w-*" >/dev/null && echo yes || echo no)"
   done
+  check "cache-private [$1]: ~/.cache (made under umask 0117) is 700" 700 "$(stat -c %a "$CASE_DIR/home/.cache" 2>/dev/null)"
+  check "cache-private [$1]: cache files are 600" "600" "$(stat -c %a "$d"/nerdflair-* 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//')"
   left=$(tmp_leftovers); check "cache-private [$1]: nothing left in /tmp" "" "$left"
   [[ -n "$left" ]] && rm -f -- $left
 }
@@ -405,7 +407,43 @@ chk_cache_refused() {   # refused dir: rendered fine, same bytes as a healthy co
 s_cache_symlink() {   # the cache dir path is a symlink to a real directory
   mkdir "$CASE_DIR/symtarget"; rmdir "$CASE_DIR/cache"; ln -s "$CASE_DIR/symtarget" "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0)
 }
-s_cache_lax() { chmod 777 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }
+s_cache_lax() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # ours but open: tightened, not refused
+chk_cache_lax() {
+  check "cache-repaired [$1]: the dir is now 700" 700 "$(stat -c %a "$CASE_DIR/cache")"
+  check "cache-repaired [$1]: caches are written into it" yes "$(compgen -G "$CASE_DIR/cache/nerdflair-sample-*" >/dev/null && echo yes || echo no)"
+}
+s_cache_foreign() { CASE_ENV+=(NERDFLAIR_CACHE_DIR=/tmp NERDFLAIR_REPO_COST=0); }   # /tmp is root's: never ours to use
+s_cache_rel() { CASE_ENV+=(NERDFLAIR_CACHE_DIR=rel/c NERDFLAIR_REPO_COST=0); }
+chk_cache_rel() { check "cache-relative [$1]: nothing created in the cwd" "" "$(ls -A "$CASE_DIR/work")"; }
+s_cache_rel_xdg() { rmdir "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_CACHE_DIR= XDG_CACHE_HOME=rel/x NERDFLAIR_REPO_COST=0); }
+chk_cache_rel_xdg() {
+  check "cache-xdg-relative [$1]: falls back to ~/.cache/nerdflair" yes "$([[ -d "$CASE_DIR/home/.cache/nerdflair" ]] && echo yes || echo no)"
+  check "cache-xdg-relative [$1]: nothing created in the cwd" "" "$(ls -A "$CASE_DIR/work")"
+}
+s_cache_mkdir_fails() { mkdir "$CASE_DIR/ro"; chmod 555 "$CASE_DIR/ro"; CASE_ENV+=("NERDFLAIR_CACHE_DIR=@DIR@/ro/c" NERDFLAIR_REPO_COST=0); }
+chk_cache_mkdir_fails() { contains "cache-mkdir [$1]: the real mkdir error is in the line" "ro/c is unusable (cannot create it: Permission denied); caches skipped"; }
+s_cache_non_utf8() { local d="$CASE_DIR/c-"$'ÿ'; mkdir -m 700 "$d"; CASE_ENV+=("NERDFLAIR_CACHE_DIR=$d" NERDFLAIR_REPO_COST=0); }
+chk_cache_non_utf8() { check "cache-non-utf8 [$1]: no fallback to ~/.cache" no "$([[ -e "$CASE_DIR/home/.cache" ]] && echo yes || echo no)"; check "cache-non-utf8 [$1]: the sample is written into the dir" yes "$(compgen -G "$CASE_DIR/c-"$'ÿ'"/nerdflair-sample-*" >/dev/null && echo yes || echo no)"; }
+s_cache_recovers() { s_cache_symlink; }
+chk_cache_recovers() {   # the dir is fixed: the next render says so, once
+  rm -f "$CASE_DIR/cache"; mkdir -m 700 "$CASE_DIR/cache"; render "$1" 5; render "$1" 6
+  check "cache-recovered [$1]: one 'recovered: cache-dir' line" 1 "$(rg -cF 'recovered: cache-dir' "$CASE_DIR/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
+}
+s_cache_ledger_degraded() {   # no cache dir: the stamp dir still rate limits the ledger append (one row in 4 renders)
+  mkdir "$CASE_DIR/symtarget"; rmdir "$CASE_DIR/cache"; ln -s "$CASE_DIR/symtarget" "$CASE_DIR/cache"
+  CASE_ENV+=(NERDFLAIR_REPO_COST_FILE="$CASE_DIR/ledger.tsv" NERDFLAIR_REPO_COST_TTL=600)
+}
+chk_cache_ledger_degraded() { check "cache-ledger [$1]: exactly one ledger row, not one per render" 1 "$(wc -l < "$CASE_DIR/ledger.tsv" 2>/dev/null | tr -d ' ')"; }
+s_cache_ledger_skipped() {   # neither cache dir nor stamp dir: no append, and it is logged
+  s_cache_ledger_degraded; ln -s "$CASE_DIR/tmp" "$CASE_DIR/home/.claude/.nerdflair-stamps"; CASE_ENV+=(NERDFLAIR_ERR_STAMP_DIR=)
+}
+chk_cache_ledger_skipped() { check "cache-ledger-skipped [$1]: nothing was appended" 0 "$([[ -e "$CASE_DIR/ledger.tsv" ]] && wc -l < "$CASE_DIR/ledger.tsv" | tr -d ' ' || echo 0)"; }
+s_sample_corrupt() { printf 'v2 5\nfoo 1 2\n' > "$CASE_DIR/cache/nerdflair-sample-$(id -u)-${TAG}_sample_corrupt"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }
+chk_sample_corrupt() {
+  check "sample-corrupt [$1]: every render exits 0 (no abort)" "0 0 0 0" "$(cat "$CASE_DIR"/rc.[1-4] | tr '\n' ' ' | sed 's/ $//')"
+  check "sample-corrupt [$1]: the file was rewritten clean" yes "$(rg -q 'foo' "$CASE_DIR/cache/nerdflair-sample-$(id -u)-${TAG}_sample_corrupt" && echo no || echo yes)"
+  check "sample-corrupt [$1]: no render-abort in the log" 0 "$(log_count render-abort)"
+}
 s_cache_nohome() { rmdir "$CASE_DIR/cache"; CASE_ENV+=(HOME= NERDFLAIR_CACHE_DIR= NERDFLAIR_REPO_COST=0); }
 chk_cache_nohome() {   # no HOME, no override: the line goes to stderr (the log is unwritable), once; nothing written
   local n; n=$(cat "$CASE_DIR"/err.* 2>/dev/null | rg -cF 'cache-dir: ')
@@ -471,7 +509,16 @@ IMPLS="rust bash"
 run_case cache-private-single     -  0 s_cache_default chk_cache_default_single
 run_case cache-private-multi      -  0 s_cache_default_multi chk_cache_default_multi
 run_case cache-dir-symlink        cache-dir 1 s_cache_symlink chk_cache_refused
-run_case cache-dir-lax-mode       cache-dir 1 s_cache_lax chk_cache_refused
+run_case cache-dir-lax-mode       cache-dir-repaired 1 s_cache_lax chk_cache_lax
+run_case cache-dir-foreign-owner  cache-dir 1 s_cache_foreign chk_cache_refused
+run_case cache-dir-relative       cache-dir 1 s_cache_rel chk_cache_rel
+run_case cache-dir-relative-xdg   cache-dir-xdg 1 s_cache_rel_xdg chk_cache_rel_xdg
+run_case cache-dir-mkdir-fails    cache-dir 1 s_cache_mkdir_fails chk_cache_mkdir_fails
+run_case cache-dir-non-utf8       -  0 s_cache_non_utf8 chk_cache_non_utf8
+run_case cache-dir-recovers       cache-dir 1 s_cache_recovers chk_cache_recovers
+run_case cache-ledger-degraded    cache-dir 1 s_cache_ledger_degraded chk_cache_ledger_degraded
+run_case cache-ledger-skipped     repocost-skipped 4 s_cache_ledger_skipped chk_cache_ledger_skipped
+run_case sample-corrupt           sample-read 1 s_sample_corrupt chk_sample_corrupt
 run_case cache-dir-no-home        -  0 s_cache_nohome chk_cache_nohome
 run_case cache-leaf-symlink       -  0 s_cache_leaf_link chk_cache_leaf_link
 
@@ -491,6 +538,13 @@ printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_
 check "bell.sh: a non-numeric chime_volume is logged by the hook (1 line)" 1 "$(rg -cF ' chime-volume: ' "$BV/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
 _bv=$( ( export HOME="$BV/home" NERDFLAIR_ERR_STAMP_DIR="$BV/stamps2"; mkdir -p "$NERDFLAIR_ERR_STAMP_DIR"; source "$REPO/scripts/lib.sh"; _nf_read_state; printf '%s' "$NF_CUR_CHIME_VOLUME" ) 2>/dev/null )
 check "lib.sh: a non-numeric chime_volume is defaulted to 1 for every consumer" 1 "$_bv"
+
+# _nf_cache_put leaves noclobber and umask as it found them.
+_ncs=$( ( export HOME="$WORK/nc-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/nc-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR" "$WORK/nc-c"
+  source "$REPO/scripts/lib.sh"; umask 022
+  _nf_cache_put "$WORK/nc-c/a" x; [[ -o noclobber ]] && printf 'on ' || printf 'off '
+  set -o noclobber; _nf_cache_put "$WORK/nc-c/b" y; [[ -o noclobber ]] && printf 'on ' || printf 'off '; umask ) 2>/dev/null )
+check "lib.sh _nf_cache_put: restores noclobber (off, on) and umask 022" "off on 0022" "$(printf '%s' "$_ncs" | tr -s ' \n' ' ' | sed 's/ $//')"
 
 echo
 echo "NOISE (must stay completely silent):"

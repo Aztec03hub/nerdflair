@@ -157,46 +157,77 @@ _nf_clear() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && rm -f "$_NF_STAMP" 2>/dev
 # the chime lock) lives in ONE per-user directory, never in world-writable /tmp
 # where the names were predictable (another local user, or a stale symlink,
 # could redirect a write or plant a cache the renderer then trusts).
-# $NERDFLAIR_CACHE_DIR, else $XDG_CACHE_HOME/nerdflair, else $HOME/.cache/nerdflair.
-# Created 0700 with an explicit mode (the tmux server's umask is 0117) and checked
-# once per process: a real directory (not a symlink), ours, no group/other bits.
-# Anything else, or an empty HOME with no override: _NF_CDIR stays empty, callers
-# skip their caches and compute without them, and the reason is logged under key
-# cache-dir (once an hour). Twin of util::cache_dir.
+# $NERDFLAIR_CACHE_DIR, else $XDG_CACHE_HOME/nerdflair, else $HOME/.cache/nerdflair
+# (the first two must be absolute). Created 0700 under umask 077 (the tmux
+# server's umask is 0117) and checked once per process: a real directory (not a
+# symlink), ours, no group/other bits. One of ours that is too open is tightened to
+# 0700 and the repair logged. Anything else: _NF_CDIR stays empty, callers skip
+# their caches and compute without them, and the reason is logged under key
+# cache-dir (once an hour; "recovered" when it clears). Twin of util::cache_dir,
+# same wording. Old /tmp/nerdflair-* files are ignored and may be deleted.
 _nf_cache_dir() {
   [[ -n "${_NF_CDIR_DONE:-}" ]] && return 0
   _NF_CDIR_DONE=1; _NF_CDIR=""
-  local _d _m _why=""
-  if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then _d="$NERDFLAIR_CACHE_DIR"
-  elif [[ "${XDG_CACHE_HOME:-}" == /* ]]; then _d="${XDG_CACHE_HOME}/nerdflair"
-  elif [[ -n "${HOME:-}" ]]; then _d="${HOME}/.cache/nerdflair"
-  else _nf_err cache-dir "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped"; return 0
+  local _d _m _why="" _e="" _x="${XDG_CACHE_HOME:-}"
+  if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then
+    if [[ "$NERDFLAIR_CACHE_DIR" != /* ]]; then
+      _nf_err cache-dir "NERDFLAIR_CACHE_DIR=$NERDFLAIR_CACHE_DIR is not an absolute path; caches skipped"; return 0
+    fi
+    _d="$NERDFLAIR_CACHE_DIR"
+  elif [[ "$_x" == /* ]]; then _d="${_x%/}/nerdflair"
+  else
+    [[ -n "$_x" ]] && _nf_err cache-dir-xdg "XDG_CACHE_HOME=$_x is not an absolute path; ignored"
+    if [[ -n "${HOME:-}" ]]; then _d="${HOME%/}/.cache/nerdflair"
+    else _nf_err cache-dir "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped"; return 0
+    fi
   fi
-  [[ -d "$_d" ]] || mkdir -p -m 700 "$_d" 2>/dev/null
-  if [[ -L "$_d" || ! -d "$_d" ]]; then _why="not a real directory"
+  if [[ ! -e "$_d" && ! -L "$_d" ]]; then
+    # umask 077: every directory created is 0700 from the first instant. The text after the
+    # last ": " of mkdir's message is the bare strerror, as Rust words it.
+    _e=$( umask 077; mkdir -p "$_d" 2>&1 )
+    _e="${_e##*: }"
+  fi
+  if [[ ! -e "$_d" && ! -L "$_d" ]]; then _why="cannot create it: ${_e:-No such file or directory}"
+  elif [[ -L "$_d" || ! -d "$_d" ]]; then _why="not a real directory"
   elif [[ ! -O "$_d" ]]; then _why="not owned by this user"
   else
     _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
-    (( 8#${_m} & 8#077 )) && _why="mode allows group/other access"
+    if (( 8#${_m} & 8#077 )); then
+      chmod 700 "$_d" 2>/dev/null
+      _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
+      if (( 8#${_m} & 8#077 )); then _why="mode allows group/other access and chmod 700 failed"
+      else _nf_err cache-dir-repaired "$_d had group/other access; tightened to 0700"
+      fi
+    fi
   fi
   if [[ -n "$_why" ]]; then
     _nf_err cache-dir "$_d is unusable ($_why); caches skipped"
   else
     _NF_CDIR="$_d"
+    # Healthy path: touch the stamp dir only if this key ever failed (no fork, no mkdir).
+    _x="${HOME:-}"
+    [[ -e "${NERDFLAIR_ERR_STAMP_DIR:-${_x%/}/.claude/.nerdflair-stamps}/nerdflair-err-${_NF_UID}-cache_dir" ]] && _nf_ok cache-dir
   fi
   return 0
 }
 # _nf_cache_path name: sets _NF_CP to the file inside the cache dir, or "" when there is none.
 _nf_cache_path() { _nf_cache_dir; _NF_CP=""; [[ -n "$_NF_CDIR" ]] && _NF_CP="$_NF_CDIR/$1"; return 0; }
-# _nf_cache_put file data: write via a fresh noclobber temp file, then rename. A
-# planted symlink at the leaf is replaced by the rename, never written through.
+# _nf_cache_or_stamp name stampkey: the cache file, else a file in the (validated, private)
+# stamp dir, so a TTL marker still works when the cache dir is unusable. "" if neither exists.
+_nf_cache_or_stamp() { _nf_cache_path "$1"; [[ -n "$_NF_CP" ]] && return 0; _nf_stamp "$2"; _NF_CP="$_NF_STAMP"; return 0; }
+# _nf_cache_put file data: write via a fresh noclobber temp file (mode 0600 whatever the
+# umask), then rename. A planted symlink at the leaf is replaced by the rename, never
+# written through. Leaves umask and noclobber as it found them.
 _nf_cache_put() {
-  local _t="$1.tmp.$$"
+  local _t="$1.tmp.$$" _rc _nc=0
+  [[ -o noclobber ]] && _nc=1
+  [[ -n "${_NF_UM+x}" ]] || _NF_UM=$(umask)
   rm -f "$_t" 2>/dev/null
-  set -o noclobber
+  umask 077; set -o noclobber
   { printf '%s' "$2" > "$_t"; } 2>/dev/null
-  local _rc=$?
-  set +o noclobber
+  _rc=$?
+  (( _nc )) || set +o noclobber
+  umask "$_NF_UM"
   (( _rc == 0 )) && mv -f "$_t" "$1" 2>/dev/null && return 0
   rm -f "$_t" 2>/dev/null
   return 1

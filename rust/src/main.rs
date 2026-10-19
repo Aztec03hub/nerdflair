@@ -2635,36 +2635,43 @@ fn read_ring(path: &Path) -> Ring {
             return r;
         }
     };
-    let mut lines = t.lines();
+    // Twin of statusline.sh: every field is 1-15 digits separated by single spaces; any other
+    // non-empty line is dropped and logged once (bash would otherwise evaluate it in (( ))).
+    let nums = |l: &str, n: usize| -> Option<Vec<i64>> {
+        let f: Vec<&str> = l.split(' ').collect();
+        if f.len() != n || !f.iter().all(|w| (1..=15).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_digit())) {
+            return None;
+        }
+        Some(f.iter().map(|w| w.parse::<i64>().unwrap_or(0)).collect())
+    };
+    let mut bad = false;
+    let mut lines = t.split('\n');
     match lines.next() {
         Some(first) if first.starts_with("v2 ") => {
-            r.rate = fmtx::awk_num(&first[3..]) as i64;
+            match nums(&first[3..], 1) {
+                Some(v) => r.rate = v[0],
+                None => bad = true,
+            }
             for l in lines {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 3 {
-                    r.hist.push(Sample {
-                        epoch: fmtx::awk_num(f[0]) as i64,
-                        used10: fmtx::awk_num(f[1]) as i64,
-                        api_ms: fmtx::awk_num(f[2]) as i64,
-                    });
+                match nums(l, 3) {
+                    Some(v) => r.hist.push(Sample { epoch: v[0], used10: v[1], api_ms: v[2] }),
+                    None if !l.is_empty() => bad = true,
+                    None => {}
                 }
             }
         }
-        Some(first) => {
-            let f: Vec<&str> = first.split_whitespace().collect();
-            if f.len() >= 4 {
-                r.rate = fmtx::awk_num(f[3]) as i64;
-                r.hist.push(Sample {
-                    api_ms: fmtx::awk_num(f[0]) as i64,
-                    used10: fmtx::awk_num(f[1]) as i64,
-                    epoch:  fmtx::awk_num(f[2]) as i64,
-                });
+        Some(first) => match nums(first, 4) {
+            Some(v) => {
+                r.rate = v[3];
+                r.hist.push(Sample { api_ms: v[0], used10: v[1], epoch: v[2] });
             }
-        }
+            None if !first.is_empty() => bad = true,
+            None => {}
+        },
         None => {}
     }
-    if r.hist.is_empty() && r.rate == 0 && !t.trim().is_empty() {
-        errlog::note("sample-read", &format!("{} has content but no readable samples; ETA history restarts", path.display()));
+    if bad {
+        errlog::note("sample-read", &format!("{} has malformed lines; ignored (ETA history restarts)", path.display()));
     }
     r
 }
@@ -2755,16 +2762,20 @@ fn repo_cost_segment(
         return String::new();
     }
 
-    let stamp = cache_path(&format!("nerdflair-repocost-{}-{}", uid, slugify(&f.session_id)));
+    // No cache dir: the validated stamp dir carries the TTL marker; with neither, say so.
+    let stamp = cache_path(&format!("nerdflair-repocost-{}-{}", uid, slugify(&f.session_id)))
+        .or_else(|| errlog::stamp_path(&format!("repocost-{}", f.session_id)));
+    if stamp.is_none() {
+        errlog::note("repocost-skipped", "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append");
+    }
     let maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
     let mut due = true;
     if stamp.as_ref().map_or(false, |s| s.is_file() && file_age(s) < ttl) {
         due = false;
     }
     let lock_file = PathBuf::from(format!("{}.lock", cost_file.display()));
-    // Without a stamp there is no once-per-TTL limit, so appending would write a ledger
-    // row on every render: skip the sample instead (the column is cumulative; the total
-    // is still computed from the ledger below, just not memoised).
+    // Without any stamp there is no once-per-TTL limit, so appending would write a ledger
+    // row on every render: skip the sample (logged above as repocost-skipped).
     if due && stamp.is_some() && !f.cost.is_empty() && f.cost != "0" {
         use std::io::Write as _;
         // A SHARED lock, so the many appenders never block each other but all
@@ -3007,7 +3018,8 @@ fn repo_cost_segment(
         }
     }
 
-    let memo = cache_path(&format!("nerdflair-repocost-total-{}-{}", uid, slugify(&slug)));
+    let memo = cache_path(&format!("nerdflair-repocost-total-{}-{}", uid, slugify(&slug)))
+        .or_else(|| errlog::stamp_path(&format!("repocost-total-{}", slug)));
     let mut total = String::new();
     if let Some(memo) = memo.as_ref().filter(|m| !due && m.is_file()) {
         total = match std::fs::read_to_string(memo) {

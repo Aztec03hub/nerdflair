@@ -374,54 +374,86 @@ pub fn sort_fold(names: &mut [String]) {
 /// is shared and the names were predictable, so another local user or a stale
 /// symlink could redirect a write or plant a cache we then trust).
 /// `$NERDFLAIR_CACHE_DIR`, else `$XDG_CACHE_HOME/nerdflair`, else
-/// `$HOME/.cache/nerdflair`. Created 0700 (explicit mode, not the umask) and
-/// verified once per process: a real directory, ours, no group/other bits.
-/// None means "no caches this render": every caller computes without them. The
-/// reason is logged under key `cache-dir` (once an hour). Twin of lib.sh `_nf_cache_dir`.
+/// `$HOME/.cache/nerdflair` (the first two must be absolute). Created 0700 under a
+/// temporary umask of 077 (the tmux server's 0117 would otherwise mask it) and
+/// verified once per process: a real directory, ours, no group/other bits. An
+/// existing directory of ours that is too open is tightened to 0700 and the repair
+/// logged. None means "no caches this render": every caller computes without them,
+/// and the reason is logged under key `cache-dir` (once an hour), with
+/// `recovered` when it clears. Twin of lib.sh `_nf_cache_dir`, same wording.
 pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let dir = if let Some(d) = env("NERDFLAIR_CACHE_DIR") {
-            std::path::PathBuf::from(d)
-        } else if let Some(x) = env("XDG_CACHE_HOME").filter(|x| x.starts_with('/')) {
-            std::path::PathBuf::from(x).join("nerdflair")
-        } else if let Some(h) = env("HOME") {
-            std::path::PathBuf::from(h).join(".cache/nerdflair")
-        } else {
-            crate::errlog::note("cache-dir", "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped");
-            return None;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        // var_os, not var: a non-UTF-8 path is still a path (var() would drop it and fall back silently)
+        let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        let fail = |dir: &std::path::Path, why: &str| {
+            crate::errlog::note("cache-dir", &format!("{} is unusable ({}); caches skipped", dir.display(), why));
+            None
         };
-        // Create what is missing, top down, with an explicit chmod after each mkdir:
-        // a mkdir mode is still masked by the umask (the tmux server's is 0117, which
-        // would leave a directory nobody can enter). An existing directory is never chmod-ed.
+        let dir = if let Some(d) = env("NERDFLAIR_CACHE_DIR") {
+            let d = std::path::PathBuf::from(d);
+            if !d.is_absolute() {
+                crate::errlog::note("cache-dir", &format!("NERDFLAIR_CACHE_DIR={} is not an absolute path; caches skipped", d.display()));
+                return None;
+            }
+            d
+        } else {
+            let xdg = env("XDG_CACHE_HOME");
+            match (xdg, env("HOME")) {
+                (Some(x), _) if std::path::Path::new(&x).is_absolute() => std::path::PathBuf::from(x).join("nerdflair"),
+                (x, h) => {
+                    if let Some(x) = x {
+                        crate::errlog::note("cache-dir-xdg", &format!("XDG_CACHE_HOME={} is not an absolute path; ignored", x.to_string_lossy()));
+                    }
+                    match h {
+                        Some(h) => std::path::PathBuf::from(h).join(".cache/nerdflair"),
+                        None => {
+                            crate::errlog::note("cache-dir", "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped");
+                            return None;
+                        }
+                    }
+                }
+            }
+        };
+        // Create what is missing, top down, all 0700, under umask 077 so nothing is ever
+        // briefly more open or (umask 0117) unusable. An existing directory is not touched here.
         let mut missing: Vec<&std::path::Path> = dir.ancestors().take_while(|a| std::fs::symlink_metadata(a).is_err()).collect();
         missing.reverse();
+        let mut mkerr: Option<String> = None;
+        let old = unsafe { libc::umask(0o077) };
         for m in missing {
-            use std::os::unix::fs::PermissionsExt;
-            if std::fs::DirBuilder::new().mode(0o700).create(m).is_ok() {
-                let _ = std::fs::set_permissions(m, std::fs::Permissions::from_mode(0o700));
+            if let Err(e) = std::fs::DirBuilder::new().mode(0o700).create(m) {
+                // "Permission denied (os error 13)" -> "Permission denied", as mkdir words it
+                mkerr = Some(e.to_string().split(" (os error").next().unwrap_or("").to_string());
+                break;
             }
         }
-        match std::fs::symlink_metadata(&dir) {
-            Ok(m) if m.is_dir() && m.uid() == uid() && m.mode() & 0o077 == 0 => Some(dir),
-            Ok(m) => {
-                let why = if !m.is_dir() {
-                    "not a real directory"
-                } else if m.uid() != uid() {
-                    "not owned by this user"
-                } else {
-                    "mode allows group/other access"
-                };
-                crate::errlog::note("cache-dir", &format!("{} is unusable ({}); caches skipped", dir.display(), why));
-                None
-            }
-            Err(e) => {
-                crate::errlog::note("cache-dir", &format!("cannot use {} ({}); caches skipped", dir.display(), e));
-                None
-            }
+        unsafe { libc::umask(old) };
+        let mut m = match std::fs::symlink_metadata(&dir) {
+            Ok(m) => m,
+            Err(_) => return fail(&dir, &format!("cannot create it: {}", mkerr.unwrap_or_else(|| "No such file or directory".into()))),
+        };
+        if !m.is_dir() {
+            return fail(&dir, "not a real directory");
         }
+        if m.uid() != uid() {
+            return fail(&dir, "not owned by this user");
+        }
+        if m.mode() & 0o077 != 0 {
+            // Ours (not a symlink, so no path is redirected) but open to others: close it.
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            m = match std::fs::symlink_metadata(&dir) {
+                Ok(m) => m,
+                Err(_) => return fail(&dir, "mode allows group/other access and chmod 700 failed"),
+            };
+            if m.mode() & 0o077 != 0 {
+                return fail(&dir, "mode allows group/other access and chmod 700 failed");
+            }
+            crate::errlog::note("cache-dir-repaired", &format!("{} had group/other access; tightened to 0700", dir.display()));
+        }
+        crate::errlog::ok_if_stamped("cache-dir");
+        Some(dir)
     })
     .as_ref()
 }
@@ -435,7 +467,9 @@ pub fn cache_path(name: &str) -> Option<std::path::PathBuf> {
 pub fn cache_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = std::path::PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
+    let mut tmp = path.as_os_str().to_owned(); // not display(): that is lossy for a non-UTF-8 HOME
+    tmp.push(format!(".tmp.{}", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
     let _ = std::fs::remove_file(&tmp);
     let r = std::fs::OpenOptions::new()
         .write(true)
