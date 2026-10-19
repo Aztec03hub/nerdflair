@@ -60,7 +60,7 @@ CARDS = [
         "from `git status --porcelain` and `git diff --numstat`",
         "the arrow is commits ahead of the tracking branch",
     ]),
-    ("limits", r"\b(5h|7d)\s+\d", "Plan rate limits", (122, 222, 150), [
+    ("limits", r"\b(5h|7d)\s+\d", "Plan rate limits", (74, 222, 128), [
         "5h and 7d windows from the payload's rate_limits",
         "percentage used, then time until the window resets",
         "Anthropic's own server-side metering, not an estimate",
@@ -84,23 +84,28 @@ CARDS = [
         "whether another surface is attached to this session",
         "green while attached, amber just after it left, grey when off",
     ]),
-    ("tmux", "", "tmux session", (163, 163, 163), [
+    ("tmux", "", "tmux session", (56, 189, 248), [
         "the tmux session this pane lives in, from $TMUX",
     ]),
-    ("throughput", "\U000f04c5", "Token throughput", (125, 211, 252), [
+    ("throughput", "\U000f04c5", "Token throughput", (96, 165, 250), [
         "output tokens per second over the current turn",
         "from the transcript's usage and timing, not an estimate",
     ]),
-    ("api_time", "", "Time in the API", (145, 130, 155), [
+    ("api_time", "", "Time in the API", (163, 163, 163), [
         "total_api_duration_ms: time spent waiting on the model",
         "less than wall-clock time, which also counts your own thinking",
     ]),
-    ("repo_cost", "", "Repo spend", (110, 155, 95), [
+    ("repo_cost", "", "Repo spend", (74, 222, 128), [
         "everything spent in this repo across sessions",
         "summed from the usage ledger, positive increments only",
     ]),
-    ("session_cost", "", "Session spend", (90, 120, 82), [
+    ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
+    ]),
+    ("block", "\uf094", "Billing block", (192, 132, 252), [
+        "spend inside the CURRENT 5-hour rate-limit window",
+        "window is rate_limits.five_hour.resets_at less 5h",
+        "says idle rather than guess when that window has lapsed",
     ]),
     ("context", r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
@@ -185,6 +190,16 @@ def _split_keep(s, pat):
     return out
 
 
+def band_drift(tsx):
+    """Ids on both sides (this table and the band's CARDS in register.tsx) whose colours differ.
+    The highlight and the card border use this table, the band uses its own: they must agree."""
+    band = {}
+    for m in re.finditer(r"^  (\w+): \{\s*title: '[^']*',\s*color: '(#[0-9a-fA-F]{6})'", tsx, re.M):
+        band[m.group(1)] = m.group(2).lower()
+    ours = {c[0]: "#%02x%02x%02x" % tuple(c[3]) for c in CARDS}
+    return sorted(f"{i}: band {band[i]} vs ours {ours[i]}" for i in band if i in ours and band[i] != ours[i])
+
+
 def selfcheck():
     """The column arithmetic, against a row whose answer is countable by hand.
 
@@ -225,6 +240,14 @@ def selfcheck():
     # Something with no card still gets one, rather than being unhoverable.
     sid, title, _rgb, body = classify("wat")
     assert sid is None and title == "Readout" and body
+    # The band draws its own hover fill from its own table: the two must not drift apart.
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "hooks", "register.tsx"), encoding="utf-8") as f:
+        tsx = f.read()
+    assert re.search(r"^  folder: \{", tsx, re.M), "drift guard parsed nothing from register.tsx"
+    assert band_drift(tsx) == [], band_drift(tsx)
+    assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
+    assert classify("\uf094 $1.20")[0] == "block", "the billing block has a card"
     print("mklayout ok")
 
 
@@ -358,7 +381,9 @@ def _cards_check_body(root, binary, pane):
         shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
-    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
+    # block needs a usage-ledger spend inside the 5-hour window, which no fixture payload has: its
+    # pattern is checked against the renderer's own text in selfcheck() instead.
+    want = {c[0] for c in CARDS} - {"remote_control", "ahead", "block"}
     # remote_control is drawn by the band, and ahead shares a piece with dirty.
     assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
     print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")

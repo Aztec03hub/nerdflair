@@ -38,8 +38,8 @@ def mode():
         return open(flag).read().strip() or "status"
     except OSError:
         return "status"
-def status(pad):
-    sys.stdout.write("\033[2J\033[48;1H  " + G + " nerdflair" + pad + " \033[0m· \033[38;2;200;100;50m\U000f062c main\033[0m · \033[38;5;33;3mx y\033[0m")
+def status(pad, clear="\033[2J"):
+    sys.stdout.write(clear + "\033[48;1H  " + G + " nerdflair" + pad + " \033[0m· \033[38;2;200;100;50m\U000f062c main\033[0m · \033[38;5;33;3mx y\033[0m")
 def dialog():
     sys.stdout.write("\033[2J\033[44;1H Bash command - from the general-purpose agent\033[45;1H Do you want to proceed?\033[48;1H" + " " * 80)
 def draw():
@@ -52,6 +52,8 @@ shown = draw()
 while True:
     if mode() != shown:
         shown = draw()
+    elif shown == "tick":              # a ticking band: the same line again every ~0.1 s
+        status("", clear=""); sys.stdout.flush()
     time.sleep(0.1)
 '''
 
@@ -216,6 +218,44 @@ def dialog():
         r.close()
 
 
+def dialog_ticking():
+    print("dialog over a line the engine keeps redrawing (a rate-limited layout read must not paint it)")
+    r = Run("tick")
+    try:
+        col, w, _ = pieces_of(r.row())[1]
+        bad = 0
+        cycles = 16
+        for i in range(cycles):
+            r.mode("tick")
+            time.sleep(0.5)
+            r.hover(col + w // 2, wait=0.3 + 0.04 * i)       # vary the phase against the 0.15 s layout limit
+            r.mode("dialog")                                 # drawn once, pointer still
+            time.sleep(1.2)
+            if r.screen_has_lit() or r.card():
+                bad += 1
+            r.hover(3, 3, 0.2)
+        check(f"zero lit cells on the dialog and the card closed, in {cycles} cycles", bad == 0, f"{bad} of {cycles} cycles bad")
+    finally:
+        r.close()
+
+
+def shift_generic():
+    print("a readout without a card id follows when the line shifts")
+    r = Run("shiftg")
+    try:
+        col, w, text = pieces_of(r.row())[2]
+        r.hover(col + w // 2)
+        r.mode("shift")
+        time.sleep(1.5)
+        now = r.row()
+        ncol, nw, ntext = pieces_of(now)[2]
+        check("the generic readout really moved", ncol != col and ntext == text, f"{col} {ncol}")
+        check("highlight followed it", lit_idx(now) == list(range(ncol - 1, ncol - 1 + nw)), str(lit_idx(now)))
+        check("its card is still open", r.card())
+    finally:
+        r.close()
+
+
 def shift():
     print("status line shifts while the pointer rests")
     r = Run("shift")
@@ -303,7 +343,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, shift, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)

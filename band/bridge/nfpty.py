@@ -1225,8 +1225,18 @@ def main():
                     # The engine drew while a card is up: is its readout still there, and where?
                     # (a dialog over the line, or a figure that changed width, with the pointer still)
                     covered = set(range(panel.rect[1], panel.rect[1] + panel.rect[3])) if panel.rect else set()
-                    layout.refresh(covered)
+                    # force: a rate-limited (stale) read would still show the readout under a dialog
+                    layout.refresh(covered, force=True)
                     cur_seg = next((s for s in layout.segs if s["id"] == panel.shown), None)
+                    if cur_seg is None and panel.shown.startswith("row") and shown_seg[0]:
+                        # a readout without a card id is known by its text, so it is followed when it shifts
+                        cur_seg = next((s for s in layout.segs if s["id"].startswith("row")
+                                        and s["body"][0] == shown_seg[0]["body"][0]), None)
+                        if cur_seg is not None:
+                            if pending or not clean[0]:
+                                return                 # the card cannot be moved while our writes are queued: next pass
+                            panel.show(cur_seg["id"], cur_seg["title"], cur_seg["body"], tuple(cur_seg["rgb"]),
+                                       cur_seg["x"], cur_seg["row"])
                     if cur_seg is None:
                         hide_at[0] = now          # gone: the card goes with it, through the normal erase
                         shown_seg[0] = None
@@ -1237,7 +1247,9 @@ def main():
                     note_once("highlight-card-over-row", "highlight: the card covers its own readout's row "
                                                          "(terminal too small); not highlighting")
                     seg = None
-                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None)
+                # "accent": a per-readout override of the card colour (set by whoever knows better, e.g. the
+                # Remote Control chip, whose colour follows its state)
+                hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg.get("accent") or seg["rgb"])) if seg else None)
                 if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
                     hl_dirty[0] = False
                     hl.refresh()
@@ -1253,8 +1265,8 @@ def main():
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.
         try:
-            if status_box[0] is None:
-                hl.off()          # the engine is still up: put its cells back (an exited one may have cleared the screen)
+            if hl.cur is not None:
+                hl.off()          # always: a highlight left on its last frame would stay in the scrollback
         except OSError as e:
             if e.errno not in (errno.EIO, errno.EPIPE):
                 note_once("exit-highlight", f"could not take the highlight down on exit ({e})")

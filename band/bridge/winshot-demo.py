@@ -9,7 +9,11 @@ captures the terminal window with winshot: baseline, hover A, hover B, away.
 Nothing is sent to the desktop. The pointer is simulated by writing SGR mouse
 reports into that one pane with tmux send-keys, the same bytes a terminal sends.
 
-  python3 winshot-demo.py OUTDIR [TERMINAL_EXE_SUBSTRING]
+This is the one script here that uses the tmux server you run it from (not a private one), and
+it starts a real `claude --dangerously-skip-permissions` there. It refuses to run without
+--i-know-this-uses-my-main-tmux, and it is not for CI.
+
+  python3 winshot-demo.py --i-know-this-uses-my-main-tmux OUTDIR [TERMINAL_EXE_SUBSTRING]
 Writes OUTDIR/ready when the window is up (select it now), OUTDIR/done when the
 captures are finished and the window is gone.
 """
@@ -31,9 +35,17 @@ def tmux(*a):
     return subprocess.run(["tmux", *a], capture_output=True, text=True).stdout
 
 
+FLAG = "--i-know-this-uses-my-main-tmux"
+
+
 def main():
-    out = sys.argv[1]
-    exe = sys.argv[2] if len(sys.argv) > 2 else "wezterm-gui"
+    args = [a for a in sys.argv[1:] if a != FLAG]
+    if FLAG not in sys.argv[1:] or not args:
+        sys.exit(__doc__ + f"\nrefusing to run without {FLAG} and an OUTDIR.")
+    print(f"winshot-demo: in THIS tmux server, killing any window named {WIN!r}, starting a real claude "
+          f"(bypass permissions) in a new detached window, and killing that window when done. Output: {args[0]}")
+    out = args[0]
+    exe = args[1] if len(args) > 1 else "wezterm-gui"
     os.makedirs(out, exist_ok=True)
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
