@@ -357,7 +357,7 @@ class Highlight:
     answer in. This class only paints what it is told.
     """
 
-    REFRESH = 0.2          # at most one re-read and repaint per this many seconds
+    REFRESH = 0.5          # at most one re-read and repaint per this many seconds: a cycle is 4 tmux spawns, so 8 a second at most
     BACKOFF = 1.0
 
     def __init__(self, write, shadow, cursor=lambda: ""):
@@ -386,9 +386,12 @@ class Highlight:
         self.write(f"{ESC}[s{ESC}[?25l{s}{self.cursor()}{ESC}[u", keep=keep)
 
     def on(self, key):
+        """True if it read tmux (False inside the backoff after a failure, where it does nothing)."""
         now = time.monotonic()
         if now < self.retry_at:
-            return
+            return False
+        if self.redo is not None and self.redo[0][0] != key[0]:
+            self.redo = None            # a stale restore for another row is not worth writing any more
         got = self._cells(key)
         if got is None:
             self.retry_at = now + self.BACKOFF
@@ -396,13 +399,15 @@ class Highlight:
             if self.shadow is not None:
                 note_rate("highlight-degrade", "highlight: the shadow screen could not answer, so the readout is not "
                                                "highlighted (its card still works)")
-            return
+            return True
         self.cur, self.plain, self.last = key, got[1], now
         self._paint(got[0], keep=True)      # small, and a dropped frame would leave the highlight missing
+        return True
 
     def off(self):
+        """True if it had a highlight to take down."""
         if self.cur is None:
-            return
+            return False
         got = self._cells(self.cur)
         if got is None:
             note_rate("highlight-restore", "highlight: the shadow screen could not answer at restore time; put back the "
@@ -416,6 +421,7 @@ class Highlight:
             # The paint above is the saved copy, or waits behind an unfinished engine sequence: either way
             # it can land on top of newer engine output. Repaint from the shadow once things are clean.
             self.redo = (key, 0, 0.0)
+        return True
 
     def recheck(self):
         """Repaint a possibly stale restore from the shadow (see off). Called every loop pass; cheap when idle."""
@@ -436,16 +442,19 @@ class Highlight:
             self.redo = (key, tries + 1, time.monotonic() + 0.5)
 
     def sync(self, key):
+        """True if this pass did tmux work (took one down or tried to put one up)."""
         if key == self.cur:
-            return
-        self.off()
+            return False
+        did = self.off()
         if key is not None:
-            self.on(key)
+            did = self.on(key) or did
+        return did
 
     def gap(self):
-        """Seconds between refreshes: REFRESH, or fifteen times what the last one blocked the relay, so the
-        loop that carries the user's keystrokes spends at most a fifteenth of its time here (and, at
-        roughly 150 tmux spawns a second of busy time, starts about 10 a second at most)."""
+        """Seconds between refreshes: REFRESH (0.5), or fifteen times what the last one blocked the relay,
+        so the loop that carries the user's keystrokes spends at most a fifteenth of its time here. A
+        cycle is 4 tmux spawns, so this is 8 spawns a second at most when tmux is quick and fewer when
+        it is slow (a slow cycle earns a longer gap, up to 2 s)."""
         return min(2.0, max(self.REFRESH, 15 * self.busy))
 
     def refresh(self):
@@ -453,18 +462,21 @@ class Highlight:
         ponytail: ANY engine output while a highlight is up marks it dirty (guessing which writes reach the
         cells needs a terminal emulator, and was wrong in every form tried). Cost is bounded instead:
         one re-read per REFRESH, only while a card is open, zero when the engine is quiet or no card is up;
-        the highlight is off between the engine's write and that repaint (a blink of up to REFRESH)."""
+        the highlight is off between the engine's write and that repaint: a lag of up to gap(), which is
+        0.5 s when tmux is quick and up to 2 s on a loaded machine. An engine that rewrites its status row
+        more often than that leaves the highlight mostly off. Returns True if it painted."""
         now = time.monotonic()
         if self.cur is None or now - self.last < self.gap():
-            return
+            return False
         got = self._cells(self.cur)
         self.last = now
         if got is None:
             note_rate("highlight-refresh", "highlight: the shadow screen could not answer, so the highlight was not "
                                            "repainted after the engine drew (it may be missing until the next read)")
-            return
+            return False
         self.plain = got[1]
         self._paint(got[0], keep=True)
+        return True
 
     def forget(self):
         """Geometry changed: the engine repaints everything, so write nothing."""
@@ -472,6 +484,21 @@ class Highlight:
 
 
 ALT_SCREEN = re.compile(rb"\033\[\?(?:1049|1047|47)[hl]")
+
+
+# The start of an alt-screen switch at the very end of a read: the rest comes in the next one, and by then it is
+# too late to take the card down before it. (Shorter prefixes, ESC or ESC [, end reads far too often to act on.)
+ALT_PARTIAL = re.compile(rb"\033\[\?(?:10|104|47|1047|1049)$")
+
+
+def alt_switch(tail, data):
+    """(True if `data` completes an alt-screen switch, the new 8-byte tail). The tail carries the end of
+    the previous read, so a switch split across two reads is still seen."""
+    both = tail + data
+    m = None
+    for m in ALT_SCREEN.finditer(both):
+        pass
+    return (m is not None and m.end() > len(tail)), both[-8:]
 CURSOR = re.compile(rb"\033\[\?25([hl])")
 MODE = re.compile(rb"\033\[\?(1000|1002|1003|1006|1015)([hl])")
 
@@ -833,7 +860,7 @@ def selfcheck():
     h.forget()
     assert h.cur is None
     hh = Highlight(lambda *_a, **_k: None, None)
-    assert hh.gap() == hh.REFRESH == 0.2, "at least REFRESH between re-reads"
+    assert hh.gap() == hh.REFRESH == 0.5, "at least REFRESH between re-reads: 4 spawns a cycle, 8 a second at most"
     hh.busy = 0.05
     assert abs(hh.gap() - 0.75) < 1e-9, "a refresh that blocked the relay 50 ms spaces the next out to 0.75 s (under 7% duty)"
     hh.busy = 9
@@ -855,6 +882,41 @@ def selfcheck():
     sh2.text = f"ab{ESC}[38;5;9mXZ{ESC}[0m cd"          # the engine changed a cell meanwhile
     h2.recheck()
     assert len(wq) == n2 + 1 and "XZ" in wq[-1][0] and "XY" not in wq[-1][0] and h2.redo is None, wq[-1]
+    # An alt-screen switch split at every byte is still seen, exactly once, on the read that completes it.
+    sw = b"\x1b[?1049h"
+    for cut_at in range(1, len(sw)):
+        hit1, tl = alt_switch(b"", b"ls" + sw[:cut_at])
+        hit2, tl = alt_switch(tl, sw[cut_at:] + b"x")
+        assert (hit1, hit2) == (False, True), (cut_at, hit1, hit2)
+    assert alt_switch(b"", b"abc") == (False, b"abc") and alt_switch(sw, b"x")[0] is False, "a switch already seen is not seen again"
+    assert ALT_PARTIAL.search(b"abc" + sw[:6]) and ALT_PARTIAL.search(b"x\x1b[?47") and not ALT_PARTIAL.search(b"abc\x1b[") \
+        and not ALT_PARTIAL.search(sw) and not ALT_PARTIAL.search(b"\x1b[?25"), "the partial-switch test is anchored to the end"
+    # Highlight edge cases: the shadow cannot answer.
+    dead = FakeShadow(None)
+    wd = []
+    h3 = Highlight(lambda s, keep=False: wd.append((s, keep)), dead)
+    h3.cur, h3.plain = (2, 3, 2, RGB), "SAVED"
+    assert h3.off() is True and wd[-1][0].find("SAVED") > 0 and h3.redo is not None, "restore from the saved copy and flag a re-check"
+    for _ in range(5):
+        assert h3.redo is not None
+        h3.redo = (h3.redo[0], h3.redo[1], 0.0)
+        h3.recheck()
+    assert h3.redo is None, "the re-check gives up after 5 tries (and says so)"
+    assert h3.refresh() is False and h3.sync(None) is False and h3.sync((2, 3, 2, RGB)) is True and h3.sync((2, 3, 2, RGB)) is False, \
+        "refresh with no highlight paints nothing; a failed on() counts as work once, then the backoff does not"
+    h3.redo = ((2, 3, 2, RGB), 0, 0.0)
+    h3.forget()
+    assert h3.redo is None and h3.cur is None, "forget drops a pending re-check"
+    h4 = Highlight(lambda s, keep=False: None, FakeShadow(line))
+    h4.sync((2, 3, 2, RGB))
+    h4.shadow = FakeShadow(None)
+    h4.last = 0.0
+    assert h4.refresh() is False, "refresh reports it did not paint when the shadow cannot answer"
+    h4.redo = ((2, 3, 2, RGB), 0, 0.0)
+    h4.cur = None
+    h4.shadow = FakeShadow(line)
+    h4.sync((5, 3, 2, RGB))
+    assert h4.redo is None, "a stale re-check for another row is dropped when a new highlight goes up"
     # Wide characters at the range edges are included whole, never half-painted.
     wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
     assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
@@ -1043,6 +1105,7 @@ def main():
         if seg is not None:
             shown_prev[0] = left_of(seg)
             shown_twin[0] = sum(1 for t in layout.segs if t["id"].startswith("row") and t["body"][0] == seg["body"][0]) > 1
+    alt_tail = [b""]            # end of the previous engine read, for an alt-screen switch split across reads
     worked_box = [False]        # this pass read tmux for the highlight (so it is timed)
     hl_next = [0.0]             # the dirty re-read does not run before this (it is spaced whether or not it painted)
     hl_dirty = [False]          # the engine wrote since the highlight was painted: re-read and repaint it
@@ -1197,12 +1260,22 @@ def main():
                 if not data:
                     break
                 guarded("note_modes", note_modes, data, dbg)
-                if panel.shown and ALT_SCREEN.search(data):
+                is_alt, alt_tail[0] = alt_switch(alt_tail[0], data)
+                if (is_alt or ALT_PARTIAL.search(data)) and panel.shown:
                     # The engine is about to swap screens. Whatever we painted on the main screen (card and
                     # highlight) comes back with it when it returns, so take both down FIRST, before the
                     # switch is forwarded. The pointer has to move again to bring a card back.
-                    guarded("panel.erase", panel.erase)
-                    guarded("highlight.alt", hl.off)
+                    if clean[0]:
+                        guarded("panel.erase", panel.erase)
+                        guarded("highlight.alt", hl.off)
+                    else:
+                        # The previous read ended mid-sequence, so anything written now would queue behind
+                        # the switch and land on the alt screen. Drop the state without writing instead;
+                        # the card and highlight stay painted on the main screen until the engine redraws.
+                        note_rate("alt-midsequence", "alt-screen switch arrived mid-sequence: the card could not be "
+                                                     "taken down first and may stay painted until the engine redraws")
+                        panel.reset()
+                        hl.forget()
                 out.write(data)
                 out.flush()
                 clean[0] = stream.feed(data)
@@ -1355,16 +1428,16 @@ def main():
                                                          "(terminal too small); not highlighting")
                     seg = None
                 key = (seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None
-                if key != hl.cur:
-                    worked_box[0] = True                     # a transition reads tmux too
-                hl.sync(key)
+                if hl.sync(key):
+                    worked_box[0] = True                     # a transition that read tmux is timed too
                 hl.recheck()
                 if hl.cur is None:
                     hl_dirty[0] = False                      # nothing is up to repaint (covered row, failed on(), resize)
                 elif hl_dirty[0] and now >= hl_next[0]:
                     worked_box[0] = True
                     hl_dirty[0] = False
-                    hl.refresh()
+                    if not hl.refresh():
+                        hl_dirty[0] = True               # nothing painted (shadow cool): try again at the next gap
             guarded("highlight", sync_hl)
 
             if now - last >= FRAME:

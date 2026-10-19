@@ -62,10 +62,14 @@ WRITES = {
     "w_wide": lambda: sys.stdout.write(E + "[47d" + E + "[1G" + "\u4e2d" * 30 + E + "[1B" + E + "[1G" + body()),
     "w_wrap": lambda: sys.stdout.write(E + "[49d" + E + "[1G" + "x" * 120 + E + "[1A" + E + "[1G" + body()),
     "w_far": lambda: sys.stdout.write(E + "[48d" + E + "[999C" + "Z"),
-    "w_alt": lambda: sys.stdout.write(E + "[?1049h" + E + "[?1049l" + E + "[48d" + E + "[1G" + body()),
 }
-def altswitch():                      # a pager: alt screen on, alt screen off, the status row never redrawn
-    sys.stdout.write(E + "[?1049h" + E + "[2J" + E + "[1;1Hpager"); sys.stdout.flush(); time.sleep(0.8)
+def altswitch(split=False):           # a pager: alt screen on, alt screen off, the status row never redrawn
+    if split:                         # the switch sequence arrives in two reads
+        sys.stdout.write(E + "[?10"); sys.stdout.flush(); time.sleep(0.4)
+        sys.stdout.write("49h" + E + "[2J" + E + "[1;1Hpager")
+    else:
+        sys.stdout.write(E + "[?1049h" + E + "[2J" + E + "[1;1Hpager")
+    sys.stdout.flush(); time.sleep(0.8)
     sys.stdout.write(E + "[?1049l")
 def dialog():
     sys.stdout.write("\033[2J\033[44;1H Bash command - from the general-purpose agent\033[45;1H Do you want to proceed?\033[48;1H" + " " * 80)
@@ -74,8 +78,8 @@ def draw():
     if m in WRITES:
         WRITES[m](); sys.stdout.flush()
         return m
-    if m == "altswitch":
-        altswitch(); sys.stdout.flush()
+    if m in ("altswitch", "altsplit"):
+        altswitch(split=m == "altsplit"); sys.stdout.flush()
         return m
     if m == "wide":
         status("", tail=" \033[0m· \u4e2d\u6587\u5b57 ab")
@@ -395,7 +399,7 @@ def cost_bounded():
         time.sleep(6.0)
         rate = (r.spawns() - a) / 6.0
         print(f"        measured: {rate:.1f} tmux spawns/s with a card open and a spinner on another row")
-        check("card open, spinner on another row: at most 6 tmux spawns/s", rate <= 6, f"{rate:.1f}/s")
+        check("card open, spinner on another row: at most 10 tmux spawns/s (the code allows 8)", rate <= 10, f"{rate:.1f}/s")
         r.mode("status")
         time.sleep(1.5)
         r.hover(col + w // 2, wait=1.5)
@@ -427,7 +431,7 @@ def tiny_terminal():
         time.sleep(5.0)
         rate = (r.spawns() - a) / 5.0
         print(f"        measured: {rate:.1f} tmux spawns/s")
-        check("ticking engine: at most 6 tmux spawns/s", rate <= 6, f"{rate:.1f}/s")
+        check("ticking engine: at most 10 tmux spawns/s", rate <= 10, f"{rate:.1f}/s")
     finally:
         r.close()
 
@@ -450,21 +454,21 @@ def failed_switch_cost():
         time.sleep(5.0)
         rate = (r.spawns() - a) / 5.0
         print(f"        measured: {rate:.1f} tmux spawns/s")
-        check("with the highlight failing and the engine ticking: at most 6 tmux spawns/s", rate <= 6, f"{rate:.1f}/s")
+        check("with the highlight failing and the engine ticking: at most 10 tmux spawns/s", rate <= 10, f"{rate:.1f}/s")
         check("nothing left lit", not r.screen_has_lit())
     finally:
         r.close()
 
 
-def alt_screen():
-    print("the engine switches to the alt screen and back while a card is up: nothing stays lit")
+def alt_screen(mode="altswitch"):
+    print(f"the engine switches to the alt screen and back while a card is up ({mode}): nothing stays lit")
     r = Run("alt")
     try:
         base = r.row()
         col, w, _ = pieces_of(base)[1]
         r.hover(col + w // 2)
         check("highlight on", bool(lit_idx(r.row())))
-        r.mode("altswitch")
+        r.mode(mode)
         time.sleep(2.5)
         check("after the return the row is as it was, with no card and nothing lit (both were taken down first)",
               r.row() == base and not r.card() and not r.screen_has_lit(), f"lit {lit_idx(r.row())} card {r.card()}")
@@ -474,6 +478,10 @@ def alt_screen():
         check("and leaving takes both down", not r.card() and not r.screen_has_lit())
     finally:
         r.close()
+
+
+def alt_screen_split():
+    alt_screen("altsplit")
 
 
 def wide_readout():
@@ -604,7 +612,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, alt_screen, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
