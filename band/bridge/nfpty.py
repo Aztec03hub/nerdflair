@@ -342,170 +342,6 @@ def cut(line, x, w, hl=""):
     return f"{ESC}[{{row}};{start}H" + "".join(out) + RESET
 
 
-class RowTracker:
-    """Follows the engine's cursor through its byte stream, to say whether a chunk wrote on, erased,
-    inserted into, deleted from or scrolled screen row `t`. It is how the highlight knows its cells may
-    have been overwritten, without reading the screen on every chunk.
-
-    FAILS SAFE: whatever it cannot follow (an unknown cursor row, an alt-screen switch, a reset, a
-    sequence it cannot parse, a pending sequence over 4096 bytes) is reported as touching the row.
-    Cursor state is lost (`lose()`) whenever no highlight is up, so it is rebuilt from the first
-    absolute cursor move after one goes up; until then every write counts. Sequences split across
-    reads are held in `pending`.
-    ponytail: a Python loop over the engine's bytes, run only while a highlight is up; tokens, not
-    bytes, so a long text run is one step. Column tracking counts a 3-byte UTF-8 char as 2 cells."""
-
-    TOK = re.compile(
-        rb"\x1b\[([0-?]*)[ -/]*([@-~])"                                       # CSI
-        rb"|\x1b[\]PX^_](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)"            # OSC / DCS / SOS / PM / APC
-        rb"|\x1b([ -/]*)([0-9:;<=>?@A-OQ-WYZ\\`a-~])"                           # ESC + final (charset, DECSC, IND...)
-        rb"|([\x00-\x1a\x1c-\x1f\x7f])"                                        # C0 controls
-        rb"|([^\x00-\x1f\x7f]+)")                                              # text
-
-    def __init__(self, rows, cols):
-        self.rows, self.cols = rows, cols
-        self.lose()
-
-    def lose(self):
-        self.row = self.col = self.saved = None
-        self.top, self.bottom = 1, self.rows
-        self.pending = b""
-
-    def _clamp(self, r):
-        return max(1, min(self.rows, r))
-
-    def _lf(self, t):
-        """Line feed: True if it scrolls a region holding row t."""
-        if self.row is None:
-            return False
-        if self.row == self.bottom:
-            return self.top <= t <= self.bottom
-        self.row = self._clamp(self.row + 1)
-        return False
-
-    def _csi(self, params, fin, t):
-        priv = params[:1] in (b"?", b">", b"<", b"=")
-        try:
-            a = [int(x) if x else 0 for x in (params[1:] if priv else params).replace(b":", b";").split(b";")]
-        except ValueError:
-            self.lose()
-            return True
-        n = a[0] or 1
-        r, f = self.row, chr(fin[0])
-        if priv:
-            if f in "hl" and any(x in (47, 1047, 1048, 1049) for x in a):
-                self.lose()                      # the whole screen is swapped
-                return True
-            return False
-        if f in "Hf":
-            self.row = self._clamp(n)
-            self.col = max(1, a[1]) if len(a) > 1 and a[1] else 1
-        elif f == "d":
-            self.row = self._clamp(n)
-        elif f in "Ae":
-            self.row = None if r is None else self._clamp(r + (n if f == "e" else -n))
-        elif f in "BEF":
-            self.row = None if r is None else self._clamp(r + (-n if f == "F" else n))
-            if f in "EF":
-                self.col = 1
-        elif f in "G`":
-            self.col = n
-        elif f in "Ca":
-            self.col = None if self.col is None else self.col + n
-        elif f == "D":
-            self.col = None if self.col is None else max(1, self.col - n)
-        elif f in "KXP@":
-            return r is None or r == t
-        elif f == "J":
-            m = a[0]
-            return True if m in (2, 3) else r is None or (t <= r if m == 1 else t >= r)
-        elif f in "LM":
-            return r is None or r <= t <= self.bottom
-        elif f in "ST":
-            return self.top <= t <= self.bottom
-        elif f == "r":
-            self.top = n
-            self.bottom = a[1] if len(a) > 1 and a[1] else self.rows
-            self.row = self.col = 1
-        elif f == "s":
-            self.saved = (self.row, self.col)
-        elif f == "u":
-            self.row, self.col = self.saved or (None, None)
-        return False
-
-    def feed(self, data, t):
-        """True if this chunk may have changed screen row t."""
-        buf, self.pending = self.pending + data, b""
-        touched, pos = False, 0
-        while pos < len(buf):
-            m = self.TOK.match(buf, pos)
-            if m is None:
-                if buf[pos] == 0x1b and len(buf) - pos < 4096:
-                    self.pending = buf[pos:]      # an unfinished sequence: wait for the rest
-                    break
-                self.lose()                       # something we cannot parse: sync is gone
-                return True
-            pos = m.end()
-            csi_p, csi_f, e_i, e_f, ctl, text = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
-            if csi_f:
-                touched |= self._csi(csi_p, csi_f, t)
-            elif e_f:
-                f = chr(e_f[0])
-                if e_i:
-                    touched |= e_i == b"#"           # DECALN fills the screen; charset selects change nothing
-                elif f == "D":
-                    touched |= self._lf(t)
-                elif f == "E":
-                    self.col = 1
-                    touched |= self._lf(t)
-                elif f == "M":
-                    if self.row is not None:
-                        if self.row == self.top:
-                            touched |= self.top <= t <= self.bottom
-                        else:
-                            self.row = self._clamp(self.row - 1)
-                elif f == "7":
-                    self.saved = (self.row, self.col)
-                elif f == "8":
-                    self.row, self.col = self.saved or (None, None)
-                elif f == "c":
-                    self.lose()
-                    return True
-            elif ctl:
-                c = ctl[0]
-                if c in (0x0a, 0x0b, 0x0c):
-                    touched |= self._lf(t)
-                elif c == 0x0d:
-                    self.col = 1
-                elif c == 0x08 and self.col:
-                    self.col = max(1, min(self.col, self.cols) - 1)
-                elif c == 0x09 and self.col:
-                    self.col = min(self.cols, (self.col - 1) // 8 * 8 + 9)
-            elif text:
-                n = sum(2 if b >= 0xe0 else 1 for b in text if not 0x80 <= b <= 0xbf)
-                if self.row is None:
-                    touched = True
-                    continue
-                if self.col is None:
-                    touched |= self.row in (t - 1, t)      # unknown column: it may have wrapped onto t
-                    continue
-                while n > 0:
-                    if self.col > self.cols:
-                        self.col = 1
-                        touched |= self._lf(t)
-                        if self.row is None:
-                            break
-                    touched |= self.row == t
-                    k = min(n, self.cols - self.col + 1)
-                    self.col += k
-                    n -= k
-        # A held fragment that is not plausibly an unfinished sequence means we are stuck: say so.
-        if self.pending and len(self.pending) > (4096 if self.pending[1:2] in (b"]", b"P", b"X", b"^", b"_") else 64):
-            self.lose()
-            return True
-        return touched
-
-
 class Highlight:
     """The readout under an open card, painted like the band's own hover.
 
@@ -521,7 +357,7 @@ class Highlight:
     answer in. This class only paints what it is told.
     """
 
-    REFRESH = 0.1
+    REFRESH = 0.2          # at most one re-read and repaint per this many seconds
     BACKOFF = 1.0
 
     def __init__(self, write, shadow, cursor=lambda: ""):
@@ -530,6 +366,7 @@ class Highlight:
         self.plain = ""
         self.last = 0.0
         self.retry_at = 0.0     # after a failed on(): no new attempt before this
+        self.busy = 0.0         # how long the last refresh blocked the relay loop
 
     def _cells(self, key):
         row, x, w, rgb = key
@@ -578,15 +415,20 @@ class Highlight:
         if key is not None:
             self.on(key)
 
+    def gap(self):
+        """Seconds between refreshes: REFRESH, or fifteen times what the last one blocked the relay, so the
+        loop that carries the user's keystrokes spends at most a fifteenth of its time here (and, at
+        roughly 150 tmux spawns a second of busy time, starts about 10 a second at most)."""
+        return min(2.0, max(self.REFRESH, 15 * self.busy))
+
     def refresh(self):
         """The engine repainted: put the highlight back over what it drew.
-        ponytail: any engine output while a card is up costs a tmux read per REFRESH, and the
-        highlight is off between the engine's write and that repaint (up to REFRESH, a blink).
-        Bounded to card-open time and to engine writes that touch the highlighted row (RowTracker):
-        measured 2026-10-19, an engine rewriting that row every 0.1 s costs ~29 tmux spawns/s, a spinner on
-        another row 0, no card 0."""
+        ponytail: ANY engine output while a highlight is up marks it dirty (guessing which writes reach the
+        cells needs a terminal emulator, and was wrong in every form tried). Cost is bounded instead:
+        one re-read per REFRESH, only while a card is open, zero when the engine is quiet or no card is up;
+        the highlight is off between the engine's write and that repaint (a blink of up to REFRESH)."""
         now = time.monotonic()
-        if self.cur is None or now - self.last < self.REFRESH:
+        if self.cur is None or now - self.last < self.gap():
             return
         got = self._cells(self.cur)
         self.last = now
@@ -962,42 +804,12 @@ def selfcheck():
     assert h.cur == (2, 8, 3, RGB2) and HL not in wr[-2][0] and hl_for(RGB2) in wr[-1][0] and HL not in wr[-1][0], wr[-2:]
     h.forget()
     assert h.cur is None
-    # RowTracker: does a chunk touch row 48 (of 50)? Each line is (bytes, expected).
-    def tr(*chunks, t=48, known=True):
-        k = RowTracker(50, 120)
-        if known:
-            k.feed(b"\x1b[1;1H", t)
-        return [k.feed(c, t) for c in chunks]
-    E = b"\x1b"
-    cases = [
-        (E + b"[48;1Hhi", True), (E + b"[48Hhi", True), (E + b"[48d" + E + b"[1Ghi", True),
-        (E + b"[10;1Hspin", False), (E + b"[48;2;1;2;3mhi", False), (E + b"[1;31mhi", False), (b"abc", False),
-        (E + b"[48d" + E + b"[K", True), (E + b"[48d" + E + b"[2K", True), (E + b"[48d" + E + b"[0J", True),
-        (E + b"[47d" + E + b"D" + b"x", True), (E + b"[45d" + E + b"[3Bx", True), (E + b"[45d" + E + b"[3Ex", True),
-        (E + b"[20d" + E + b"[0J", True), (E + b"[20d" + E + b"[1J", False), (E + b"[48d" + E + b"[2L", True),
-        (E + b"[48d" + E + b"[2M", True), (E + b"[48d" + E + b"[3P", True), (E + b"[48d" + E + b"[3@", True),
-        (E + b"[48d" + E + b"[3X", True), (E + b"[1S", True), (E + b"[1T", True), (E + b"[2J", True),
-        (E + b"[?1049h", True), (E + b"[?1047l", True), (E + b"c", True), (E + b"#8", True),
-        (E + b"[10;1H" + E + b"[1;5r" + b"\n\n", False),                   # a scroll region above the row
-        (E + b"[10;1H" + E + b"7" + E + b"[48;1H" + E + b"8" + b"x", False),   # DECSC/DECRC bring the cursor back
-        (E + b"[10;1H" + E + b"]0;title\x07" + b"x", False),
-        (E + b"[47;115H" + b"x" * 20, True),                                 # wraps from row 47 onto 48
-        (E + b"[47;1H" + b"x" * 20 + b"\r\n" + b"y", True),
-    ]
-    for chunk, want in cases:
-        got = tr(chunk)[0]
-        assert got == want, (chunk, want, got)
-    # Split sequences and split text across reads.
-    assert tr(E + b"[48;1", b"Hhi") == [False, True]
-    assert tr(E + b"[48;1H", b"hi") == [False, True], "the cursor move and the text arrive in different reads"
-    assert tr(E + b"[", b"4", b"8d", b"x") == [False, False, False, True]
-    assert tr(E + b"[10;1H", b"x" * 5) == [False, False]
-    # Fail safe: unknown cursor, junk, a stuck fragment.
-    assert tr(b"hello", known=False) == [True], "unknown cursor row: any write counts"
-    assert tr(E + b"\x01") == [True] or tr(E + b"\x01" + b"z" * 100)[0] is True, "unparseable stays safe"
-    k = RowTracker(50, 120)
-    k.feed(E + b"[10;1H", 48)
-    assert k.feed(E + b"[" + b"1" * 200, 48) is True and k.row is None, "a fragment that cannot be a sequence loses sync, safely"
+    hh = Highlight(lambda *_a, **_k: None, None)
+    assert hh.gap() == hh.REFRESH == 0.2, "at least REFRESH between re-reads"
+    hh.busy = 0.05
+    assert abs(hh.gap() - 0.75) < 1e-9, "a refresh that blocked the relay 50 ms spaces the next out to 0.75 s (under 7% duty)"
+    hh.busy = 9
+    assert hh.gap() == 2.0, "capped"
     # Wide characters at the range edges are included whole, never half-painted.
     wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
     assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
@@ -1185,8 +997,7 @@ def main():
         if seg is not None:
             shown_prev[0] = left_of(seg)
             shown_twin[0] = sum(1 for t in layout.segs if t["id"].startswith("row") and t["body"][0] == seg["body"][0]) > 1
-    tracker = RowTracker(rows, cols)
-    hl_dirty = [False]          # the engine may have drawn on the highlighted row since it was painted (touches_row)
+    hl_dirty = [False]          # the engine wrote since the highlight was painted: re-read and repaint it
     panel.backdrop.note = (lambda m: dbg.write(m + "\n")) if dbg else None
     panel.backdrop.settled = lambda: not pending
     panel.warn = note_once
@@ -1308,8 +1119,6 @@ def main():
                 rows, cols = winsize(stdin_fd)
                 set_winsize(master, rows, cols)
                 panel.rows, panel.cols = rows, cols
-                tracker.rows, tracker.cols = rows, cols
-                tracker.lose()
                 if shadow is not None:
                     shadow.resize(rows, cols)
                 panel.reset()         # its rect and saved rows are in the old geometry
@@ -1369,10 +1178,8 @@ def main():
                 # against the engine's own frame.
                 if panel.rect:
                     guarded("panel.redraw", panel.redraw)
-                if hl.cur is None:
-                    tracker.lose()           # no highlight: nothing to protect, and the cursor is unknown from here
-                elif tracker.feed(data, hl.cur[0]):
-                    hl_dirty[0] = True
+                if hl.cur is not None:
+                    hl_dirty[0] = True       # ANY engine output while a highlight is up (no guessing which cells)
 
             if stdin_fd in ready:
                 try:
@@ -1451,7 +1258,8 @@ def main():
                 guarded("panel.erase", panel.erase)
 
             def sync_hl():
-                if panel.shown and hl_dirty[0] and now - hl.last >= hl.REFRESH:
+                t_work = time.monotonic()
+                if panel.shown and hl_dirty[0] and now - hl.last >= hl.gap():
                     # The engine drew while a card is up: is its readout still there, and where?
                     # (a dialog over the line, or a figure that changed width, with the pointer still)
                     covered = set(range(panel.rect[1], panel.rect[1] + panel.rect[3])) if panel.rect else set()
@@ -1483,9 +1291,10 @@ def main():
                                                          "(terminal too small); not highlighting")
                     seg = None
                 hl.sync((seg["row"], seg["x"], seg["w"], tuple(seg["rgb"])) if seg else None)
-                if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
+                if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.gap():
                     hl_dirty[0] = False
                     hl.refresh()
+                    hl.busy = time.monotonic() - t_work      # the relay loop was blocked this long: space the next one out
             guarded("highlight", sync_hl)
 
             if now - last >= FRAME:

@@ -56,6 +56,11 @@ WRITES = {
     "w_j": lambda: sys.stdout.write(E + "[48d" + E + "[0J" + E + "[1G" + body()),
     "w_ind": lambda: sys.stdout.write(E + "[47d" + E + "D" + E + "[1G" + body()),
     "w_cud": lambda: sys.stdout.write(E + "[45d" + E + "[3B" + E + "[1G" + body()),
+    # The three forms that fooled the cursor-tracking attempt (removed): wide chars then a relative move,
+    # a deferred wrap then up, and a far column. No guessing is done now, so they are plain regressions.
+    "w_wide": lambda: sys.stdout.write(E + "[47d" + E + "[1G" + "\u4e2d" * 30 + E + "[1B" + E + "[1G" + body()),
+    "w_wrap": lambda: sys.stdout.write(E + "[49d" + E + "[1G" + "x" * 120 + E + "[1A" + E + "[1G" + body()),
+    "w_far": lambda: sys.stdout.write(E + "[48d" + E + "[999C" + "Z"),
     "w_alt": lambda: sys.stdout.write(E + "[?1049h" + E + "[?1049l" + E + "[48d" + E + "[1G" + body()),
 }
 def dialog():
@@ -78,11 +83,20 @@ while True:
     elif shown == "exit":
         subprocess.Popen(["sleep", "30"])      # a descendant keeps the pty slave open: no EIO, the waitpid path
         sys.exit(0)
+    elif shown == "firehose":          # lots of output on other rows, and every key read is timestamped
+        import select
+        for i in range(40):
+            sys.stdout.write("\033[%d;1H" % (5 + i % 20) + "f" * 110)
+        sys.stdout.flush()
+        if select.select([0], [], [], 0)[0]:
+            os.read(0, 4096)
+            with open(flag + ".keys", "a") as kf:
+                kf.write("%f\n" % time.time())
     elif shown == "tickother":         # a spinner on another row only
         sys.stdout.write("\033[10;1H" + "|/-\\"[int(time.time() * 10) % 4]); sys.stdout.flush()
     elif shown == "tick":              # a ticking band: the same line again every ~0.1 s
         status("", clear=""); sys.stdout.flush()
-    time.sleep(0.1)
+    time.sleep(0.005 if shown == "firehose" else 0.1)
 '''
 
 
@@ -248,7 +262,7 @@ def dialog():
         r.hover(col + w // 2)
         check("card open with the highlight on", r.card() and bool(lit_idx(r.row())))
         r.mode("dialog")                      # no pointer movement from here on
-        time.sleep(1.5)
+        time.sleep(2.0)
         check("no highlighted cell left anywhere on the dialog screen", not r.screen_has_lit())
         check("the card closed without a pointer move", not r.card())
         r.mode("status")
@@ -270,8 +284,8 @@ def dialog_ticking():
             r.mode("tick")
             time.sleep(0.5)
             r.hover(col + w // 2, wait=0.3 + 0.04 * i)       # vary the phase against the 0.15 s layout limit
-            r.mode("dialog")                                 # drawn once, pointer still
-            time.sleep(1.2)
+            r.mode("dialog")                                 # drawn once, pointer still   # the repair is spaced out (REFRESH, more when tmux is slow): allow for it
+            time.sleep(2.0)
             if r.screen_has_lit() or r.card():
                 bad += 1
             r.hover(3, 3, 0.2)
@@ -334,14 +348,12 @@ def exit_path():
 
 
 def tracked_writes():
-    print("engine rewrites the highlighted row by cursor moves and erases that pattern matching cannot see")
+    print("engine rewrites the highlighted row in many forms: the highlight is back on the readout's cells")
     for case in WRITE_CASES:
         r = Run("w" + case)
         try:
             col, w, _ = pieces_of(r.row())[0]
             r.hover(col + w // 2)
-            r.mode("tickother")             # a spinner elsewhere: the wrapper learns where the engine's cursor is
-            time.sleep(0.6)
             check("highlight on, card open", bool(lit_idx(r.row())) and r.card())
             r.mode("w_" + case)
             time.sleep(1.5)
@@ -353,22 +365,36 @@ def tracked_writes():
             r.close()
 
 
-def spinner_costs_nothing():
-    print("a spinner on another row costs no tmux spawns; a ticking highlighted row does")
-    r = Run("spin", count=True)
+def cost_bounded():
+    print("cost while a card is open is bounded; quiet engine and no card cost nothing; a rewrite is repaired fast")
+    r = Run("cost", count=True)
     try:
         col, w, _ = pieces_of(r.row())[1]
+        r.mode("tick")
+        time.sleep(1.0)
+        a = r.spawns()
+        time.sleep(3.0)
+        check("no card, ticking engine: zero tmux spawns", r.spawns() == a, f"{r.spawns() - a}")
         r.mode("tickother")
         time.sleep(0.5)
         r.hover(col + w // 2, wait=1.5)
         a = r.spawns()
-        time.sleep(2.5)
-        check("zero tmux spawns in 2.5 s with a card open and a spinner elsewhere", r.spawns() == a, f"{r.spawns() - a} spawns")
-        r.mode("tick")
-        time.sleep(1.0)
-        b = r.spawns()
-        time.sleep(2.5)
-        check("control: the counter sees spawns when the highlighted row is rewritten", r.spawns() > b + 5, f"{r.spawns() - b} spawns")
+        time.sleep(4.0)
+        rate = (r.spawns() - a) / 4.0
+        print(f"        measured: {rate:.1f} tmux spawns/s with a card open and a spinner on another row")
+        check("card open, spinner on another row: at most 12 tmux spawns/s", rate <= 12, f"{rate:.1f}/s")
+        r.mode("status")
+        time.sleep(1.5)
+        r.hover(col + w // 2, wait=1.5)
+        a = r.spawns()
+        time.sleep(3.0)
+        check("card open, quiet engine: zero tmux spawns", r.spawns() == a, f"{r.spawns() - a}")
+        r.mode("w_cup")                       # the highlighted row is rewritten
+        time.sleep(0.5)
+        now = r.row()
+        ncol, nw, _ = pieces_of(now)[1]
+        check("highlight restored within 0.5 s of the row being rewritten",
+              lit_idx(now) == list(range(ncol - 1, ncol - 1 + nw)), str(lit_idx(now)))
     finally:
         r.close()
 
@@ -390,7 +416,7 @@ def dup_vanishes():
         r.close()
 
 
-WRITE_CASES = ("cup", "vpa", "split", "k", "2k", "j", "ind", "cud", "alt")
+WRITE_CASES = ("cup", "vpa", "split", "k", "2k", "j", "ind", "cud", "alt", "wide", "wrap", "far")
 
 
 def shift():
@@ -480,7 +506,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, spinner_costs_nothing, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
