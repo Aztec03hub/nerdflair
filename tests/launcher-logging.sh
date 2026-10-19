@@ -250,6 +250,14 @@ _ms=$(( (${EPOCHREALTIME/./} - ${_t0/./}) / 1000 ))
 check "launcher.log: a 50 KB reason with a stray 0x9b is logged in under 1000 ms" yes "$([[ $_ms -lt 1000 ]] && echo yes || echo "no (${_ms} ms)")"
 check "launcher.log: that reason was cut to the bound" yes "$([[ $(wc -c < "$LOG") -lt 1800 ]] && echo yes || echo no)"
 
+# a CJK character straddling byte 1600 must not leave a partial sequence (strict UTF-8 decode)
+resetlog
+_cjk=$(head -c 1599 /dev/zero | tr '\0' 'a')日本語日本語
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log straddle "$_cjk" )
+check "launcher.log: a reason cut inside a CJK character still decodes as strict UTF-8" ok \
+  "$(python3 -I -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' < "$LOG" >/dev/null 2>&1 && echo ok || echo bad)"
+check "launcher.log: that cut is marked with ..." yes "$(LC_ALL=C; [[ "$(cat "$LOG")" == *'...' ]] && echo yes || echo no)"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys

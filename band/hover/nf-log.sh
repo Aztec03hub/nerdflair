@@ -51,7 +51,13 @@ _nf_log_sanitize() {
 nf_log() {
   local comp=${1:-?} reason=${2:-} dir log key h stamp size LC_ALL=C
   # Bound the input before the byte loop (quadratic): same 1600 bytes as lib.sh, same cap on the name.
-  reason=${reason:0:1600}; comp=${comp:0:100}
+  # Cut at a character boundary (walk back over continuation bytes) and mark it, as lib.sh does.
+  if (( ${#reason} > 1600 )); then
+    h=1600
+    while (( h > 0 )) && [[ "${reason:h:1}" == [$'\x80'-$'\xbf'] ]]; do h=$((h - 1)); done
+    reason="${reason:0:h}..."
+  fi
+  comp=${comp:0:100}
   # Reasons carry user text (paths, python errors): no terminal control may reach the log.
   _nf_log_sanitize "$reason"; reason=$_NF_LOGS
   _nf_log_sanitize "$comp"; comp=$_NF_LOGS
