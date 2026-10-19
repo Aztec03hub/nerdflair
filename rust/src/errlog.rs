@@ -187,50 +187,46 @@ fn emit(key: &str, reason: &str) -> bool {
     emit_bytes(key, reason.as_bytes())
 }
 
+/// Bytes that are safe to put in the log: C0, DEL and C1 controls (U+0080..U+009F, which a
+/// terminal may act on as CSI, OSC, DCS) become a space. In text that is not valid UTF-8, a
+/// raw 0x80..0x9f byte outside a valid character does too (valid characters are kept whole).
+/// Twin of lib.sh `_nf_sanitize`.
+fn clean(reason: &[u8]) -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::with_capacity(reason.len());
+    for ch in reason.utf8_chunks() {
+        for c in ch.valid().chars() {
+            if c.is_control() {
+                v.push(b' ');
+            } else {
+                let mut buf = [0u8; 4];
+                v.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        v.extend(ch.invalid().iter().map(|&b| if (0x80..=0x9f).contains(&b) { b' ' } else { b }));
+    }
+    v
+}
+
 /// `emit` for a reason that may hold a non-UTF-8 path: the bytes reach the log untouched
-/// (as the bash twin writes them), only control bytes become spaces.
+/// (as the bash twin writes them), only control characters become spaces. The key is filtered
+/// the same way, so a future key built from user text cannot bypass it.
 fn emit_bytes(key: &str, reason: &[u8]) -> bool {
-    let clean: Vec<u8> = match std::str::from_utf8(reason) {
-        Ok(reason) => {
-            let mut clean: String = reason.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-            if clean.len() > MAX_REASON {
-                let mut cut = MAX_REASON;
-                while !clean.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                clean.truncate(cut);
-                clean.push_str("...");
-            }
-            clean.into_bytes()
+    let mut clean_reason = clean(reason);
+    if clean_reason.len() > MAX_REASON {
+        // cut at a character boundary: never leave a partial sequence before the "..."
+        let mut cut = MAX_REASON;
+        while cut > 0 && (0x80..=0xbf).contains(&clean_reason[cut]) {
+            cut -= 1;
         }
-        Err(_) => {
-            // Valid chunks get the same filter as the UTF-8 branch (C1 controls such as U+009B CSI
-            // become a space); invalid bytes are copied as they are, except raw 0x80..0x9f, which
-            // a terminal may also read as C1 controls. ESC, newline and the rest of C0 cannot be
-            // invalid bytes, so the chunks cover them.
-            let mut v: Vec<u8> = Vec::new();
-            for ch in reason.utf8_chunks() {
-                for c in ch.valid().chars() {
-                    if c.is_control() {
-                        v.push(b' ');
-                    } else {
-                        let mut buf = [0u8; 4];
-                        v.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                    }
-                }
-                v.extend(ch.invalid().iter().map(|&b| if (0x80..=0x9f).contains(&b) { b' ' } else { b }));
-            }
-            if v.len() > MAX_REASON {
-                v.truncate(MAX_REASON);
-                v.extend_from_slice(b"...");
-            }
-            v
-        }
-    };
+        clean_reason.truncate(cut);
+        clean_reason.extend_from_slice(b"...");
+    }
     // One pre-built buffer, one write on an O_APPEND fd, so concurrent
     // renderers cannot interleave inside a line.
-    let mut line = format!("{} {} {}: ", iso_now(), std::process::id(), key).into_bytes();
-    line.extend_from_slice(&clean);
+    let mut line = format!("{} {} ", iso_now(), std::process::id()).into_bytes();
+    line.extend_from_slice(&clean(key.as_bytes()));
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(&clean_reason);
     line.push(b'\n');
     let path = log_path();
     trim(&path);

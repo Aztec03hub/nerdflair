@@ -94,6 +94,14 @@ def t_encoding():
     check("nflog: a message that cannot be encoded does not raise, and is logged", ok and any("path with" in ln for ln in lines()), str(lines()))
 
 
+def t_controls():
+    fresh()
+    nflog.note_once("esc", "path /tmp/\x1b]0;pwn\x07\x1b[2J \u009b[2J \x9d\r\nforged: line ok")
+    raw = open(LOG, "rb").read()
+    bad = [c for c in (b"\x1b", b"\xc2\x9b", b"\xc2\x9d", b"\r", b"\x07") if c in raw]
+    check("nflog: ESC, C1 (U+009B/U+009D), CR and BEL never reach the log; the text does", not bad and raw.count(b"\n") == 1 and b"forged: line ok" in raw, f"{bad} {raw!r}")
+
+
 def t_unwritable_log():
     fresh()
     saved, nflog.ERRLOG = nflog.ERRLOG, "/proc/nf-cannot-write/x.log"
@@ -381,6 +389,7 @@ def t_nfpty():
 def main():
     t_rate()
     t_encoding()
+    t_controls()
     t_unwritable_log()
     t_shadow()
     t_layout_backdrop()

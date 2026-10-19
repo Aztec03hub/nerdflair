@@ -51,6 +51,9 @@ check "with the watcher: reachable again within 10 s" 0 "$(reachable)"
 check "the session survived" watched "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | head -1)"
 check "the log says what was deleted" yes "$(grep -q "DELETED:.*tmux-$uid" "$ROOT/log" && echo yes || echo no)"
 check "the log lists running processes" yes "$(grep -q 'pid=' "$ROOT/log" && echo yes || echo no)"
+# The socket is reachable the moment heal signals the server; the watcher writes its "healed" line a
+# beat later (a race that made this check flaky, also before the log sanitizing): wait for the line.
+for _ in $(seq 1 40); do grep -q 'healed rc=0' "$ROOT/log" && break; sleep 0.25; done
 check "the log records the heal" yes "$(grep -q 'healed rc=0' "$ROOT/log" && echo yes || echo no)"
 
 # Names that merely START with the socket directory's name are not it: another
@@ -63,6 +66,28 @@ check "a decoy named tmux-UID-x is ignored" "$before" "$(grep -c 'DELETED:' "$RO
 
 kill "$wpid" 2>/dev/null
 stop_scratch
+
+# ── no terminal control reaches tmux-watch.log or the launcher.log copy (argument lists are attacker-influenced) ──
+python3 -I - "$WATCH" "$ROOT" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+watch, root = sys.argv[1], sys.argv[2]
+os.environ["NF_TMUX_WATCH_LOG"] = os.path.join(root, "ctl-watch.log")
+os.environ["NF_STATE_DIR"] = os.path.join(root, "ctl-state")
+loader = importlib.machinery.SourceFileLoader("nfw", watch)
+spec = importlib.util.spec_from_loader("nfw", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+m.LAUNCHER_LOG = os.path.join(root, "ctl-launcher.log")
+m.log("ps: evil \x1b]0;pwn\x07\x1b[2J \u009b[2J \r\nforged")
+m.transition("ctl", "arg \x1b[2J \u009b[2J \x9d")
+bad = []
+for n in ("ctl-watch.log", "ctl-launcher.log"):
+    raw = open(os.path.join(root, n), "rb").read()
+    for c in (b"\x1b", b"\xc2\x9b", b"\xc2\x9d", b"\r", b"\x07"):
+        if c in raw: bad.append((n, c))
+    if n == "ctl-watch.log" and raw.count(b"\n") != 2: bad.append((n, "extra newline"))
+open(os.path.join(root, "ctl-result"), "w").write("yes" if not bad else f"no {bad}")
+PY
+check "watch logs: ESC, C1, CR, BEL never reach tmux-watch.log or launcher.log" yes "$(cat "$ROOT/ctl-result" 2>/dev/null)"
 printf '\n'
 if (( fail )); then echo "tmux-watch: FAIL"; exit 1; fi
 echo "tmux-watch: PASS"

@@ -230,6 +230,17 @@ check "heal missing: reported" 0 "$found"
 check "heal missing: the watcher is still running" 1 "$alive"
 stop_watcher
 
+# ── no terminal control ever reaches launcher.log (reasons carry paths and python errors) ──
+resetlog
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1
+  nf_log hostile $'path \x1b]0;pwn\x07\x1b[2J \xc2\x9b[2J \xff\x9b \r\nforged: line ' ; nf_log utf8 '日本 “x” Д' )
+_raw=$(LC_ALL=C cat "$LOG" 2>/dev/null)
+check "launcher.log: ESC, BEL, CR, U+009B and a raw 0x9b never reach the file" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" != *$'\x1b'* && "$_raw" != *$'\x07'* && "$_raw" != *$'\r'* && "$_raw" != *$'\x9b'* ]] ) && echo yes || echo no)"
+check "launcher.log: a newline in a reason cannot forge a second line" 2 "$(wc -l < "$LOG" | tr -d ' ')"
+check "launcher.log: valid UTF-8 (CJK, smart quotes, Cyrillic) is kept byte for byte" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" == *'日本 “x” Д'* ]] ) && echo yes || echo no)"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys

@@ -94,16 +94,45 @@ _nf_stamp_write() {
   if [[ -e "$1" || -L "$1" ]]; then touch -h "$1" 2>/dev/null
   else ( set -o noclobber; : > "$1" ) 2>/dev/null; fi
 }
+# _nf_sanitize text: sets _NF_S to text with every terminal-active control replaced by a space.
+# Byte-wise (LC_ALL=C), twin of errlog::clean: C0 and DEL, the 2-byte form of a C1 control
+# (U+0080..U+009F), and, only in text that is NOT valid UTF-8, any raw 0x80..0x9f byte outside a
+# valid character. Valid UTF-8 (smart quotes, CJK, Cyrillic: their continuation bytes lie in
+# 0x80..0x9f) is kept whole. No fork on ASCII text; iconv runs only when such a byte is present.
+_nf_sanitize() {
+  local _s="$1" LC_ALL=C _o _i _n _c _w
+  local _u2=$'[\xc2-\xdf][\x80-\xbf]'
+  local _u3=$'(\xe0[\xa0-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]|\xed[\x80-\x9f])[\x80-\xbf]'
+  local _u4=$'(\xf0[\x90-\xbf]|[\xf1-\xf3][\x80-\xbf]|\xf4[\x80-\x8f])[\x80-\xbf][\x80-\xbf]'
+  _s="${_s//[[:cntrl:]]/ }"
+  _s="${_s//$'\xc2'[$'\x80'-$'\x9f']/ }"
+  if [[ "$_s" == *[$'\x80'-$'\x9f']* ]] \
+     && ! { command -v iconv >/dev/null 2>&1 && printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }; then
+    _o=""; _i=0; _n=${#_s}
+    while (( _i < _n )); do
+      _c="${_s:_i:1}"
+      if [[ "$_c" == [$'\x80'-$'\xff'] ]]; then
+        _w="${_s:_i:4}"
+        if [[ "$_w" =~ ^($_u4|$_u3|$_u2) ]]; then _o+="${BASH_REMATCH[0]}"; (( _i += ${#BASH_REMATCH[0]} )); continue; fi
+        [[ "$_c" == [$'\x80'-$'\x9f'] ]] && _c=" "
+      fi
+      _o+="$_c"; (( _i++ ))
+    done
+    _s="$_o"
+  fi
+  _NF_S="$_s"
+}
 # Appends one line. Returns 0 when it was written, 1 when it fell back to stderr.
 _nf_log_line() {
-  local _k="$1" _r="${2:-}" _sz _tmp LC_ALL=C
-  # Byte-wise (LC_ALL=C), twin of errlog::emit_bytes: C0 and DEL, the 2-byte form of a C1
-  # control (U+0080..U+009F), and any raw 0x80..0x9f byte become a space, so a path in the
-  # reason can never put a terminal control sequence (CSI, OSC, DCS) into the log.
-  _r="${_r//[[:cntrl:]]/ }"
-  _r="${_r//$'\xc2'[$'\x80'-$'\x9f']/ }"
-  _r="${_r//[$'\x80'-$'\x9f']/ }"
-  (( ${#_r} > 400 )) && _r="${_r:0:400}..."
+  local _k="$1" _r="${2:-}" _sz _tmp _cut LC_ALL=C
+  _nf_sanitize "$_k"; _k="$_NF_S"
+  _nf_sanitize "$_r"; _r="$_NF_S"
+  if (( ${#_r} > 400 )); then
+    # cut at a character boundary (bytes here, LC_ALL=C), like errlog::emit_bytes
+    _cut=400
+    while (( _cut > 0 )) && [[ "${_r:_cut:1}" == [$'\x80'-$'\xbf'] ]]; do (( _cut-- )); done
+    _r="${_r:0:_cut}..."
+  fi
   mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null
   # Cap: keep the last 64 KB once over 256 KB. Only on the (rate limited) write path.
   _sz=$(stat -c %s "$NF_ERR_LOG" 2>/dev/null || stat -f %z "$NF_ERR_LOG" 2>/dev/null || echo 0)

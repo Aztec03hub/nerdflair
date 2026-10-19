@@ -17,9 +17,39 @@
 #   - it can never fail or block the caller: every step is guarded and it returns 0,
 #     and it sets no shell options, so it is safe under set -e and set -u.
 _NF_SEEN=""
+# _nf_log_sanitize text: sets _NF_LOGS to text with every terminal-active control replaced by a space.
+# Byte-wise (LC_ALL=C), twin of errlog::clean: C0 and DEL, the 2-byte form of a C1 control
+# (U+0080..U+009F), and, only in text that is NOT valid UTF-8, any raw 0x80..0x9f byte outside a
+# valid character. Valid UTF-8 (smart quotes, CJK, Cyrillic: their continuation bytes lie in
+# 0x80..0x9f) is kept whole. No fork on ASCII text; iconv runs only when such a byte is present.
+_nf_log_sanitize() {
+  local _s="$1" LC_ALL=C _o _i _n _c _w
+  local _u2=$'[\xc2-\xdf][\x80-\xbf]'
+  local _u3=$'(\xe0[\xa0-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]|\xed[\x80-\x9f])[\x80-\xbf]'
+  local _u4=$'(\xf0[\x90-\xbf]|[\xf1-\xf3][\x80-\xbf]|\xf4[\x80-\x8f])[\x80-\xbf][\x80-\xbf]'
+  _s="${_s//[[:cntrl:]]/ }"
+  _s="${_s//$'\xc2'[$'\x80'-$'\x9f']/ }"
+  if [[ "$_s" == *[$'\x80'-$'\x9f']* ]] \
+     && ! { command -v iconv >/dev/null 2>&1 && printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }; then
+    _o=""; _i=0; _n=${#_s}
+    while (( _i < _n )); do
+      _c="${_s:_i:1}"
+      if [[ "$_c" == [$'\x80'-$'\xff'] ]]; then
+        _w="${_s:_i:4}"
+        if [[ "$_w" =~ ^($_u4|$_u3|$_u2) ]]; then _o+="${BASH_REMATCH[0]}"; (( _i += ${#BASH_REMATCH[0]} )); continue; fi
+        [[ "$_c" == [$'\x80'-$'\x9f'] ]] && _c=" "
+      fi
+      _o+="$_c"; (( _i++ ))
+    done
+    _s="$_o"
+  fi
+  _NF_LOGS="$_s"
+}
 nf_log() {
   local comp=${1:-?} reason=${2:-} dir log key h stamp size
-  reason=${reason//$'\n'/ }
+  # Reasons carry user text (paths, python errors): no terminal control may reach the log.
+  _nf_log_sanitize "$reason"; reason=$_NF_LOGS
+  _nf_log_sanitize "$comp"; comp=$_NF_LOGS
   key="$comp|$reason"
   case "$_NF_SEEN" in *$'\n'"$key"$'\n'*) return 0 ;; esac
   _NF_SEEN="$_NF_SEEN"$'\n'"$key"$'\n'

@@ -443,6 +443,20 @@ chk_cache_hostile() {
     printf '  PASS  cache-hostile [%s]: logged, and no 0x9b byte (raw or inside U+009B) is in the log\n' "$1"
   else printf '  FAIL  cache-hostile [%s]: a C1 byte reached the log (or nothing was logged)\n' "$1"; fail=1; fi
 }
+s_cache_open_utf8() { local d="$CASE_DIR/c-日本-“x”-Д"; rmdir "$CASE_DIR/cache"; mkdir -m 755 "$d"; CASE_ENV+=("NERDFLAIR_CACHE_DIR=$d" NERDFLAIR_REPO_COST=0); }
+chk_cache_open_utf8() {   # valid UTF-8 (continuation bytes 0x80..0x9f included) must reach the log whole, in both renderers
+  local log; log=$(LC_ALL=C cat "$CASE_DIR/home/.claude/nerdflair-errors.log" 2>/dev/null)
+  if ( LC_ALL=C; [[ "$log" == *"$CASE_DIR/c-日本-“x”-Д"* ]] ); then printf '  PASS  cache-utf8 [%s]: CJK, smart quotes and Cyrillic reach the log byte for byte\n' "$1"
+  else printf '  FAIL  cache-utf8 [%s]: valid UTF-8 was altered in the log\n' "$1"; fail=1; fi
+}
+LONGNAME=$(python3 -c 'print("日" * 70 + "/c-" + "日" * 70)')   # two components: each stays under NAME_MAX, together over 400 bytes
+s_cache_open_long() { local d="$CASE_DIR/$LONGNAME"; rmdir "$CASE_DIR/cache"; mkdir -p "$d"; chmod 755 "$d"; CASE_ENV+=("NERDFLAIR_CACHE_DIR=$d" NERDFLAIR_REPO_COST=0); }
+chk_cache_open_long() {   # a >400-byte multibyte reason is cut at a character boundary, identically
+  local l; l=$(LC_ALL=C sed -e "s|$CASE_DIR|@D@|g" -e 's/^[^ ]* [^ ]* //' "$CASE_DIR/home/.claude/nerdflair-errors.log" | head -n 1)
+  printf '%s\n' "$l" > "$WORK/long-$1.txt"
+  check "cache-long [$1]: the cut leaves no partial character" ok "$(printf '%s' "$l" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && echo ok || echo bad)"
+  [[ "$1" == bash ]] && check "cache-long: the line is byte-identical in rust and bash" "$(cat "$WORK/long-rust.txt")" "$(cat "$WORK/long-bash.txt")"
+}
 s_cache_open_explicit() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # an explicit override is never narrowed
 chk_cache_open_explicit() {
   check "cache-open-explicit [$1]: the dir is still 755" 755 "$(stat -c %a "$CASE_DIR/cache")"
@@ -573,6 +587,8 @@ run_case pin-cache-dir-lax-mode   cache-dir-repaired 1 s_cache_lax chk_cache_lax
 run_case cache-dir-mode-055       cache-dir-repaired 1 s_cache_lax055 chk_cache_lax055
 run_case cache-dir-open-nonutf8   cache-dir 1 s_cache_open_nonutf8 chk_cache_open_nonutf8
 run_case cache-dir-hostile-bytes  cache-dir 1 s_cache_hostile chk_cache_hostile
+run_case cache-dir-utf8-kept      cache-dir 1 s_cache_open_utf8 chk_cache_open_utf8
+run_case cache-dir-long-reason   cache-dir 1 s_cache_open_long chk_cache_open_long
 run_case cache-dir-open-quoted    cache-dir 1 s_cache_open_quoted chk_cache_open_quoted
 run_case cache-dir-open-explicit  cache-dir 1 s_cache_open_explicit chk_cache_open_explicit
 run_case cache-dir-foreign-owner  cache-dir 1 s_cache_foreign chk_cache_refused
@@ -638,6 +654,9 @@ if [[ -z "$_f_clean" ]]; then
   if [[ "${NF_ALLOW_SKIP_NS:-0}" == 1 ]]; then printf '  SKIP  fork count (no user/pid namespaces here; NF_ALLOW_SKIP_NS=1)\n'; SKIPS=$((SKIPS + 1))
   else printf '  FAIL  fork count: user+pid namespaces are unavailable (set NF_ALLOW_SKIP_NS=1 to skip it on purpose)\n'; fail=1; fi
 else check "lib.sh _nf_cache_dir: a healthy call after a recovered failure forks no more than a clean one" "$_f_clean" "$_f_rec"; fi
+
+# The Rust unit tests (util::tests, the chmod fallback) run here, because this script already needs the build.
+check "cargo test --release: the Rust unit tests pass" ok "$(cargo test --release --manifest-path "$REPO/rust/Cargo.toml" >"$WORK/cargo-test.out" 2>&1 && echo ok || { tail -n 5 "$WORK/cargo-test.out" >&2; echo fail; })"
 
 echo
 echo "NOISE (must stay completely silent):"
