@@ -89,15 +89,28 @@ test('printenv rejecting (spawn failure or timeout) is reported, not thrown thro
   expect(w.logs.some(l => l.includes('HOME lookup') && l.includes('ENOENT'))).toBe(true)
 })
 
+/** Draws the band; when the plugin has nothing to show it calls next(e), and in these tests nothing sits beneath it (the engine would draw its own row). */
+async function drawOrEngine($: any): Promise<string> {
+  try {
+    return textOf(await $.ui.render(BAND as never))
+  } catch (err) {
+    if (String(err).includes('no implementation for ui.render')) return 'ENGINE-DEFAULT-ROW'
+    throw err
+  }
+}
+
 test('an aborted printenv (superseded render) is retried on the next render, never drawn red or backed off', async ($, on) => {
   let n = 0
   const { w } = world(on, argv => (argv[0] === 'printenv' && ++n === 1 ? { deny: 'HooksError: $.process.run(printenv) aborted' } : ok(argv)))
 
-  const a = textOf(await $.ui.render(BAND as never))
-  const b = textOf(await $.ui.render(BAND as never))
+  const a = await drawOrEngine($)
+  const b = await drawOrEngine($)
 
   expect(a).not.toContain('HOME lookup')
   expect(b).not.toContain('HOME lookup')
+  expect(a, 'a superseded first refresh draws the engine default, not a plugin-bug line').toContain('ENGINE-DEFAULT-ROW')
+  expect(a).not.toContain('plugin bug')
+  expect(b).not.toContain('plugin bug')
   expect(n, 'second render looked HOME up again, no 30 s wait').toBe(2)
   expect(w.logs.some(l => l.includes('HOME lookup'))).toBe(false)
 })
@@ -105,7 +118,7 @@ test('an aborted printenv (superseded render) is retried on the next render, nev
 test('printenv aborted on five renders in a row is reported, so a permanently cut-off render is not silent', async ($, on) => {
   const { w } = world(on, argv => (argv[0] === 'printenv' ? { deny: 'HooksError: $.process.run(printenv) aborted' } : ok(argv)))
 
-  for (let i = 0; i < 5; i++) await $.ui.render(BAND as never)
+  for (let i = 0; i < 5; i++) await drawOrEngine($)
 
   expect(w.logs.filter(l => l.includes('HOME lookup') && l.includes('5 renders in a row')).length).toBe(1)
 })
