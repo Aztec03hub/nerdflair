@@ -241,6 +241,15 @@ check "launcher.log: a newline in a reason cannot forge a second line" 2 "$(wc -
 check "launcher.log: valid UTF-8 (CJK, smart quotes, Cyrillic) is kept byte for byte" yes \
   "$( ( LC_ALL=C; [[ "$_raw" == *'日本 “x” Д'* ]] ) && echo yes || echo no)"
 
+# a long reason with one stray C1 byte must not stall the caller (the byte loop is bounded to 1600 bytes)
+resetlog
+_big=$(head -c 50000 /dev/zero | tr '\0' 'a')$(printf '\x9b')
+_t0=$EPOCHREALTIME
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log slow "$_big" )
+_ms=$(( (${EPOCHREALTIME/./} - ${_t0/./}) / 1000 ))
+check "launcher.log: a 50 KB reason with a stray 0x9b is logged in under 1000 ms" yes "$([[ $_ms -lt 1000 ]] && echo yes || echo "no (${_ms} ms)")"
+check "launcher.log: that reason was cut to the bound" yes "$([[ $(wc -c < "$LOG") -lt 1800 ]] && echo yes || echo no)"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys

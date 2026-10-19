@@ -454,7 +454,7 @@ s_cache_open_long() { local d="$CASE_DIR/$LONGNAME"; rmdir "$CASE_DIR/cache"; mk
 chk_cache_open_long() {   # a >400-byte multibyte reason is cut at a character boundary, identically
   local l; l=$(LC_ALL=C sed -e "s|$CASE_DIR|@D@|g" -e 's/^[^ ]* [^ ]* //' "$CASE_DIR/home/.claude/nerdflair-errors.log" | head -n 1)
   printf '%s\n' "$l" > "$WORK/long-$1.txt"
-  check "cache-long [$1]: the cut leaves no partial character" ok "$(printf '%s' "$l" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && echo ok || echo bad)"
+  check "cache-long [$1]: the cut leaves no partial character" ok "$(printf '%s' "$l" | python3 -I -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' >/dev/null 2>&1 && echo ok || echo bad)"
   [[ "$1" == bash ]] && check "cache-long: the line is byte-identical in rust and bash" "$(cat "$WORK/long-rust.txt")" "$(cat "$WORK/long-bash.txt")"
 }
 s_cache_open_explicit() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # an explicit override is never narrowed
@@ -676,5 +676,5 @@ run_case noise-baseline-not-a-repo-missing-optional-files - 0 s_none
 echo
 (( fail )) && { echo "silent-failures: FAIL"; exit 1; }
 # A skipped check is not a pass: 77 is the convention for "could not run" (see ledger-concurrency.sh).
-if (( ${SKIPS:-0} )); then echo "silent-failures: PASS ($SKIPS SKIPPED on purpose, NF_ALLOW_SKIP_NS=1)"; exit 77; fi
+if (( ${SKIPS:-0} )); then echo "silent-failures: PASS ($SKIPS SKIPPED on purpose: NF_ALLOW_SKIP_NS / NF_ALLOW_SKIP_CARGO)"; exit 77; fi
 echo "silent-failures: PASS"

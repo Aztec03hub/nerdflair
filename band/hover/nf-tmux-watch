@@ -93,7 +93,9 @@ def _append(path, line):
             pass            # no log yet
         except OSError as e:
             _stderr_once("rotate:" + path, f"cannot rotate {path}: {e}")
-        with open(path, "a") as f:
+        # errors="replace": a lone surrogate (os.fsdecode of a non-UTF-8 path) must not raise
+        # UnicodeEncodeError, which is not an OSError and would end the watcher
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
             f.write(line + "\n")
     except OSError as e:
         _stderr_once("write:" + path, f"cannot write {path}: {e}; lost: {line}")

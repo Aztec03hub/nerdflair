@@ -26,6 +26,9 @@ fail=0
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
 TSV="$REPO/tests/data/log-sanitizer-cases.tsv"
+check "the case table has at least 32 rows" yes "$([[ $(wc -l < "$TSV") -ge 32 ]] && echo yes || echo no)"
+_badhex=$(cut -f2 "$TSV" | { rg -cv '^([0-9a-f]{2})+$' || true; })
+check "every case is well-formed lowercase hex" 0 "${_badhex:-0}"
 cut -f1 "$TSV" > "$W/names"
 cut -f2 "$TSV" > "$W/in.hex"
 

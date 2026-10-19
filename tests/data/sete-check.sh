@@ -14,4 +14,10 @@ _nf_log_line setekey "a$(printf '\x9b')b"
 _nf_log_line setekey "$(printf '\xe6\x97\xa5\xe6\x9c\xac')"
 nf_log setecomp "a$(printf '\x92')b"
 nf_log setecomp "$(printf '\xe6\x97\xa5\xe6\x9c\xac')"
+# Unwritable log: the logger degrades to stderr and the caller must still live (a bare mkdir or a
+# bare `return 1` used to end every set -e caller).
+NF_ERR_LOG=/proc/nonexistent/x.log; _NF_MEM=" "
+_nf_err unwritable-dir "log under a directory that cannot be made"
+mkdir -p "$W/logdir"; NF_ERR_LOG="$W/logdir"; _NF_MEM=" "
+_nf_err unwritable-isdir "log path is a directory"
 echo SURVIVED

@@ -49,7 +49,9 @@ _nf_log_sanitize() {
   _NF_LOGS="$_s"
 }
 nf_log() {
-  local comp=${1:-?} reason=${2:-} dir log key h stamp size
+  local comp=${1:-?} reason=${2:-} dir log key h stamp size LC_ALL=C
+  # Bound the input before the byte loop (quadratic): same 1600 bytes as lib.sh, same cap on the name.
+  reason=${reason:0:1600}; comp=${comp:0:100}
   # Reasons carry user text (paths, python errors): no terminal control may reach the log.
   _nf_log_sanitize "$reason"; reason=$_NF_LOGS
   _nf_log_sanitize "$comp"; comp=$_NF_LOGS

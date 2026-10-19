@@ -102,6 +102,12 @@ def t_controls():
     check("nflog: ESC, C1 (U+009B/U+009D), CR and BEL never reach the log; the text does", not bad and raw.count(b"\n") == 1 and b"forged: line ok" in raw, f"{bad} {raw!r}")
 
 
+def t_surrogate_line():
+    fresh()
+    nflog.note_once("sur", "path /tmp/\udcff/x")
+    check("nflog: a lone surrogate in a path is logged (as ?), the line is not lost", any("path /tmp/" in ln for ln in lines()), str(lines()))
+
+
 def t_unwritable_log():
     fresh()
     saved, nflog.ERRLOG = nflog.ERRLOG, "/proc/nf-cannot-write/x.log"
@@ -390,6 +396,7 @@ def main():
     t_rate()
     t_encoding()
     t_controls()
+    t_surrogate_line()
     t_unwritable_log()
     t_shadow()
     t_layout_backdrop()

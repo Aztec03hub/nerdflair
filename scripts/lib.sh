@@ -65,7 +65,7 @@ _nf_stamp_dir() {
     # -L too: a dangling symlink "does not exist" to -e, yet the write below refuses it.
     # A symlink marker can never be written (O_NOFOLLOW): not recent, so log once per render.
     if [[ -L "$_m" ]] || [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
-      _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only"
+      _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only" || true
       [[ -L "$_m" ]] || : > "$_m" 2>/dev/null
     fi
   fi
@@ -136,7 +136,7 @@ _nf_log_line() {
     while (( _cut > 0 )) && [[ "${_r:_cut:1}" == [$'\x80'-$'\xbf'] ]]; do _cut=$((_cut - 1)); done
     _r="${_r:0:_cut}..."
   fi
-  mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null
+  mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null || true   # a set -e caller must live to see the stderr fallback below
   # Cap: keep the last 64 KB once over 256 KB. Only on the (rate limited) write path.
   _sz=$(stat -c %s "$NF_ERR_LOG" 2>/dev/null || stat -f %z "$NF_ERR_LOG" 2>/dev/null || echo 0)
   if (( _sz > 262144 )); then
@@ -165,7 +165,7 @@ _nf_err() {
   if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < 3600 )); then return 0; fi
   # Log, then stamp whether or not the append worked: an unwritable log would
   # otherwise make every render retry and write to stderr.
-  _nf_log_line "$_k" "${2:-}"
+  _nf_log_line "$_k" "${2:-}" || true   # 1 = fell back to stderr: still not an error for the caller
   [[ -n "$_st" ]] && _nf_stamp_write "$_st"
   return 0
 }
@@ -181,7 +181,7 @@ _nf_ok() {
   _age=$(_nf_stamp_age "$_st")
   if (( _age >= 604800 )); then rm -f "$_st" "$_rec" 2>/dev/null; return 0; fi   # a week old: long forgotten, say nothing
   if [[ -e "$_rec" || -L "$_rec" ]] && (( $(_nf_stamp_age "$_rec") <= _age )); then return 0; fi
-  _nf_log_line recovered "$1"
+  _nf_log_line recovered "$1" || true
   _nf_stamp_write "$_rec"
   return 0
 }
@@ -481,9 +481,9 @@ _nf_state_heal() {
   fi
   if ! _herr=$(jq -e . "$NF_STATE_FILE" 2>&1 >/dev/null); then
     if cp -f "$NF_STATE_FILE" "${NF_STATE_FILE}.corrupt" 2>/dev/null; then
-      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); copied to ${NF_STATE_FILE}.corrupt and rebuilt from defaults"
+      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); copied to ${NF_STATE_FILE}.corrupt and rebuilt from defaults" || true
     else
-      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); COULD NOT copy to .corrupt, rebuilt from defaults anyway"
+      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); COULD NOT copy to .corrupt, rebuilt from defaults anyway" || true
     fi
     _nf_read_state
     _nf_write_state

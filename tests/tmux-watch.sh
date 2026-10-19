@@ -85,6 +85,13 @@ for n in ("ctl-watch.log", "ctl-launcher.log"):
     for c in (b"\x1b", b"\xc2\x9b", b"\xc2\x9d", b"\r", b"\x07"):
         if c in raw: bad.append((n, c))
     if n == "ctl-watch.log" and raw.count(b"\n") != 2: bad.append((n, "extra newline"))
+try:    # a lone surrogate (os.fsdecode of a non-UTF-8 path) must neither raise nor lose the line
+    m._append(os.path.join(root, "sur.log"), "pid 1 path /tmp/\udcff/x")
+    sur = b"path /tmp/" in open(os.path.join(root, "sur.log"), "rb").read()
+except Exception as e:
+    sur = False
+    bad.append(("surrogate", repr(e)))
+if not sur: bad.append(("surrogate", "line lost"))
 open(os.path.join(root, "ctl-result"), "w").write("yes" if not bad else f"no {bad}")
 PY
 check "watch logs: ESC, C1, CR, BEL never reach tmux-watch.log or launcher.log" yes "$(cat "$ROOT/ctl-result" 2>/dev/null)"
