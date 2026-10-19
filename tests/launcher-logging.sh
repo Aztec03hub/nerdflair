@@ -44,7 +44,7 @@ mkbin "$ROOT/bin-nopy" $TOOLS
 mkbin "$ROOT/bin-noss" $TOOLS python3
 mkbin "$ROOT/bin-full" $TOOLS python3
 
-printf '#!/bin/sh\necho "REAL-CLAUDE $*"\n' > "$ROOT/real/claude"; chmod +x "$ROOT/real/claude"
+printf '#!/bin/sh\necho "REAL-CLAUDE $*"\necho "TRUECOLOR=${CLAUDE_CODE_TMUX_TRUECOLOR:-unset}"\n' > "$ROOT/real/claude"; chmod +x "$ROOT/real/claude"
 
 # A fake ~/.nerdflair as install.sh would lay it out, with a stubbed heal so the
 # shim tests never signal a real tmux server.
@@ -59,6 +59,7 @@ run_tty() { # PATH -> output of one `claude` start
 import os, pty, sys
 path, shim = sys.argv[1], sys.argv[2]
 env = dict(os.environ, PATH=path, TMUX="/nonexistent/sock,1,0", TERM="xterm")
+env.pop("CLAUDE_CODE_TMUX_TRUECOLOR", None)          # the shim must supply it, not the caller
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe("bash", ["bash", shim, "--flag"], env)
@@ -93,6 +94,7 @@ rm -rf "$HOME/.nerdflair/hover"; mkdir -p "$ROOT/hover-ok"
 printf '' > "$ROOT/hover-ok/mklayout.py"; printf '' > "$ROOT/hover-ok/panel.py"; printf 'pass\n' > "$ROOT/hover-ok/nfpty.py"
 ln -sfn "$ROOT/hover-ok" "$HOME/.nerdflair/hover"
 shim_case "python3 missing" "shim: python3 not on PATH" "$NFB:$ROOT/real:$ROOT/bin-nopy"
+check "shim: claude starts with CLAUDE_CODE_TMUX_TRUECOLOR=1 (no 256-colour clamp inside tmux)" 1 "$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" | grep -c 'TRUECOLOR=1')"
 
 # H2: dangling hover link
 rm -f "$HOME/.nerdflair/hover"; ln -sfn "$ROOT/gone" "$HOME/.nerdflair/hover"
