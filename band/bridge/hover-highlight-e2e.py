@@ -41,13 +41,33 @@ def mode():
 TAIL = " \033[0m· \033[38;2;200;100;50m\U000f062c main\033[0m · \033[38;5;33;3mx y\033[0m"
 def status(pad, clear="\033[2J", tail=TAIL):
     sys.stdout.write(clear + "\033[48;1H  " + G + " nerdflair" + pad + tail)
+def body(pad="XXXXXX"):
+    return "  " + G + " nerdflair" + pad + TAIL
+E = "\033"
+def w_split():
+    sys.stdout.write(E + "[48;1H"); sys.stdout.flush(); time.sleep(0.4); sys.stdout.write(body())
+# The same shifted line, reached by cursor moves and erases that do not look like "ESC[48;1H text".
+WRITES = {
+    "w_cup": lambda: sys.stdout.write(E + "[48H" + body()),
+    "w_vpa": lambda: sys.stdout.write(E + "[48d" + E + "[1G" + body()),
+    "w_split": w_split,
+    "w_k": lambda: sys.stdout.write(E + "[48d" + E + "[1G" + E + "[K" + body()),
+    "w_2k": lambda: sys.stdout.write(E + "[48d" + E + "[2K" + E + "[1G" + body()),
+    "w_j": lambda: sys.stdout.write(E + "[48d" + E + "[0J" + E + "[1G" + body()),
+    "w_ind": lambda: sys.stdout.write(E + "[47d" + E + "D" + E + "[1G" + body()),
+    "w_cud": lambda: sys.stdout.write(E + "[45d" + E + "[3B" + E + "[1G" + body()),
+    "w_alt": lambda: sys.stdout.write(E + "[?1049h" + E + "[?1049l" + E + "[48d" + E + "[1G" + body()),
+}
 def dialog():
     sys.stdout.write("\033[2J\033[44;1H Bash command - from the general-purpose agent\033[45;1H Do you want to proceed?\033[48;1H" + " " * 80)
 def draw():
     m = mode()
+    if m in WRITES:
+        WRITES[m](); sys.stdout.flush()
+        return m
     DUP = " \033[0m· q one · q one"
     {"dialog": dialog, "shift": lambda: status("XXXXXX"), "dup": lambda: status("", tail=DUP),
-     "dupshift": lambda: status("XXXXXX", tail=DUP)}.get(m, lambda: status(""))()
+     "dupshift": lambda: status("XXXXXX", tail=DUP), "dupone": lambda: status("", tail=" \033[0m· q one")}.get(m, lambda: status(""))()
     sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
     return m
 signal.signal(signal.SIGWINCH, lambda *_: draw())
@@ -69,12 +89,21 @@ while True:
 class Run:
     """One nfpty + stand-in engine in its own private tmux server."""
 
-    def __init__(self, name, env=""):
+    def __init__(self, name, env="", count=False):
         self.sock = f"nf-hl-{name}-{os.getpid()}"
         self.dir = tempfile.mkdtemp(prefix="nf-hl-")
         self.flag = os.path.join(self.dir, "flag")
         self.errlog = os.path.join(self.dir, "err.log")
         self.fake = os.path.join(self.dir, "fake.py")
+        self.spawnlog = os.path.join(self.dir, "spawns")
+        if count:      # a tmux that logs each start, ahead of the real one on the wrapper's PATH
+            os.makedirs(os.path.join(self.dir, "shim"))
+            shim = os.path.join(self.dir, "shim", "tmux")
+            with open(shim, "w") as f:
+                f.write(f'#!/bin/sh\necho x >> "{self.spawnlog}"\nexec {subprocess.run(["which", "tmux"], capture_output=True, text=True).stdout.strip()} "$@"\n')
+            os.chmod(shim, 0o755)
+            open(self.spawnlog, "w").close()
+            env += f" PATH={os.path.join(self.dir, 'shim')}:$PATH"
         with open(self.fake, "w") as f:
             f.write(FAKE)
         self.tmux("new-session", "-d", "-x", "120", "-y", "50", "-s", "hl",
@@ -91,6 +120,10 @@ class Run:
 
     def screen_has_lit(self):
         return LITSEQ in self.tmux("capture-pane", "-e", "-p", "-t", "hl").replace(";", ";").replace("\x1b[48;2;31;41;55m", LITSEQ)
+
+    def spawns(self):
+        with open(self.spawnlog) as f:
+            return len(f.read().split())
 
     def card(self):
         return bool(re.search(r"╭─ \S", self.tmux("capture-pane", "-p", "-t", "hl")))
@@ -300,6 +333,66 @@ def exit_path():
         r.close()
 
 
+def tracked_writes():
+    print("engine rewrites the highlighted row by cursor moves and erases that pattern matching cannot see")
+    for case in WRITE_CASES:
+        r = Run("w" + case)
+        try:
+            col, w, _ = pieces_of(r.row())[0]
+            r.hover(col + w // 2)
+            r.mode("tickother")             # a spinner elsewhere: the wrapper learns where the engine's cursor is
+            time.sleep(0.6)
+            check("highlight on, card open", bool(lit_idx(r.row())) and r.card())
+            r.mode("w_" + case)
+            time.sleep(1.5)
+            now = r.row()
+            ncol, nw, _ = pieces_of(now)[0]
+            check(f"w_{case}: the highlight is on the readout's cells after the engine rewrote the row",
+                  lit_idx(now) == list(range(ncol - 1, ncol - 1 + nw)), f"{lit_idx(now)} want {ncol - 1}..{ncol - 2 + nw}")
+        finally:
+            r.close()
+
+
+def spinner_costs_nothing():
+    print("a spinner on another row costs no tmux spawns; a ticking highlighted row does")
+    r = Run("spin", count=True)
+    try:
+        col, w, _ = pieces_of(r.row())[1]
+        r.mode("tickother")
+        time.sleep(0.5)
+        r.hover(col + w // 2, wait=1.5)
+        a = r.spawns()
+        time.sleep(2.5)
+        check("zero tmux spawns in 2.5 s with a card open and a spinner elsewhere", r.spawns() == a, f"{r.spawns() - a} spawns")
+        r.mode("tick")
+        time.sleep(1.0)
+        b = r.spawns()
+        time.sleep(2.5)
+        check("control: the counter sees spawns when the highlighted row is rewritten", r.spawns() > b + 5, f"{r.spawns() - b} spawns")
+    finally:
+        r.close()
+
+
+def dup_vanishes():
+    print("the hovered twin vanishes: the card closes, it does not jump to the other")
+    r = Run("dupgone")
+    try:
+        r.mode("dup")
+        time.sleep(1.2)
+        same = [p for p in pieces_of(r.row()) if p[2] == "q one"]
+        col, w, _ = same[1]
+        r.hover(col + w // 2)
+        check("card open on the second twin", r.card())
+        r.mode("dupone")
+        time.sleep(1.5)
+        check("card closed and nothing lit", not r.card() and not r.screen_has_lit())
+    finally:
+        r.close()
+
+
+WRITE_CASES = ("cup", "vpa", "split", "k", "2k", "j", "ind", "cud", "alt")
+
+
 def shift():
     print("status line shifts while the pointer rests")
     r = Run("shift")
@@ -387,7 +480,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, spinner_costs_nothing, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)

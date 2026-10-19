@@ -190,23 +190,61 @@ def _split_keep(s, pat):
     return out
 
 
+def _ts_object(s, i, strs):
+    """Parse the `{...}` starting at s[i] without a TypeScript parser: (its depth-1 text with nested
+    objects collapsed to `{}` and each string replaced by \\x00N\\x00, indexing `strs`;
+    [(key, nested depth-1 text)]; index after the closing brace). Comments are dropped and strings
+    are opaque, so braces or `color:` inside either are not seen."""
+    flat, kids, j = [], [], i + 1
+    while j < len(s):
+        c = s[j]
+        if c in "'\"`":
+            e = j + 1
+            while e < len(s) and s[e] != c:
+                e += 2 if s[e] == "\\" else 1
+            strs.append(s[j + 1:e])
+            flat.append("\x00%d\x00" % (len(strs) - 1))
+            j = e + 1
+        elif s.startswith("//", j) and s[j - 1:j] != ":":
+            j = s.find("\n", j) if "\n" in s[j:] else len(s)
+        elif s.startswith("/*", j):
+            j = s.find("*/", j) + 2
+            assert j > 1, "drift guard: unterminated comment in register.tsx"
+        elif c == "{":
+            sub, subkids, j = _ts_object(s, j, strs)
+            k = re.search(r"(?:\x00(\d+)\x00|([\w-]+))\s*:\s*$", "".join(flat)[-80:])
+            kids.append((None if not k else strs[int(k.group(1))] if k.group(1) else k.group(2), sub))
+            flat.append("{}")
+        elif c == "}":
+            return "".join(flat), kids, j + 1
+        else:
+            flat.append(c)
+            j += 1
+    raise AssertionError("drift guard: unbalanced braces in register.tsx")
+
+
 def band_drift(tsx):
     """Ids on both sides (this table and the band's CARDS in register.tsx) whose colours differ.
     The highlight and the card border use this table, the band uses its own: they must agree.
-    Fails LOUD (AssertionError with the reason) if the table cannot be read in full, so a format
-    change in register.tsx cannot turn this into a guard that checks nothing."""
-    m = re.search(r"^const CARDS\b.*?^\}", tsx, re.M | re.S)
-    assert m, "drift guard: no `const CARDS ... }` table found in register.tsx"
-    heads = list(re.finditer(r"^  (\w+): \{", m.group(0), re.M))
-    assert heads, "drift guard: the CARDS table in register.tsx has no entries"
+    Fails LOUD (AssertionError starting "drift guard") if the table cannot be read in full, or
+    shares too little with CARDS to be the same table."""
+    m = re.search(r"\bconst CARDS\b[^=]*=\s*\{", tsx)
+    assert m, "drift guard: no `const CARDS ... = {` table found in register.tsx"
+    strs = []
+    _flat, kids, _end = _ts_object(tsx, m.end() - 1, strs)
+    assert kids, "drift guard: the CARDS table in register.tsx has no entries"
     band = {}
-    for k, h in enumerate(heads):
-        end = heads[k + 1].start() if k + 1 < len(heads) else len(m.group(0))
-        c = re.search(r"\bcolor:\s*(['\"])(#[0-9a-fA-F]{6})\1", m.group(0)[h.end():end])
-        assert c, f"drift guard: could not read the colour of CARDS entry {h.group(1)!r} in register.tsx"
-        band[h.group(1)] = c.group(2).lower()
+    for key, body in kids:
+        assert key, "drift guard: a CARDS entry in register.tsx has no readable key"
+        c = re.search(r"\bcolor\s*:\s*\x00(\d+)\x00", body)
+        c = c and re.fullmatch(r"#[0-9a-fA-F]{6}", strs[int(c.group(1))])
+        assert c, f"drift guard: could not read the colour of CARDS entry {key!r} in register.tsx"
+        band[key] = c.group(0).lower()
     ours = {c[0]: "#%02x%02x%02x" % tuple(c[3]) for c in CARDS}
-    return sorted(f"{i}: band {band[i]} vs ours {ours[i]}" for i in band if i in ours and band[i] != ours[i])
+    both = set(band) & set(ours)
+    assert len(both) >= max(1, len(band) // 2), \
+        f"drift guard: only {len(both)} of {len(band)} register.tsx ids exist in mklayout.CARDS; the table was renamed or reshaped"
+    return sorted(f"{i}: band {band[i]} vs ours {ours[i]}" for i in sorted(both) if band[i] != ours[i])
 
 
 def selfcheck():
@@ -261,7 +299,11 @@ def selfcheck():
     mini = lambda body: "const CARDS = {\n" + body + "\n}\n"  # noqa: E731
     assert band_drift(mini(f'  folder: {{\n    color: "{ours_folder}",\n    title: "F",\n  }},')) == [], "double quotes, color first"
     assert band_drift(mini("  folder: { title: 'F', color: '#000000' },")) == [f"folder: band #000000 vs ours {ours_folder}"]
-    for bad, why in ((mini(""), "no entries"), ("nothing here", "no table"),
+    assert band_drift(mini(f"  // color: '#111111'\n  folder: {{ title: 'F', /* color: '#222222' */ color: '{ours_folder}' }},")) == [], "comments are ignored"
+    assert band_drift(mini(f"  folder: {{ title: 'F', style: {{ color: '#333333' }}, color: '{ours_folder}' }},")) == [], "the entry's OWN colour, not a nested one"
+    assert band_drift(mini(f"  'folder': {{ title: 'F', color: '{ours_folder}' }},")) == [], "quoted keys"
+    assert band_drift(mini(f"  folder: {{ title: 'a {{ color: \"#444444\" }}', color: '{ours_folder}' }},")) == [], "braces and colours inside strings"
+    for bad, why in ((mini("  zzz: { title: 'Z', color: '#000000' },"), "no id shared with CARDS"), (mini(""), "no entries"), ("nothing here", "no table"),
                      (mini("  folder: { title: 'F', color: '#000000' },\n  model: { title: 'M', color: someVar },"), "unreadable colour")):
         try:
             band_drift(bad)

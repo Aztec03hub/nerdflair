@@ -360,7 +360,9 @@ def t_nfpty():
         g = nfpty.Guard(lambda: None, lambda: None)
         g.run("paint", lambda: (_ for _ in ()).throw(OSError(errno.EIO, "Input/output error")))
         check("guard: EIO (terminal hung up) turns decoration off", g.ok is False)
-    expect_silent("guard: EIO from a write is the terminal going away, not a bug to log", guard_terminal_gone)
+    expect_one("guard: EIO from a write turns decoration off and says so once, without a traceback", guard_terminal_gone,
+               "terminal write failed")
+    check("guard: that line is not a bug report", not any("Traceback" in ln for ln in lines()), str(lines()))
 
     def kill_esrch():
         undo = stub(os, "kill", lambda p, s: (_ for _ in ()).throw(ProcessLookupError()))
