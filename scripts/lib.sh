@@ -65,7 +65,7 @@ _nf_stamp_dir() {
     # -L too: a dangling symlink "does not exist" to -e, yet the write below refuses it.
     # A symlink marker can never be written (O_NOFOLLOW): not recent, so log once per render.
     if [[ -L "$_m" ]] || [[ ! -e "$_m" ]] || (( $(_nf_stamp_age "$_m") >= 3600 )); then
-      _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only"
+      _nf_log_line stamp-dir "$_d is unusable (not a real directory owned by this user); rate limits and back-offs work per render only" || true
       [[ -L "$_m" ]] || : > "$_m" 2>/dev/null
     fi
   fi
@@ -94,12 +94,49 @@ _nf_stamp_write() {
   if [[ -e "$1" || -L "$1" ]]; then touch -h "$1" 2>/dev/null
   else ( set -o noclobber; : > "$1" ) 2>/dev/null; fi
 }
+# _nf_sanitize text: sets _NF_S to text with every terminal-active control replaced by a space.
+# Byte-wise (LC_ALL=C), twin of errlog::clean: C0 and DEL, the 2-byte form of a C1 control
+# (U+0080..U+009F), and, only in text that is NOT valid UTF-8, any raw 0x80..0x9f byte outside a
+# valid character. Valid UTF-8 (smart quotes, CJK, Cyrillic: their continuation bytes lie in
+# 0x80..0x9f) is kept whole. No fork at all (pure bash).
+_nf_sanitize() {
+  local _s="$1" LC_ALL=C _o _i _n _c _w
+  local _u2=$'[\xc2-\xdf][\x80-\xbf]'
+  local _u3=$'(\xe0[\xa0-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]|\xed[\x80-\x9f])[\x80-\xbf]'
+  local _u4=$'(\xf0[\x90-\xbf]|[\xf1-\xf3][\x80-\xbf]|\xf4[\x80-\x8f])[\x80-\xbf][\x80-\xbf]'
+  _s="${_s//[[:cntrl:]]/ }"
+  _s="${_s//$'\xc2'[$'\x80'-$'\x9f']/ }"
+  # Only a raw 0x80..0x9f byte can need replacing, and whether it is a continuation byte of a
+  # valid character is decided by the loop below with Rust's exact rules (no iconv: glibc accepts
+  # sequences above U+10FFFF that Rust rejects). ASCII and 0x80..0x9f-free text never reaches it.
+  if [[ "$_s" == *[$'\x80'-$'\x9f']* ]]; then
+    _o=""; _i=0; _n=${#_s}
+    while (( _i < _n )); do
+      _c="${_s:_i:1}"
+      if [[ "$_c" == [$'\x80'-$'\xff'] ]]; then
+        _w="${_s:_i:4}"
+        if [[ "$_w" =~ ^($_u4|$_u3|$_u2) ]]; then _o+="${BASH_REMATCH[0]}"; _i=$((_i + ${#BASH_REMATCH[0]})); continue; fi
+        [[ "$_c" == [$'\x80'-$'\x9f'] ]] && _c=" "
+      fi
+      _o+="$_c"; _i=$((_i + 1))
+    done
+    _s="$_o"
+  fi
+  _NF_S="$_s"
+}
 # Appends one line. Returns 0 when it was written, 1 when it fell back to stderr.
 _nf_log_line() {
-  local _k="$1" _r="${2:-}" _sz _tmp
-  _r="${_r//[[:cntrl:]]/ }"
-  (( ${#_r} > 400 )) && _r="${_r:0:400}..."
-  mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null
+  local _k="$1" _r="${2:-}" _sz _tmp _cut LC_ALL=C
+  _r="${_r:0:1600}"   # bounds the byte loop; the 400 bytes kept never depend on the rest
+  _nf_sanitize "$_k"; _k="$_NF_S"
+  _nf_sanitize "$_r"; _r="$_NF_S"
+  if (( ${#_r} > 400 )); then
+    # cut at a character boundary (bytes here, LC_ALL=C), like errlog::emit_bytes
+    _cut=400
+    while (( _cut > 0 )) && [[ "${_r:_cut:1}" == [$'\x80'-$'\xbf'] ]]; do _cut=$((_cut - 1)); done
+    _r="${_r:0:_cut}..."
+  fi
+  mkdir -p "$(dirname "$NF_ERR_LOG")" 2>/dev/null || true   # a set -e caller must live to see the stderr fallback below
   # Cap: keep the last 64 KB once over 256 KB. Only on the (rate limited) write path.
   _sz=$(stat -c %s "$NF_ERR_LOG" 2>/dev/null || stat -f %z "$NF_ERR_LOG" 2>/dev/null || echo 0)
   if (( _sz > 262144 )); then
@@ -128,7 +165,7 @@ _nf_err() {
   if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < 3600 )); then return 0; fi
   # Log, then stamp whether or not the append worked: an unwritable log would
   # otherwise make every render retry and write to stderr.
-  _nf_log_line "$_k" "${2:-}"
+  _nf_log_line "$_k" "${2:-}" || true   # 1 = fell back to stderr: still not an error for the caller
   [[ -n "$_st" ]] && _nf_stamp_write "$_st"
   return 0
 }
@@ -144,13 +181,101 @@ _nf_ok() {
   _age=$(_nf_stamp_age "$_st")
   if (( _age >= 604800 )); then rm -f "$_st" "$_rec" 2>/dev/null; return 0; fi   # a week old: long forgotten, say nothing
   if [[ -e "$_rec" || -L "$_rec" ]] && (( $(_nf_stamp_age "$_rec") <= _age )); then return 0; fi
-  _nf_log_line recovered "$1"
+  _nf_log_line recovered "$1" || true
   _nf_stamp_write "$_rec"
   return 0
 }
 _nf_recent() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" && ( -e "$_NF_STAMP" || -L "$_NF_STAMP" ) ]] && (( $(_nf_stamp_age "$_NF_STAMP") < $2 )); }
 _nf_touch() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && _nf_stamp_write "$_NF_STAMP"; return 0; }
 _nf_clear() { _nf_stamp "$1"; [[ -n "$_NF_STAMP" ]] && rm -f "$_NF_STAMP" 2>/dev/null; return 0; }
+
+# ── Private cache directory ──────────────────────────────────────
+# Every renderer cache (git, multibranch, tmux, sample, repocost, mcphealth and
+# the chime lock) lives in ONE per-user directory, never in world-writable /tmp
+# where the names were predictable (another local user, or a stale symlink,
+# could redirect a write or plant a cache the renderer then trusts).
+# $NERDFLAIR_CACHE_DIR, else $XDG_CACHE_HOME/nerdflair, else $HOME/.cache/nerdflair
+# (the first two must be absolute). Created 0700 under umask 077 (the tmux
+# server's umask is 0117) and checked once per process: a real directory (not a
+# symlink), ours, no group/other bits. One of ours that is too open is tightened to
+# 0700 and the repair logged. Anything else: _NF_CDIR stays empty, callers skip
+# their caches and compute without them, and the reason is logged under key
+# cache-dir (once an hour; "recovered" when it clears). Twin of util::cache_dir,
+# same wording. Old /tmp/nerdflair-* files are ignored and may be deleted.
+_nf_cache_dir() {
+  [[ -n "${_NF_CDIR_DONE:-}" ]] && return 0
+  _NF_CDIR_DONE=1; _NF_CDIR=""
+  local _d _m _why="" _e="" _x="${XDG_CACHE_HOME:-}"
+  if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then
+    if [[ "$NERDFLAIR_CACHE_DIR" != /* ]]; then
+      _nf_err cache-dir "NERDFLAIR_CACHE_DIR=$NERDFLAIR_CACHE_DIR is not an absolute path; caches skipped"; return 0
+    fi
+    _d="$NERDFLAIR_CACHE_DIR"
+  elif [[ "$_x" == /* ]]; then _d="${_x%/}/nerdflair"
+  else
+    [[ -n "$_x" ]] && _nf_err cache-dir-xdg "XDG_CACHE_HOME=$_x is not an absolute path; ignored"
+    if [[ -n "${HOME:-}" ]]; then _d="${HOME%/}/.cache/nerdflair"
+    else _nf_err cache-dir "HOME is empty and NERDFLAIR_CACHE_DIR is not set; caches skipped"; return 0
+    fi
+  fi
+  if [[ ! -e "$_d" && ! -L "$_d" ]]; then
+    # umask 077: every directory created is 0700 from the first instant. The text after the
+    # last ": " of mkdir's message is the bare strerror, as Rust words it.
+    _e=$( umask 077; mkdir -p "$_d" 2>&1 )
+    _e="${_e##*: }"
+  fi
+  if [[ ! -e "$_d" && ! -L "$_d" ]]; then _why="cannot create it: ${_e:-No such file or directory}"
+  elif [[ -L "$_d" || ! -d "$_d" ]]; then _why="not a real directory"
+  elif [[ ! -O "$_d" ]]; then _why="not owned by this user"
+  else
+    _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
+    if (( 8#${_m} & 8#077 )); then
+      if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then
+        # An explicit override may name a directory the owner uses for other things (HOME, a
+        # project): never narrow it behind their back, say what to do.
+        _sq="'"; _qd="'\\''"   # single-quote the path for a shell, as util::shell_quote does
+        _why="mode allows group/other access; run: chmod 700 '${_d//$_sq/$_qd}'"
+      else
+        # The default location is ours alone. Re-test right before the chmod; bash has no
+        # fchmod, so a swap in that instant needs write access to our own parent directory.
+        [[ ! -L "$_d" && -O "$_d" ]] && chmod 700 "$_d" 2>/dev/null
+        _m=$(stat -c %a "$_d" 2>/dev/null || stat -f %Lp "$_d" 2>/dev/null || echo 777)
+        if (( 8#${_m} & 8#077 )); then _why="mode allows group/other access and chmod 700 failed"
+        else _nf_err cache-dir-repaired "$_d had group/other access; tightened to 0700"
+        fi
+      fi
+    fi
+  fi
+  if [[ -n "$_why" ]]; then
+    _nf_err cache-dir "$_d is unusable ($_why); caches skipped"
+  else
+    _NF_CDIR="$_d"
+    # Healthy path: touch the stamp dir only if this key ever failed (no fork, no mkdir).
+    # Only while a failure is not yet reported as recovered: pure-bash tests, no fork, no write.
+    # (The mode check above costs one `stat` fork per process; there is no pure-bash mode test.)
+    # (_nf_ok keeps the failure stamp a week, so "stamp exists" alone would stay true.)
+    _x="${HOME:-}"; _x="${NERDFLAIR_ERR_STAMP_DIR:-${_x%/}/.claude/.nerdflair-stamps}/nerdflair-err-${_NF_UID}-"
+    if [[ -e "${_x}cache_dir" ]] && ! { [[ -e "${_x}recovered_cache_dir" ]] && [[ ! "${_x}cache_dir" -nt "${_x}recovered_cache_dir" ]]; }; then
+      _nf_ok cache-dir
+    fi
+  fi
+  return 0
+}
+# _nf_cache_path name: sets _NF_CP to the file inside the cache dir, or "" when there is none.
+_nf_cache_path() { _nf_cache_dir; _NF_CP=""; [[ -n "$_NF_CDIR" ]] && _NF_CP="$_NF_CDIR/$1"; return 0; }
+# _nf_cache_or_stamp name stampkey: the cache file, else a file in the (validated, private)
+# stamp dir, so a TTL marker still works when the cache dir is unusable. "" if neither exists.
+_nf_cache_or_stamp() { _nf_cache_path "$1"; [[ -n "$_NF_CP" ]] && return 0; _nf_stamp "$2"; _NF_CP="$_NF_STAMP"; return 0; }
+# _nf_cache_put file data: write via a fresh noclobber temp file (mode 0600 whatever the
+# umask), then rename. A planted symlink at the leaf is replaced by the rename, never
+# written through. The umask and noclobber changes live in a subshell: nothing leaks.
+_nf_cache_put() {
+  local _t="$1.tmp.$$"
+  rm -f "$_t" 2>/dev/null
+  ( umask 077; set -o noclobber; printf '%s' "$2" > "$_t" ) 2>/dev/null && mv -f "$_t" "$1" 2>/dev/null && return 0
+  rm -f "$_t" 2>/dev/null
+  return 1
+}
 
 # ── jq check ─────────────────────────────────────────────────────
 _nf_require_jq() {
@@ -356,9 +481,9 @@ _nf_state_heal() {
   fi
   if ! _herr=$(jq -e . "$NF_STATE_FILE" 2>&1 >/dev/null); then
     if cp -f "$NF_STATE_FILE" "${NF_STATE_FILE}.corrupt" 2>/dev/null; then
-      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); copied to ${NF_STATE_FILE}.corrupt and rebuilt from defaults"
+      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); copied to ${NF_STATE_FILE}.corrupt and rebuilt from defaults" || true
     else
-      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); COULD NOT copy to .corrupt, rebuilt from defaults anyway"
+      _nf_log_line "state-rebuilt" "$NF_STATE_FILE unparseable (${_herr%%$'\n'*}); COULD NOT copy to .corrupt, rebuilt from defaults anyway" || true
     fi
     _nf_read_state
     _nf_write_state
@@ -424,17 +549,22 @@ _nf_play_audio() {
   # just louder. Skip rather than queue, so the alert stays timely.
   # Opt out with NERDFLAIR_ALLOW_OVERLAP=1.
   if [[ "${NERDFLAIR_ALLOW_OVERLAP:-0}" != "1" ]]; then
-    local _snd_lock="/tmp/nerdflair-chime-${UID:-$(id -u)}.lock"
-    # Stale lock (player killed, machine slept): clear anything older than 30s,
-    # comfortably longer than the 4.6s of the longest clip.
-    if [[ -d "$_snd_lock" ]]; then
-      local _sl_age=$(( ${EPOCHSECONDS:-$(date +%s)} - $(stat -c %Y "$_snd_lock" 2>/dev/null || stat -f %m "$_snd_lock" 2>/dev/null || echo 0) ))
-      (( _sl_age > 30 )) && rmdir "$_snd_lock" 2>/dev/null
+    # No private cache dir: play without the overlap lock (logged as cache-dir)
+    # rather than lose the chime.
+    _nf_cache_path "nerdflair-chime-${UID:-$(id -u)}.lock"
+    local _snd_lock="$_NF_CP"
+    if [[ -n "$_snd_lock" ]]; then
+      # Stale lock (player killed, machine slept): clear anything older than 30s,
+      # comfortably longer than the 4.6s of the longest clip.
+      if [[ -d "$_snd_lock" ]]; then
+        local _sl_age=$(( ${EPOCHSECONDS:-$(date +%s)} - $(stat -c %Y "$_snd_lock" 2>/dev/null || stat -f %m "$_snd_lock" 2>/dev/null || echo 0) ))
+        (( _sl_age > 30 )) && rmdir "$_snd_lock" 2>/dev/null
+      fi
+      # mkdir is atomic; pgrep was check-then-act and lost the race.
+      mkdir "$_snd_lock" 2>/dev/null || return 0
+      ( sleep 6; rmdir "$_snd_lock" 2>/dev/null ) &>/dev/null &
+      disown 2>/dev/null || true
     fi
-    # mkdir is atomic; pgrep was check-then-act and lost the race.
-    mkdir "$_snd_lock" 2>/dev/null || return 0
-    ( sleep 6; rmdir "$_snd_lock" 2>/dev/null ) &>/dev/null &
-    disown 2>/dev/null || true
   fi
   if command -v afplay &>/dev/null; then
     nohup afplay --volume "$volume" "$file" &>/dev/null &

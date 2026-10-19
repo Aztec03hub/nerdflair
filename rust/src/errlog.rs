@@ -40,13 +40,25 @@ pub fn log_path() -> PathBuf {
 /// on first use. None when it cannot be made safe: the caller then rate limits
 /// in memory only (once per process) instead of trusting a hostile directory.
 /// NERDFLAIR_ERR_STAMP_DIR overrides it (tests; trusted).
+/// The default stamp directory, as a path only (nothing created or checked).
+fn stamp_dir_path() -> Option<PathBuf> {
+    Some(log_path().parent()?.join(".nerdflair-stamps"))
+}
+
+/// File name of a key's stamp (shared by stamp_path and ok_if_stamped).
+fn stamp_name(key: &str) -> String {
+    let mut slug = slugify(key);
+    slug.truncate(100); // slugify output is ASCII
+    format!("nerdflair-err-{}-{}", uid(), slug)
+}
+
 fn stamp_dir() -> Option<&'static PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        if let Some(d) = std::env::var("NERDFLAIR_ERR_STAMP_DIR").ok().filter(|d| !d.is_empty()) {
+        if let Some(d) = std::env::var_os("NERDFLAIR_ERR_STAMP_DIR").filter(|d| !d.is_empty()) {
             return Some(PathBuf::from(d));
         }
-        let dir = log_path().parent()?.join(".nerdflair-stamps");
+        let dir = stamp_dir_path()?;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
         let m = match std::fs::symlink_metadata(&dir) {
@@ -90,9 +102,7 @@ fn stamp_dir_bad(dir: &std::path::Path, why: &str) {
 }
 
 pub fn stamp_path(key: &str) -> Option<PathBuf> {
-    let mut slug = slugify(key);
-    slug.truncate(100); // slugify output is ASCII
-    Some(stamp_dir()?.join(format!("nerdflair-err-{}-{}", uid(), slug)))
+    Some(stamp_dir()?.join(stamp_name(key)))
 }
 
 /// Key for a failed write to a /tmp cache or stamp file: the file name is part
@@ -174,21 +184,56 @@ fn trim(path: &PathBuf) {
 }
 
 fn emit(key: &str, reason: &str) -> bool {
-    let mut clean: String = reason
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    if clean.len() > MAX_REASON {
+    emit_bytes(key, reason.as_bytes())
+}
+
+/// Bytes that are safe to put in the log: C0, DEL and C1 controls (U+0080..U+009F, which a
+/// terminal may act on as CSI, OSC, DCS) become a space. In text that is not valid UTF-8, a
+/// raw 0x80..0x9f byte outside a valid character does too (valid characters are kept whole).
+/// Twin of lib.sh `_nf_sanitize`.
+fn clean(reason: &[u8]) -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::with_capacity(reason.len());
+    for ch in reason.utf8_chunks() {
+        for c in ch.valid().chars() {
+            if c.is_control() {
+                v.push(b' ');
+            } else {
+                let mut buf = [0u8; 4];
+                v.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        v.extend(ch.invalid().iter().map(|&b| if (0x80..=0x9f).contains(&b) { b' ' } else { b }));
+    }
+    v
+}
+
+/// `clean`, then cut to MAX_REASON bytes at a character boundary (never a partial sequence
+/// before the "..."). What a log line's reason is, byte for byte; lib.sh `_nf_log_line` is its twin.
+pub(crate) fn sanitize_reason(reason: &[u8]) -> Vec<u8> {
+    let mut v = clean(reason);
+    if v.len() > MAX_REASON {
         let mut cut = MAX_REASON;
-        while !clean.is_char_boundary(cut) {
+        while cut > 0 && (0x80..=0xbf).contains(&v[cut]) {
             cut -= 1;
         }
-        clean.truncate(cut);
-        clean.push_str("...");
+        v.truncate(cut);
+        v.extend_from_slice(b"...");
     }
+    v
+}
+
+/// `emit` for a reason that may hold a non-UTF-8 path: the bytes reach the log untouched
+/// (as the bash twin writes them), only control characters become spaces. The key is filtered
+/// the same way, so a future key built from user text cannot bypass it.
+fn emit_bytes(key: &str, reason: &[u8]) -> bool {
+    let clean_reason = sanitize_reason(reason);
     // One pre-built buffer, one write on an O_APPEND fd, so concurrent
     // renderers cannot interleave inside a line.
-    let line = format!("{} {} {}: {}\n", iso_now(), std::process::id(), key, clean);
+    let mut line = format!("{} {} ", iso_now(), std::process::id()).into_bytes();
+    line.extend_from_slice(&clean(key.as_bytes()));
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(&clean_reason);
+    line.push(b'\n');
     let path = log_path();
     trim(&path);
     let wrote = path
@@ -196,10 +241,10 @@ fn emit(key: &str, reason: &str) -> bool {
         .map(|d| std::fs::create_dir_all(d))
         .unwrap_or(Ok(()))
         .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(&path))
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+        .and_then(|mut f| f.write_all(&line));
     if let Err(e) = wrote {
         // Last resort. Hidden by the host, but better than nothing.
-        let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {}: {} | {}", path.display(), e, line.trim_end());
+        let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {}: {} | {}", path.display(), e, String::from_utf8_lossy(&line).trim_end());
         return false;
     }
     true
@@ -222,6 +267,11 @@ fn write_stamp(path: &PathBuf) -> bool {
 /// whatever the stamp says, so an unwritable stamp directory cannot make a
 /// render log the same thing twice).
 pub fn note(key: &str, reason: &str) {
+    note_bytes(key, reason.as_bytes())
+}
+
+/// `note` with a reason that may contain a non-UTF-8 path.
+pub fn note_bytes(key: &str, reason: &[u8]) {
     if mem_seen(key) {
         return;
     }
@@ -235,7 +285,7 @@ pub fn note(key: &str, reason: &str) {
     // otherwise make EVERY render retry and write to stderr. (The reason still
     // reached stderr once, which is the last resort.)
     // ponytail: two renderers racing at the hour boundary may both log.
-    emit(key, reason);
+    emit_bytes(key, reason);
     if let Some(st) = &stamp {
         let _ = write_stamp(st); // false only loses the rate limit
     }
@@ -264,6 +314,25 @@ pub fn ok(key: &str) {
     }
     emit("recovered", key);
     let _ = write_stamp(&rec);
+}
+
+/// `ok(key)` for a hot path: does nothing (and creates nothing) unless the key's failure
+/// stamp already exists, so a healthy render never touches the stamp directory.
+pub fn ok_if_stamped(key: &str) {
+    let dir = match std::env::var_os("NERDFLAIR_ERR_STAMP_DIR").filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => match stamp_dir_path() {
+            Some(p) => p,
+            None => return,
+        },
+    };
+    let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified());
+    // Healthy and never failed: ONE stat (the failure stamp is absent) and out.
+    let Ok(f) = mtime(&dir.join(stamp_name(key))) else { return };
+    match mtime(&dir.join(stamp_name(&format!("recovered-{}", key)))) {
+        Ok(r) if r >= f => {} // already reported as recovered: nothing to do
+        _ => ok(key),
+    }
 }
 
 /// True when `key` was touched less than `secs` ago. For retry back-off.
@@ -309,4 +378,21 @@ pub fn install_panic_hook() {
             .unwrap_or_else(|| "unknown".into());
         note("panic", &format!("{} at {}", msg, loc));
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    /// Feeds tests/log-sanitizers.sh: with NF_SAN_IN (lines of hex) and NF_SAN_OUT set it writes
+    /// the sanitized reason, as hex, per line; without them it does nothing.
+    #[test]
+    fn sanitizer_table() {
+        let (Some(i), Some(o)) = (std::env::var_os("NF_SAN_IN"), std::env::var_os("NF_SAN_OUT")) else { return };
+        let unhex = |s: &str| (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let out: String = std::fs::read_to_string(i)
+            .unwrap()
+            .lines()
+            .map(|l| super::sanitize_reason(&unhex(l)).iter().map(|b| format!("{:02x}", b)).collect::<String>() + "\n")
+            .collect();
+        std::fs::write(o, out).unwrap();
+    }
 }

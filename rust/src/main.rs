@@ -490,11 +490,13 @@ fn render_inner(input: &str) -> Result<String, String> {
     // why the names segment reported 1 server while the health probe counted 8.
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
+        // No cache dir: no probe cache either (already logged as cache-dir).
         let mh = mcp_cache_path(uid);
-        match std::fs::read_to_string(&mh) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
-            Err(e) => errlog::note_io("mcp-cache-read", &mh.display().to_string(), &e),
-            Ok(t) => {
+        match mh.as_ref().map(std::fs::read_to_string) {
+            None => {}
+            Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
+            Some(Err(e)) => errlog::note_io("mcp-cache-read", &mh.as_ref().map(|c| c.display().to_string()).unwrap_or_default(), &e),
+            Some(Ok(t)) => {
             let p = read_ifs_unit(&t, 4);
             let probe: Vec<String> = p[3]
                 .split('\u{1e}')
@@ -616,11 +618,8 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut multi_off_count: i64 = 0;
     let multi_total_count = multi_git_subs.len() as i64;
     if multi_total_count > 0 {
-        let cache_file = PathBuf::from(format!(
-            "/tmp/nerdflair-multibranch-{}",
-            cksum(cwd.as_bytes())
-        ));
-        let fresh = cache_file.is_file() && file_age(&cache_file) < GIT_CACHE_TTL;
+        let cache_file = cache_path(&format!("nerdflair-multibranch-{}", cksum(cwd.as_bytes())));
+        let fresh = cache_file.as_ref().map_or(false, |c| c.is_file() && file_age(c) < GIT_CACHE_TTL);
         let mut computed_multi: Option<String> = None;
         if !fresh {
             let mut list = String::new();
@@ -658,20 +657,23 @@ fn render_inner(input: &str) -> Result<String, String> {
             // what the repository says, and would be served from the cache for its TTL.
             let payload = format!("{}\n{}", off, list);
             if !proc::timed_out() {
-                if let Err(e) = std::fs::write(&cache_file, &payload) {
-                    errlog::note_io(&errlog::tmp_key(&cache_file), &cache_file.display().to_string(), &e);
+                if let Some(cf) = cache_file.as_ref() {
+                    if let Err(e) = cache_write(cf, payload.as_bytes()) {
+                        errlog::note_io(&errlog::tmp_key(cf), &cf.display().to_string(), &e);
+                    }
                 }
                 computed_multi = Some(payload);
             }
         }
         let content = match computed_multi {
             Some(t) => t,
-            None => match std::fs::read_to_string(&cache_file) {
-                Ok(t) => t,
-                Err(e) => {
+            None => match cache_file.as_ref().map(std::fs::read_to_string) {
+                None => String::new(), // no cache dir: already logged as cache-dir
+                Some(Ok(t)) => t,
+                Some(Err(e)) => {
                     // After a git timeout the skipped write is expected: already logged.
                     if !proc::timed_out() {
-                        errlog::note_io("multi-cache-read", &cache_file.display().to_string(), &e);
+                        errlog::note_io("multi-cache-read", &cache_file.as_ref().map(|c| c.display().to_string()).unwrap_or_default(), &e);
                     }
                     String::new()
                 }
@@ -1331,7 +1333,7 @@ fn render_inner(input: &str) -> Result<String, String> {
 
     // Read the previous sample first: several segments below difference
     // against it. used_percentage is legitimately fractional, so keep tenths.
-    let smp_path = if f.session_id.is_empty() { None } else { Some(sample_path(uid, &f.session_id)) };
+    let smp_path = if f.session_id.is_empty() { None } else { sample_path(uid, &f.session_id) };
     let ring = smp_path.as_ref().map(|p| read_ring(p)).unwrap_or(Ring { rate: 0, hist: Vec::new() });
     let prev = ring.hist.last();
     let used10: Option<i64> = if f.used_pct.is_empty() {
@@ -1647,8 +1649,9 @@ fn render_inner(input: &str) -> Result<String, String> {
     // ── Persist this sample ──────────────────────────────────────
     if let Some(sp) = smp_path.as_ref() {
         // Already reported above when it is bad (same field).
-        let api_now = match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 };
-        let u_now = used10.unwrap_or(0);
+        // Never write what read_ring refuses (fractional, negative, 16+ digits, leading zero): 0, as statusline.sh does.
+        let api_now = if canon_num(&f.total_api_ms) { match arith(&f.total_api_ms) { Ar::Val(v) => v, _ => 0 } } else { 0 };
+        let u_now = used10.filter(|u| canon_num(&u.to_string())).unwrap_or(0);
         let moved = prev.map_or(true, |pv| pv.api_ms != api_now || pv.used10 != u_now);
         if moved {
             let keep = env_int("NERDFLAIR_SAMPLES", 16).max(2) as usize;
@@ -1659,22 +1662,15 @@ fn render_inner(input: &str) -> Result<String, String> {
             let fresh = Sample { epoch: now, used10: u_now, api_ms: api_now };
             hist.push(&fresh);
             let start = hist.len().saturating_sub(keep);
-            let mut body = format!("v2 {}\n", rate_show);
+            let mut body = format!("v2 {}\n", if canon_num(&rate_show.to_string()) { rate_show } else { 0 });
             for h in &hist[start..] {
                 body.push_str(&format!("{} {} {}\n", h.epoch, h.used10, h.api_ms));
             }
-            let tmp = PathBuf::from(format!("{}.tmp", sp.display()));
-            match std::fs::write(&tmp, body.as_bytes()) {
-                Ok(()) => match std::fs::rename(&tmp, sp) {
-                    Ok(()) => errlog::ok("sample-write"),
-                    Err(e) => {
-                        errlog::note_io("sample-write", &format!("rename {}", tmp.display()), &e);
-                        let _ = std::fs::remove_file(&tmp); // best effort cleanup of our own temp
-                    }
-                },
+            match cache_write(sp, body.as_bytes()) {
+                Ok(()) => errlog::ok("sample-write"),
                 Err(e) => errlog::note_io(
                     "sample-write",
-                    &format!("{}: ETA/throughput history will not accumulate", tmp.display()),
+                    &format!("{}: ETA/throughput history will not accumulate", sp.display()),
                     &e,
                 ),
             }
@@ -1685,13 +1681,13 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut tmux_segment = String::new();
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         if !pane.is_empty() && proc::which("tmux").is_some() {
-            let cache = PathBuf::from(format!("/tmp/nerdflair-tmux-{}-{}", uid, slugify(&pane)));
+            let cache = cache_path(&format!("nerdflair-tmux-{}-{}", uid, slugify(&pane)));
             let mut name = String::new();
-            if cache.is_file() && file_age(&cache) < 60 {
-                name = match std::fs::read_to_string(&cache) {
+            if let Some(c) = cache.as_ref().filter(|c| c.is_file() && file_age(c) < 60) {
+                name = match std::fs::read_to_string(c) {
                     Ok(t) => t,
                     Err(e) => {
-                        errlog::note_io("tmux-cache-read", &cache.display().to_string(), &e);
+                        errlog::note_io("tmux-cache-read", &c.display().to_string(), &e);
                         String::new()
                     }
                 };
@@ -1706,8 +1702,10 @@ fn render_inner(input: &str) -> Result<String, String> {
                 }
                 name = n;
                 if !name.is_empty() {
-                    if let Err(e) = std::fs::write(&cache, &name) {
-                        errlog::note_io(&errlog::tmp_key(&cache), &cache.display().to_string(), &e);
+                    if let Some(c) = cache.as_ref() {
+                        if let Err(e) = cache_write(c, name.as_bytes()) {
+                            errlog::note_io(&errlog::tmp_key(c), &c.display().to_string(), &e);
+                        }
                     }
                 }
             }
@@ -2108,8 +2106,8 @@ struct GitCache {
 }
 
 fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
-    let cache_file = PathBuf::from(format!("/tmp/nerdflair-git-{}", cksum(git_dir.as_bytes())));
-    let fresh = cache_file.is_file() && file_age(&cache_file) < GIT_CACHE_TTL;
+    let cache_file = cache_path(&format!("nerdflair-git-{}", cksum(git_dir.as_bytes())));
+    let fresh = cache_file.as_ref().map_or(false, |c| c.is_file() && file_age(c) < GIT_CACHE_TTL);
     let mut computed: Option<String> = None;
     if !fresh {
         if can_enter(git_dir) {
@@ -2235,8 +2233,10 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
         // Same rule: a result computed while git calls were being skipped after a
         // timeout is not "clean, no branch", and must not be cached as that.
         if !proc::timed_out() {
-            if let Err(e) = std::fs::write(&cache_file, &payload) {
-                errlog::note_io(&errlog::tmp_key(&cache_file), &format!("{} (git re-runs every render)", cache_file.display()), &e);
+            if let Some(cf) = cache_file.as_ref() {
+                if let Err(e) = cache_write(cf, payload.as_bytes()) {
+                    errlog::note_io(&errlog::tmp_key(cf), &format!("{} (git re-runs every render)", cf.display()), &e);
+                }
             }
         }
         computed = Some(payload);
@@ -2246,12 +2246,13 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
     let fresh_value = if proc::timed_out() { None } else { computed.take() };
     let content = match fresh_value {
         Some(t) => t,
-        None => match std::fs::read_to_string(&cache_file) {
-            Ok(t) => t,
-            Err(e) => {
+        None => match cache_file.as_ref().map(std::fs::read_to_string) {
+            None => computed.unwrap_or_default(), // no cache dir: already logged as cache-dir
+            Some(Ok(t)) => t,
+            Some(Err(e)) => {
                 // NotFound with a computation in hand is just the failed write or a skipped one.
                 if computed.is_none() {
-                    errlog::note_io("git-cache-read", &cache_file.display().to_string(), &e);
+                    errlog::note_io("git-cache-read", &cache_file.as_ref().map(|c| c.display().to_string()).unwrap_or_default(), &e);
                 }
                 computed.unwrap_or_default()
             }
@@ -2481,7 +2482,9 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
         errlog::note("mcp-no-claude", "claude is not on PATH; MCP health probe disabled");
         return (ok, bad, warn, names);
     }
-    let cache = mcp_cache_path(uid);
+    let Some(cache) = mcp_cache_path(uid) else {
+        return (ok, bad, warn, names); // no cache dir: no probe (already logged as cache-dir)
+    };
     let lock = PathBuf::from(format!("{}.lock", cache.display()));
     let mut fresh = false;
     if cache.is_file() {
@@ -2613,8 +2616,8 @@ fn usage_row_ok(cols: &[&str], maxcost: f64) -> bool {
 /// session_id, not helpers sharing one. Write is printf-to-temp then rename.
 struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 
-fn sample_path(uid: u32, session: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/nerdflair-sample-{}-{}", uid, slugify(session)))
+fn sample_path(uid: u32, session: &str) -> Option<PathBuf> {
+    cache_path(&format!("nerdflair-sample-{}-{}", uid, slugify(session)))
 }
 
 /// Ring of recent observations plus the last throughput reading.
@@ -2622,6 +2625,12 @@ fn sample_path(uid: u32, session: &str) -> PathBuf {
 /// v1 was a single line "<api> <used10> <epoch> <rate>"; it is read once and
 /// then rewritten as v2, so the two renderers can share a file across upgrades.
 struct Ring { rate: i64, hist: Vec<Sample> }
+
+/// 0 or 1-15 digits with no leading zero: the only integers the sample file may hold
+/// (twin of `_SMP_NUM` in statusline.sh; '08' is an invalid octal in bash arithmetic).
+fn canon_num(w: &str) -> bool {
+    w == "0" || ((1..=15).contains(&w.len()) && !w.starts_with('0') && w.bytes().all(|b| b.is_ascii_digit()))
+}
 
 fn read_ring(path: &Path) -> Ring {
     let mut r = Ring { rate: 0, hist: Vec::new() };
@@ -2633,36 +2642,43 @@ fn read_ring(path: &Path) -> Ring {
             return r;
         }
     };
-    let mut lines = t.lines();
+    // Twin of statusline.sh: every field is 1-15 digits separated by single spaces; any other
+    // non-empty line is dropped and logged once (bash would otherwise evaluate it in (( ))).
+    let nums = |l: &str, n: usize| -> Option<Vec<i64>> {
+        let f: Vec<&str> = l.split(' ').collect();
+        if f.len() != n || !f.iter().all(|w| canon_num(w)) {
+            return None;
+        }
+        Some(f.iter().map(|w| w.parse::<i64>().unwrap_or(0)).collect())
+    };
+    let mut bad = false;
+    let mut lines = t.split('\n');
     match lines.next() {
         Some(first) if first.starts_with("v2 ") => {
-            r.rate = fmtx::awk_num(&first[3..]) as i64;
+            match nums(&first[3..], 1) {
+                Some(v) => r.rate = v[0],
+                None => bad = true,
+            }
             for l in lines {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 3 {
-                    r.hist.push(Sample {
-                        epoch: fmtx::awk_num(f[0]) as i64,
-                        used10: fmtx::awk_num(f[1]) as i64,
-                        api_ms: fmtx::awk_num(f[2]) as i64,
-                    });
+                match nums(l, 3) {
+                    Some(v) => r.hist.push(Sample { epoch: v[0], used10: v[1], api_ms: v[2] }),
+                    None if !l.is_empty() => bad = true,
+                    None => {}
                 }
             }
         }
-        Some(first) => {
-            let f: Vec<&str> = first.split_whitespace().collect();
-            if f.len() >= 4 {
-                r.rate = fmtx::awk_num(f[3]) as i64;
-                r.hist.push(Sample {
-                    api_ms: fmtx::awk_num(f[0]) as i64,
-                    used10: fmtx::awk_num(f[1]) as i64,
-                    epoch:  fmtx::awk_num(f[2]) as i64,
-                });
+        Some(first) => match nums(first, 4) {
+            Some(v) => {
+                r.rate = v[3];
+                r.hist.push(Sample { api_ms: v[0], used10: v[1], epoch: v[2] });
             }
-        }
+            None if !first.is_empty() => bad = true,
+            None => {}
+        },
         None => {}
     }
-    if r.hist.is_empty() && r.rate == 0 && !t.trim().is_empty() {
-        errlog::note("sample-read", &format!("{} has content but no readable samples; ETA history restarts", path.display()));
+    if bad {
+        errlog::note("sample-read", &format!("{} has malformed lines; ignored (ETA history restarts)", path.display()));
     }
     r
 }
@@ -2703,10 +2719,10 @@ fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
 /// `NERDFLAIR_MCP_CACHE` exists so a test can own its cache. Without it the
 /// path is a single shared /tmp file that a test run cannot isolate, and
 /// running the suite spawns a real probe against every configured server.
-fn mcp_cache_path(uid: u32) -> PathBuf {
+fn mcp_cache_path(uid: u32) -> Option<PathBuf> {
     match std::env::var("NERDFLAIR_MCP_CACHE") {
-        Ok(p) if !p.is_empty() => PathBuf::from(p),
-        _ => PathBuf::from(format!("/tmp/nerdflair-mcphealth-{}", uid)),
+        Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
+        _ => cache_path(&format!("nerdflair-mcphealth-{}", uid)),
     }
 }
 
@@ -2753,18 +2769,21 @@ fn repo_cost_segment(
         return String::new();
     }
 
-    let stamp = PathBuf::from(format!(
-        "/tmp/nerdflair-repocost-{}-{}",
-        uid,
-        slugify(&f.session_id)
-    ));
+    // No cache dir: the validated stamp dir carries the TTL marker; with neither, say so.
+    let stamp = cache_path(&format!("nerdflair-repocost-{}-{}", uid, slugify(&f.session_id)))
+        .or_else(|| errlog::stamp_path(&format!("repocost-{}", f.session_id)));
+    if stamp.is_none() {
+        errlog::note("repocost-skipped", "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append");
+    }
     let maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
     let mut due = true;
-    if stamp.is_file() && file_age(&stamp) < ttl {
+    if stamp.as_ref().map_or(false, |s| s.is_file() && file_age(s) < ttl) {
         due = false;
     }
     let lock_file = PathBuf::from(format!("{}.lock", cost_file.display()));
-    if due && !f.cost.is_empty() && f.cost != "0" {
+    // Without any stamp there is no once-per-TTL limit, so appending would write a ledger
+    // row on every render: skip the sample (logged above as repocost-skipped).
+    if due && stamp.is_some() && !f.cost.is_empty() && f.cost != "0" {
         use std::io::Write as _;
         // A SHARED lock, so the many appenders never block each other but all
         // of them are excluded while the compactor holds the exclusive one.
@@ -2822,8 +2841,10 @@ fn repo_cost_segment(
         // scaling with a file that grows on its own: the incident pattern.
         // Skipping a sample costs nothing permanent, the column being
         // cumulative.
-        if let Err(e) = std::fs::write(&stamp, "") {
-            errlog::note_io(&errlog::tmp_key(&stamp), &stamp.display().to_string(), &e);
+        if let Some(stamp) = stamp.as_ref() {
+            if let Err(e) = cache_write(stamp, b"") {
+                errlog::note_io(&errlog::tmp_key(stamp), &stamp.display().to_string(), &e);
+            }
         }
         } // shared lock released here, before the exclusive one is requested
         let bytes = match std::fs::metadata(&cost_file) {
@@ -3004,14 +3025,11 @@ fn repo_cost_segment(
         }
     }
 
-    let memo = PathBuf::from(format!(
-        "/tmp/nerdflair-repocost-total-{}-{}",
-        uid,
-        slugify(&slug)
-    ));
+    let memo = cache_path(&format!("nerdflair-repocost-total-{}-{}", uid, slugify(&slug)))
+        .or_else(|| errlog::stamp_path(&format!("repocost-total-{}", slug)));
     let mut total = String::new();
-    if !due && memo.is_file() {
-        total = match std::fs::read_to_string(&memo) {
+    if let Some(memo) = memo.as_ref().filter(|m| !due && m.is_file()) {
+        total = match std::fs::read_to_string(memo) {
             Ok(t) => t,
             Err(e) => {
                 errlog::note_io("tmp-read", &memo.display().to_string(), &e);
@@ -3052,8 +3070,10 @@ fn repo_cost_segment(
         if t > 0.0 {
             total = fmtx::f2(t);
         }
-        if let Err(e) = std::fs::write(&memo, &total) {
-            errlog::note_io(&errlog::tmp_key(&memo), &memo.display().to_string(), &e);
+        if let Some(memo) = memo.as_ref() {
+            if let Err(e) = cache_write(memo, total.as_bytes()) {
+                errlog::note_io(&errlog::tmp_key(memo), &memo.display().to_string(), &e);
+            }
         }
     }
     if !total.is_empty() && total != "0.00" {

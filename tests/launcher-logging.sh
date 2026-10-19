@@ -232,6 +232,34 @@ check "heal missing: reported" 0 "$found"
 check "heal missing: the watcher is still running" 1 "$alive"
 stop_watcher
 
+# ── no terminal control ever reaches launcher.log (reasons carry paths and python errors) ──
+resetlog
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1
+  nf_log hostile $'path \x1b]0;pwn\x07\x1b[2J \xc2\x9b[2J \xff\x9b \r\nforged: line ' ; nf_log utf8 '日本 “x” Д' )
+_raw=$(LC_ALL=C cat "$LOG" 2>/dev/null)
+check "launcher.log: ESC, BEL, CR, U+009B and a raw 0x9b never reach the file" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" != *$'\x1b'* && "$_raw" != *$'\x07'* && "$_raw" != *$'\r'* && "$_raw" != *$'\x9b'* ]] ) && echo yes || echo no)"
+check "launcher.log: a newline in a reason cannot forge a second line" 2 "$(wc -l < "$LOG" | tr -d ' ')"
+check "launcher.log: valid UTF-8 (CJK, smart quotes, Cyrillic) is kept byte for byte" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" == *'日本 “x” Д'* ]] ) && echo yes || echo no)"
+
+# a long reason with one stray C1 byte must not stall the caller (the byte loop is bounded to 1600 bytes)
+resetlog
+_big=$(head -c 50000 /dev/zero | tr '\0' 'a')$(printf '\x9b')
+_t0=$EPOCHREALTIME
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log slow "$_big" )
+_ms=$(( (${EPOCHREALTIME/./} - ${_t0/./}) / 1000 ))
+check "launcher.log: a 50 KB reason with a stray 0x9b is logged in under 1000 ms" yes "$([[ $_ms -lt 1000 ]] && echo yes || echo "no (${_ms} ms)")"
+check "launcher.log: that reason was cut to the bound" yes "$([[ $(wc -c < "$LOG") -lt 1800 ]] && echo yes || echo no)"
+
+# a CJK character straddling byte 1600 must not leave a partial sequence (strict UTF-8 decode)
+resetlog
+_cjk=$(head -c 1599 /dev/zero | tr '\0' 'a')日本語日本語
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log straddle "$_cjk" )
+check "launcher.log: a reason cut inside a CJK character still decodes as strict UTF-8" ok \
+  "$(python3 -I -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' < "$LOG" >/dev/null 2>&1 && echo ok || echo bad)"
+check "launcher.log: that cut is marked with ..." yes "$(LC_ALL=C; [[ "$(cat "$LOG")" == *'...' ]] && echo yes || echo no)"
+
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'
 import os, shutil, sys

@@ -262,7 +262,9 @@ _mcp_probe_names=""
 # isolate a test) silently left the other two reading the live machine's cache:
 # the health counts came from the override and the NAMES from /tmp, which is
 # exactly the disagreement between the two that the probe exists to prevent.
-_MCP_CACHE="${NERDFLAIR_MCP_CACHE:-/tmp/nerdflair-mcphealth-${UID}}"
+# Empty when there is no private cache dir (then no probe cache and no probe).
+if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _MCP_CACHE="$NERDFLAIR_MCP_CACHE"
+else _nf_cache_path "nerdflair-mcphealth-${UID}"; _MCP_CACHE="$_NF_CP"; fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
   # `read` exits 1 at EOF without a trailing newline and the probe writes none:
   # the variables ARE set, so the `|| true` is correct, not an absorbed error.
@@ -412,7 +414,7 @@ _git_cache_file=""
 _git_cache_fresh=false
 if [[ -n "$git_dir" ]]; then
   _git_dir_hash=$(printf '%s' "$git_dir" | cksum | cut -d' ' -f1)
-  _git_cache_file="/tmp/nerdflair-git-${_git_dir_hash}"
+  _nf_cache_path "nerdflair-git-${_git_dir_hash}"; _git_cache_file="$_NF_CP"   # empty: no cache dir, compute every render
   if [[ -f "$_git_cache_file" ]]; then
     _cache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_git_cache_file" 2>/dev/null || stat -f %m "$_git_cache_file" 2>/dev/null || echo 0) ))
     (( _cache_age < _GIT_CACHE_TTL )) && _git_cache_fresh=true
@@ -487,8 +489,11 @@ if [[ -n "$git_dir" ]]; then
     # every field after _gc_remote by one. \x1f is not IFS-whitespace.
     # Not after a git timeout: the empty result is not "clean, no branch".
     if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file" \
-        || _nf_err "tmp-write:${_git_cache_file##*/}" "cannot write $_git_cache_file (git re-runs every render)"
+      if [[ -n "$_git_cache_file" ]]; then
+        printf -v _gc_payload '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind"
+        _nf_cache_put "$_git_cache_file" "$_gc_payload" \
+          || _nf_err "tmp-write:${_git_cache_file##*/}" "cannot write $_git_cache_file (git re-runs every render)"
+      fi
     fi
   fi
   # A fresh computation beats the file (a failed write leaves the old one); after a
@@ -538,7 +543,7 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
   _multi_total_count=${#_multi_git_subs[@]}
   _multi_cache_fresh=false
   _cwd_hash=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
-  _multi_cache_file="/tmp/nerdflair-multibranch-${_cwd_hash}"
+  _nf_cache_path "nerdflair-multibranch-${_cwd_hash}"; _multi_cache_file="$_NF_CP"   # empty: no cache dir
   if [[ -f "$_multi_cache_file" ]]; then
     _mcache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_multi_cache_file" 2>/dev/null || stat -f %m "$_multi_cache_file" 2>/dev/null || echo 0) ))
     (( _mcache_age < _GIT_CACHE_TTL )) && _multi_cache_fresh=true
@@ -564,8 +569,11 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
     done
     # Cache: off-count on line 1, joined list on line 2 (list may be empty).
     if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
-      printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file" \
-        || _nf_err "tmp-write:${_multi_cache_file##*/}" "cannot write $_multi_cache_file"
+      if [[ -n "$_multi_cache_file" ]]; then
+        printf -v _mb_payload '%s\n%s' "$_mb_off" "$_mb_list"
+        _nf_cache_put "$_multi_cache_file" "$_mb_payload" \
+          || _nf_err "tmp-write:${_multi_cache_file##*/}" "cannot write $_multi_cache_file"
+      fi
       _mb_have=1
     fi
   fi
@@ -1374,9 +1382,11 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
   fi
   [[ -z "$_rc_slug" && -n "$project_dir" ]] && _rc_slug="${project_dir##*/}"
   if [[ -n "$_rc_slug" ]]; then
-    _rc_stamp="/tmp/nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}"
+    # No cache dir: the validated stamp dir carries the TTL marker; with neither, say so.
+    _nf_cache_or_stamp "nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}" "repocost-${session_id}"; _rc_stamp="$_NF_CP"
+    [[ -z "$_rc_stamp" ]] && _nf_err repocost-skipped "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append"
     _rc_due=true
-    if [[ -f "$_rc_stamp" ]]; then
+    if [[ -n "$_rc_stamp" && -f "$_rc_stamp" ]]; then
       _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_stamp" 2>/dev/null || stat -f %m "$_rc_stamp" 2>/dev/null || echo 0) ))
       (( _rc_age < _REPO_COST_TTL )) && _rc_due=false
     fi
@@ -1403,7 +1413,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # and forever: the same permanent wedge flock was adopted to remove,
     # re-entering through the migration. rmdir only succeeds on an empty dir.
     [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
-    if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
+    # Without any stamp there is no once-per-TTL limit, so appending would write a
+    # ledger row every render: skip the sample (logged above as repocost-skipped).
+    if [[ "$_rc_due" == "true" ]] && [[ -n "$_rc_stamp" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
       # Exit 75 = lock held by the compactor: contention, silent (the next
       # sample carries the total). 76 = the append itself failed. Anything else
       # is the lock redirect failing. The first two redirections are ordered
@@ -1434,7 +1446,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
       # whole ledger for as long as a compaction held the lock: the per-refresh
       # cost scaling with a file that grows on its own, which is the incident
       # pattern. A skipped sample costs nothing, the column being cumulative.
-      : > "$_rc_stamp" 2>/dev/null || _nf_err "tmp-write:${_rc_stamp##*/}" "cannot write $_rc_stamp"
+      _nf_cache_put "$_rc_stamp" "" || _nf_err "tmp-write:${_rc_stamp##*/}" "cannot write $_rc_stamp"
       # Compact when the log gets big AND the cooldown has expired, writing via
       # a temp file so a reader without the lock never sees a partial.
       #
@@ -1545,9 +1557,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # One awk pass over the log costs ~7ms, which is 14% of the render budget --
     # far too much for a number that moves once a minute. Recompute only on the
     # same cadence as the append, and read the memoised value otherwise.
-    _rc_memo="/tmp/nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}"
+    _nf_cache_or_stamp "nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}" "repocost-total-${_rc_slug}"; _rc_memo="$_NF_CP"
     _rc_total=""
-    if [[ "$_rc_due" == "false" && -r "$_rc_memo" ]]; then
+    if [[ "$_rc_due" == "false" && -n "$_rc_memo" && -r "$_rc_memo" ]]; then
       _rc_total=$(<"$_rc_memo")
     elif [[ -e "$_REPO_COST_FILE" && ! -r "$_REPO_COST_FILE" ]]; then
       _nf_err ledger-read "$_REPO_COST_FILE exists but is not readable; repo total unavailable"
@@ -1558,7 +1570,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
       ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
         || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
-      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
+      if [[ -n "$_rc_memo" ]]; then
+        _nf_cache_put "$_rc_memo" "$_rc_total" || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
+      fi
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
@@ -1580,7 +1594,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && ! command -v claude &>/dev/null;
   # The segment simply vanishes; say why (once an hour).
   _nf_err mcp-no-claude "claude is not on PATH; MCP health probe disabled"
 fi
-if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; then
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v claude &>/dev/null; then
   _mh_cache="$_MCP_CACHE"
   _mh_lock="${_mh_cache}.lock"
   _mh_fresh=false
@@ -1720,29 +1734,35 @@ printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 # oldest first. One file per session_id, so the many concurrent Claude Code
 # sessions never contend; written temp-then-rename so a reader never tears.
 _SMP_KEEP=${NERDFLAIR_SAMPLES:-16}
+_SMP_NUM='(0|[1-9][0-9]{0,14})'   # canonical non-negative integer, no leading zero
 _smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
 _smp_hist=()
 _smp_file=""
 if [[ -n "$session_id" ]]; then
-  _smp_file="/tmp/nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"
-  if [[ -r "$_smp_file" ]]; then
-    _smp_ln=0
+  _nf_cache_path "nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"; _smp_file="$_NF_CP"   # empty: no cache dir, no history
+  if [[ -n "$_smp_file" && -r "$_smp_file" ]]; then
+    _smp_ln=0; _smp_bad=""
+    # canonical digits only (no leading zero: '08' is invalid octal in (( ))): these words reach (( )) below, where a bare word is evaluated as a variable name
     while IFS= read -r _sl || [[ -n "$_sl" ]]; do
       if (( _smp_ln == 0 )); then
         if [[ "$_sl" == v2\ * ]]; then
-          _smp_prev_rate="${_sl#v2 }"
+          if [[ "${_sl#v2 }" =~ ^$_SMP_NUM$ ]]; then _smp_prev_rate="${_sl#v2 }"; else _smp_bad=1; fi
         else
           # v1: "api used10 epoch rate" on one line. Read it, then let it be
           # rewritten in v2 on this render.
-          IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate <<< "$_sl"
-          [[ -n "$_smp_prev_epoch" ]] && _smp_hist+=("$_smp_prev_epoch $_smp_prev_used10 $_smp_prev_api")
+          if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then
+            IFS=' ' read -r _smp_v1_api _smp_v1_used10 _smp_v1_epoch _smp_prev_rate <<< "$_sl"
+            _smp_hist+=("$_smp_v1_epoch $_smp_v1_used10 $_smp_v1_api")
+          elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
           break
         fi
       else
-        [[ -n "$_sl" ]] && _smp_hist+=("$_sl")
+        if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then _smp_hist+=("$_sl")
+        elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
       fi
       (( _smp_ln++ ))
     done < "$_smp_file"
+    [[ -n "$_smp_bad" ]] && _nf_err sample-read "$_smp_file has malformed lines; ignored (ETA history restarts)"
     # newest entry also feeds the two-point paths below
     if (( ${#_smp_hist[@]} > 0 )); then
       IFS=' ' read -r _smp_prev_epoch _smp_prev_used10 _smp_prev_api <<< "${_smp_hist[-1]}"
@@ -2134,10 +2154,16 @@ fi
 # Only when something actually moved, so an idle pane re-rendering on the 30s
 # timer does not churn the disk or pollute the slope set with zero-delta pairs.
 if [[ -n "$_smp_file" ]]; then
+  # Never write a value the reader above refuses (fractional, negative, 16+ digits, leading
+  # zero): it would drop the whole history next render. Twin of main.rs (writes 0).
+  _smp_api_w=${total_api_ms:-0}; _smp_u_w=${_used10:-0}; _smp_r_w=${_rate_show:-0}
+  [[ "$_smp_api_w" =~ ^$_SMP_NUM$ ]] || _smp_api_w=0
+  [[ "$_smp_u_w" =~ ^$_SMP_NUM$ ]] || _smp_u_w=0
+  [[ "$_smp_r_w" =~ ^$_SMP_NUM$ ]] || _smp_r_w=0
   _smp_moved=0
   if (( ${#_smp_hist[@]} == 0 )); then
     _smp_moved=1
-  elif [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
+  elif [[ "${_smp_api_w} ${_smp_u_w}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
     _smp_moved=1
   fi
   if (( _smp_moved )); then
@@ -2146,16 +2172,15 @@ if [[ -n "$_smp_file" ]]; then
     if [[ -n "$_ctx_dropped" ]]; then
       _smp_hist=()
     fi
-    _smp_hist+=("${EPOCHSECONDS} ${_used10:-0} ${total_api_ms:-0}")
+    _smp_hist+=("${EPOCHSECONDS} ${_smp_u_w} ${_smp_api_w}")
     while (( ${#_smp_hist[@]} > _SMP_KEEP )); do
       _smp_hist=("${_smp_hist[@]:1}")
     done
-    {
-      printf 'v2 %s\n' "${_rate_show:-0}"
-      printf '%s\n' "${_smp_hist[@]}"
-    } > "${_smp_file}.tmp" 2>/dev/null && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null \
+    printf -v _smp_body 'v2 %s\n' "$_smp_r_w"
+    printf -v _smp_lines '%s\n' "${_smp_hist[@]}"
+    _nf_cache_put "$_smp_file" "${_smp_body}${_smp_lines}" \
       && _nf_ok sample-write \
-      || { _nf_err sample-write "cannot write or rename ${_smp_file}.tmp; ETA/throughput history will not accumulate"; rm -f "${_smp_file}.tmp" 2>/dev/null; }
+      || _nf_err sample-write "cannot write or rename ${_smp_file}; ETA/throughput history will not accumulate"
   fi
 fi
 
@@ -2168,9 +2193,9 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
   # `tmux display-message` is only ~1ms standalone but ~3.3ms inside the render
   # path. The session name for a given pane changes about never, so cache it
   # per-pane. Renaming a session costs you one stale minute.
-  _tx_cache="/tmp/nerdflair-tmux-${UID}-${TMUX_PANE//[^a-zA-Z0-9]/_}"
+  _nf_cache_path "nerdflair-tmux-${UID}-${TMUX_PANE//[^a-zA-Z0-9]/_}"; _tx_cache="$_NF_CP"   # empty: no cache dir
   _tmux_name=""
-  if [[ -f "$_tx_cache" ]]; then
+  if [[ -n "$_tx_cache" && -f "$_tx_cache" ]]; then
     _tx_age=$(( EPOCHSECONDS - $(stat -c %Y "$_tx_cache" 2>/dev/null || stat -f %m "$_tx_cache" 2>/dev/null || echo 0) ))
     (( _tx_age < 60 )) && _tmux_name=$(<"$_tx_cache")
   fi
@@ -2178,8 +2203,8 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
     _nf_cmd tmux '' tmux display-message -p '#S' \
       || _nf_err tmux "tmux display-message failed; session name segment hidden"
     _tmux_name="$_NF_OUT"
-    if [[ -n "$_tmux_name" ]]; then
-      printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null || _nf_err "tmp-write:${_tx_cache##*/}" "cannot write $_tx_cache"
+    if [[ -n "$_tmux_name" && -n "$_tx_cache" ]]; then
+      _nf_cache_put "$_tx_cache" "$_tmux_name" || _nf_err "tmp-write:${_tx_cache##*/}" "cannot write $_tx_cache"
     fi
   fi
   [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
