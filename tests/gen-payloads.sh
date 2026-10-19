@@ -315,4 +315,17 @@ emit "payload cwd does not exist: both renderers log cwd-cd and draw no git UI" 
 
 emit "state chime_volume is not a number (loud): both renderers show 100% and log chime-volume" \
   "$(mut '.cost.total_cost_usd=0')" "CASE_STATE=$(st full vibrant auto random loud)" "CASE_COLUMNS=120"
+# ═══ 16. Last-known rate limits (limits-last) and the cost-less row ═
+NOLIM='del(.rate_limits)'
+emit "limits: 7d present, 5h absent: dim 5h 0% (window lapsed) and block says idle"   "$(mut 'del(.rate_limits.five_hour)')" "${E_FULL[@]}"
+emit "limits: both absent, record has both windows in the future: dim recorded figures with countdown"   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+200030@@'
+emit "limits: both absent, record windows expired: dim 0% for both, block idle"   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW-3570@@ 71:@@NOW-30@@'
+emit "limits: both absent, no record (API-key user): nothing shown"   "$(mut "$NOLIM")" "${E_FULL[@]}"
+emit "limits: 5h present, 7d absent, record 7d in the future: dim recorded 7d"   "$(mut 'del(.rate_limits.seven_day)')" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+200030@@'
+emit "limits: both absent, record 5h expired and 7d in the future (mixed)"   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW-3570@@ 71:@@NOW+200030@@'
+emit "limits: both absent, corrupt record: nothing shown, logged once"   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=this is not a record'
+emit "limits: both absent, record with a 5h window only"   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ -'
+emit "cost-less row with MCP configured: tmux, api time, block and repo cost stay (fresh session)"   "$(mut ".cost.total_cost_usd=0 | $NOLIM")" "CASE_STATE=$(st full vibrant auto random 1)" "CASE_COLUMNS=160" "CASE_MCP=many" \
+  "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_REPOCOST=1" 'CASE_SEED_LIMITS=v1 42:@@NOW-3570@@ 71:@@NOW+200030@@'
+emit "cost-less row with MCP configured, payload limits present, api time only"   "$(mut '.cost.total_cost_usd=0')" "${E_FULL[@]}" "CASE_MCP=one"
 echo "generated $N payloads in $OUT"

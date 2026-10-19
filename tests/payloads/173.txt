@@ -1,0 +1,1 @@
+cost-less row with MCP configured: tmux, api time, block and repo cost stay (fresh session)

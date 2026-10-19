@@ -65,6 +65,11 @@ CARDS = [
         "percentage used, then time until the window resets",
         "Anthropic's own server-side metering, not an estimate",
     ]),
+    ("block", "\uf094", "Billing block", (192, 132, 252), [
+        "spend inside the CURRENT 5-hour rate-limit window",
+        "window is rate_limits.five_hour.resets_at less 5h",
+        "says idle rather than guess when that window has lapsed",
+    ]),
     ("mcp_health", r"\d+/\d+", "MCP health", (74, 222, 128), [
         "connected / total, then failed and needing auth",
         "same probe as the server names",

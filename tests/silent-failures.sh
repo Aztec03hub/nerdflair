@@ -558,6 +558,21 @@ run_case git-hang-backoff          timeout:git:inside-work-tree 0 s_git_backoff
 run_case cwd-cd-fails              cwd-cd 1 s_cwd_gone
 run_case cwd-not-enterable         cwd-cd 1 s_cwd_locked
 run_case project-dir-locked        project-dir-resolve 1 s_project_locked
+
+# Last-known rate limits (limits-last): a corrupt record degrades to nothing and logs once;
+# a missing or healthy one, with or without limits in the payload, logs nothing.
+s_limits_corrupt() { printf 'this is not a record' > "$CASE_DIR/cache/limits-last"; }
+s_limits_healthy() { printf 'v1 42:%s 71:%s\n' $(( NOW + 9000 )) $(( NOW + 200000 )) > "$CASE_DIR/cache/limits-last"; }
+s_limits_payload() {
+  PAYLOAD=$(payload limits ",\"rate_limits\":{\"five_hour\":{\"used_percentage\":10,\"resets_at\":$(( NOW + 9000 ))},\"seven_day\":{\"used_percentage\":20,\"resets_at\":$(( NOW + 200000 ))}}")
+}
+chk_limits_written() {
+  check "limits-last [$1]: written from a payload that carries limits" "v1 10:$(( NOW + 9000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last" 2>/dev/null)"
+}
+run_case limits-last-corrupt       limits-last             1 s_limits_corrupt
+run_case limits-last-healthy       -                       0 s_limits_healthy
+run_case limits-last-missing       -                       0 s_none
+run_case limits-last-from-payload  -                       0 s_limits_payload chk_limits_written
 run_case multi-cache-unreadable    multi-cache-read 1 s_multi_cache_locked chk_multi_cache_rm
 run_case chime-volume-bad          chime-volume 1 s_chime_volume_bad
 run_case usage-not-integer         ctx-usage-type 1 s_usage_float

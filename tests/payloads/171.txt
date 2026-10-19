@@ -1,0 +1,1 @@
+limits: both absent, corrupt record: nothing shown, logged once

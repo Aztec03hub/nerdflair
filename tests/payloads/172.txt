@@ -1,0 +1,1 @@
+limits: both absent, record with a 5h window only

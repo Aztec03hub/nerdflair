@@ -378,6 +378,7 @@ run_side() {
   rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-sample-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-tmux-${UID}-* 2>/dev/null
+  rm -f "$CACHE_DIR"/limits-last "$CACHE_DIR"/limits-last.tmp.* 2>/dev/null
 
   # ── seed the async caches this case asks for ────────────────────────────
   local -a extra_env=()
@@ -391,6 +392,16 @@ run_side() {
     extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")
+  fi
+  if [[ -n "${CASE_SEED_LIMITS:-}" ]]; then
+    # The account-wide last-known rate-limit record. @@NOW+N@@ / @@NOW-N@@ as in payloads.
+    local lim="$CASE_SEED_LIMITS" lsign loff lv
+    while [[ "$lim" =~ @@NOW([+-])([0-9]+)@@ ]]; do
+      lsign="${BASH_REMATCH[1]}"; loff="${BASH_REMATCH[2]}"
+      if [[ "$lsign" == "+" ]]; then lv=$(( PINNED_NOW + loff )); else lv=$(( PINNED_NOW - loff )); fi
+      lim="${lim//@@NOW${lsign}${loff}@@/$lv}"
+    done
+    printf '%s\n' "$lim" > "$CACHE_DIR/limits-last"
   fi
   if [[ -n "${CASE_TMUX:-}" && -n "${CASE_SEED_TMUX:-}" ]]; then
     printf '%s' "$CASE_SEED_TMUX" > "$CACHE_DIR/nerdflair-tmux-${UID}-${CASE_TMUX//[^a-zA-Z0-9]/_}"
@@ -490,7 +501,7 @@ for id in "${CASES[@]}"; do
   # ── per-case environment directives ───────────────────────────────────
   CASE_STATE=""; CASE_COLUMNS=""; CASE_TMUX=""; CASE_MCP=""
   CASE_SEED_CCUSAGE=""; CASE_SEED_MCPHEALTH=""; CASE_SEED_TMUX=""
-  CASE_SEED_REPOCOST=""; CASE_SESSION_CHIME=""; CASE_EXTRA_ENV=""
+  CASE_SEED_REPOCOST=""; CASE_SESSION_CHIME=""; CASE_EXTRA_ENV=""; CASE_SEED_LIMITS=""
   # shellcheck disable=SC1090
   [[ -s "$PAYLOAD_DIR/$id.env" ]] && source "$PAYLOAD_DIR/$id.env"
 
