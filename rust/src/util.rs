@@ -387,8 +387,14 @@ pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         // var_os, not var: a non-UTF-8 path is still a path (var() would drop it and fall back silently)
         let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
-        let fail = |dir: &std::path::Path, why: &str| {
-            crate::errlog::note("cache-dir", &format!("{} is unusable ({}); caches skipped", dir.display(), why));
+        use std::os::unix::ffi::OsStrExt;
+        // Built from BYTES: a non-UTF-8 path reaches the log as it is, as the bash twin writes it.
+        let fail = |dir: &std::path::Path, why: &[u8]| {
+            let mut m = dir.as_os_str().as_bytes().to_vec();
+            m.extend_from_slice(b" is unusable (");
+            m.extend_from_slice(why);
+            m.extend_from_slice(b"); caches skipped");
+            crate::errlog::note_bytes("cache-dir", &m);
             None
         };
         let dir = if let Some(d) = env("NERDFLAIR_CACHE_DIR") {
@@ -432,25 +438,29 @@ pub fn cache_dir() -> Option<&'static std::path::PathBuf> {
         unsafe { libc::umask(old) };
         let m = match std::fs::symlink_metadata(&dir) {
             Ok(m) => m,
-            Err(_) => return fail(&dir, &format!("cannot create it: {}", mkerr.unwrap_or_else(|| "No such file or directory".into()))),
+            Err(_) => return fail(&dir, format!("cannot create it: {}", mkerr.unwrap_or_else(|| "No such file or directory".into())).as_bytes()),
         };
         if !m.is_dir() {
-            return fail(&dir, "not a real directory");
+            return fail(&dir, b"not a real directory");
         }
         if m.uid() != uid() {
-            return fail(&dir, "not owned by this user");
+            return fail(&dir, b"not owned by this user");
         }
         if m.mode() & 0o077 != 0 {
             if std::env::var_os("NERDFLAIR_CACHE_DIR").map_or(false, |v| !v.is_empty()) {
                 // An explicit override may name a directory the owner uses for other things
                 // (HOME, a project): never narrow it behind their back, say what to do.
-                return fail(&dir, &format!("mode allows group/other access; run: chmod 700 {}", shell_quote(&dir.to_string_lossy())));
+                let mut why = b"mode allows group/other access; run: chmod 700 ".to_vec();
+                why.extend_from_slice(&shell_quote(dir.as_os_str().as_bytes()));
+                return fail(&dir, &why);
             }
             // The default location is ours alone: tighten it (never through a symlink).
             if !tighten_dir(&dir) || std::fs::symlink_metadata(&dir).map_or(true, |fm| fm.mode() & 0o077 != 0) {
-                return fail(&dir, "mode allows group/other access and chmod 700 failed");
+                return fail(&dir, b"mode allows group/other access and chmod 700 failed");
             }
-            crate::errlog::note("cache-dir-repaired", &format!("{} had group/other access; tightened to 0700", dir.display()));
+            let mut m = dir.as_os_str().as_bytes().to_vec();
+            m.extend_from_slice(b" had group/other access; tightened to 0700");
+            crate::errlog::note_bytes("cache-dir-repaired", &m);
         }
         crate::errlog::ok_if_stamped("cache-dir");
         Some(dir)
@@ -485,18 +495,46 @@ pub fn cache_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     r
 }
 
-/// 'single-quoted' for a shell, as lib.sh writes it in the same message.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// 'single-quoted' for a shell, as lib.sh writes it in the same message (bytes in, bytes out).
+fn shell_quote(b: &[u8]) -> Vec<u8> {
+    let mut o = vec![b'\''];
+    for &c in b {
+        if c == b'\'' {
+            o.extend_from_slice(b"'\\''");
+        } else {
+            o.push(c);
+        }
+    }
+    o.push(b'\'');
+    o
 }
 
 /// chmod 700 a directory that was just checked to be ours, without following a symlink and
 /// without needing the read bit (mode 055 has none): an O_PATH fd, fstat'ed, then fchmodat on
 /// its /proc/self/fd entry. Other systems have no O_PATH: lstat-checked path chmod instead.
-#[cfg(target_os = "linux")]
 fn tighten_dir(dir: &std::path::Path) -> bool {
+    #[cfg(target_os = "linux")]
+    if tighten_dir_fd(dir) {
+        return true;
+    }
+    // No O_PATH, or no /proc (a container or chroot): the lstat-checked path chmod bash uses.
+    // A symlink swapped in between the check and the chmod needs write access to our own parent.
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() && m.uid() == uid() => {}
+        _ => return false,
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn tighten_dir_fd(dir: &std::path::Path) -> bool {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // Test-only switch: behave as if /proc were not mounted (exercises the fallback above).
+    if std::env::var_os("NERDFLAIR_TEST_NO_PROC").is_some() {
+        return false;
+    }
     let Ok(f) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY)
@@ -510,13 +548,4 @@ fn tighten_dir(dir: &std::path::Path) -> bool {
     }
     let Ok(p) = std::ffi::CString::new(format!("/proc/self/fd/{}", f.as_raw_fd())) else { return false };
     unsafe { libc::fchmodat(libc::AT_FDCWD, p.as_ptr(), 0o700, 0) == 0 }
-}
-#[cfg(not(target_os = "linux"))]
-fn tighten_dir(dir: &std::path::Path) -> bool {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    match std::fs::symlink_metadata(dir) {
-        Ok(m) if m.is_dir() && m.uid() == uid() => {}
-        _ => return false,
-    }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
 }

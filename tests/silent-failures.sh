@@ -426,6 +426,14 @@ s_cache_open_quoted() {   # a path with a space and a quote: the printed command
   rmdir "$CASE_DIR/cache"; mkdir -m 755 "$CASE_DIR/a b'c"; CASE_ENV+=("NERDFLAIR_CACHE_DIR=@DIR@/a b'c" NERDFLAIR_REPO_COST=0)
 }
 chk_cache_open_quoted() { contains "cache-open-quoted [$1]: space and quote survive in the hint" "run: chmod 700 '$CASE_DIR/a b'\\''c'"; }
+s_cache_open_nonutf8() { rmdir "$CASE_DIR/cache"; mkdir -m 755 "$CASE_DIR/c-"$'\xff'; CASE_ENV+=("NERDFLAIR_CACHE_DIR=@DIR@/c-"$'\xff' NERDFLAIR_REPO_COST=0); }
+chk_cache_open_nonutf8() {   # bytes, not U+FFFD: the hint must name the real path
+  local log want; log=$(cat "$CASE_DIR/home/.claude/nerdflair-errors.log" 2>/dev/null)
+  want="run: chmod 700 '$CASE_DIR/c-"$'\xff'"'"
+  if [[ "$log" == *"$want"* ]]; then printf '  PASS  cache-open-nonutf8 [%s]: the hint holds the raw path bytes\n' "$1"
+  else printf '  FAIL  cache-open-nonutf8 [%s]: the hint lacks the raw path bytes\n' "$1"; fail=1; fi
+}
+s_cache_lax_noproc() { s_cache_lax; CASE_ENV+=(NERDFLAIR_TEST_NO_PROC=1); }   # as if /proc were not mounted (Rust test switch)
 s_cache_open_explicit() { chmod 755 "$CASE_DIR/cache"; CASE_ENV+=(NERDFLAIR_REPO_COST=0); }   # an explicit override is never narrowed
 chk_cache_open_explicit() {
   check "cache-open-explicit [$1]: the dir is still 755" 755 "$(stat -c %a "$CASE_DIR/cache")"
@@ -554,6 +562,8 @@ run_case cache-private-multi      -  0 s_cache_default_multi chk_cache_default_m
 run_case cache-dir-symlink        cache-dir 1 s_cache_symlink chk_cache_refused
 run_case pin-cache-dir-lax-mode   cache-dir-repaired 1 s_cache_lax chk_cache_lax
 run_case cache-dir-mode-055       cache-dir-repaired 1 s_cache_lax055 chk_cache_lax055
+run_case cache-dir-open-nonutf8   cache-dir 1 s_cache_open_nonutf8 chk_cache_open_nonutf8
+run_case cache-dir-no-proc        cache-dir-repaired 1 s_cache_lax_noproc chk_cache_lax
 run_case cache-dir-open-quoted    cache-dir 1 s_cache_open_quoted chk_cache_open_quoted
 run_case cache-dir-open-explicit  cache-dir 1 s_cache_open_explicit chk_cache_open_explicit
 run_case cache-dir-foreign-owner  cache-dir 1 s_cache_foreign chk_cache_refused
@@ -627,4 +637,6 @@ run_case noise-baseline-not-a-repo-missing-optional-files - 0 s_none
 
 echo
 (( fail )) && { echo "silent-failures: FAIL"; exit 1; }
-(( ${SKIPS:-0} )) && echo "silent-failures: PASS ($SKIPS skipped, NF_ALLOW_SKIP_NS=1)" || echo "silent-failures: PASS"
+# A skipped check is not a pass: 77 is the convention for "could not run" (see ledger-concurrency.sh).
+if (( ${SKIPS:-0} )); then echo "silent-failures: PASS ($SKIPS SKIPPED on purpose, NF_ALLOW_SKIP_NS=1)"; exit 77; fi
+echo "silent-failures: PASS"

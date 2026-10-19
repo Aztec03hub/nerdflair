@@ -349,7 +349,17 @@ def _cards_check_body(root, binary, pane, cdir):
     import glob
     import shutil
     import tempfile
-    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
+    # A temp HOME: the renderer reads ~/.claude/nerdflair/state.json (chime settings draw an
+    # extra "random" readout that has no card) and writes its error log and ledger there.
+    home = os.path.join(cdir, "home")
+    os.makedirs(os.path.join(home, ".claude", "nerdflair"), exist_ok=True)
+    # Pinned chime settings: a style of "random" draws a volume-icon readout (before any cost)
+    # that has no card yet, so the result would depend on whoever's state.json this ran against.
+    with open(os.path.join(home, ".claude", "nerdflair", "state.json"), "w") as fh:
+        fh.write('{"mode":"full","width":"auto","flair":true,"terminal_bell":"on","chime_sound":"Glass",'
+                 '"chime_volume":"1","chime_style":"Vibraphone","chime_events":"Notification,PermissionRequest,Stop",'
+                 '"color":"vibrant","last_session":"","chime_recent_styles":[]}')
+    env = dict(os.environ, HOME=home, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
     base = tempfile.mkdtemp(prefix="nf-cards-")
     try:

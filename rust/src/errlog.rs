@@ -184,21 +184,39 @@ fn trim(path: &PathBuf) {
 }
 
 fn emit(key: &str, reason: &str) -> bool {
-    let mut clean: String = reason
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    if clean.len() > MAX_REASON {
-        let mut cut = MAX_REASON;
-        while !clean.is_char_boundary(cut) {
-            cut -= 1;
+    emit_bytes(key, reason.as_bytes())
+}
+
+/// `emit` for a reason that may hold a non-UTF-8 path: the bytes reach the log untouched
+/// (as the bash twin writes them), only control bytes become spaces.
+fn emit_bytes(key: &str, reason: &[u8]) -> bool {
+    let clean: Vec<u8> = match std::str::from_utf8(reason) {
+        Ok(reason) => {
+            let mut clean: String = reason.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            if clean.len() > MAX_REASON {
+                let mut cut = MAX_REASON;
+                while !clean.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                clean.truncate(cut);
+                clean.push_str("...");
+            }
+            clean.into_bytes()
         }
-        clean.truncate(cut);
-        clean.push_str("...");
-    }
+        Err(_) => {
+            let mut v: Vec<u8> = reason.iter().map(|b| if *b < 0x20 || *b == 0x7f { b' ' } else { *b }).collect();
+            if v.len() > MAX_REASON {
+                v.truncate(MAX_REASON);
+                v.extend_from_slice(b"...");
+            }
+            v
+        }
+    };
     // One pre-built buffer, one write on an O_APPEND fd, so concurrent
     // renderers cannot interleave inside a line.
-    let line = format!("{} {} {}: {}\n", iso_now(), std::process::id(), key, clean);
+    let mut line = format!("{} {} {}: ", iso_now(), std::process::id(), key).into_bytes();
+    line.extend_from_slice(&clean);
+    line.push(b'\n');
     let path = log_path();
     trim(&path);
     let wrote = path
@@ -206,10 +224,10 @@ fn emit(key: &str, reason: &str) -> bool {
         .map(|d| std::fs::create_dir_all(d))
         .unwrap_or(Ok(()))
         .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(&path))
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+        .and_then(|mut f| f.write_all(&line));
     if let Err(e) = wrote {
         // Last resort. Hidden by the host, but better than nothing.
-        let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {}: {} | {}", path.display(), e, line.trim_end());
+        let _ = writeln!(std::io::stderr(), "nerdflair: cannot write {}: {} | {}", path.display(), e, String::from_utf8_lossy(&line).trim_end());
         return false;
     }
     true
@@ -232,6 +250,11 @@ fn write_stamp(path: &PathBuf) -> bool {
 /// whatever the stamp says, so an unwritable stamp directory cannot make a
 /// render log the same thing twice).
 pub fn note(key: &str, reason: &str) {
+    note_bytes(key, reason.as_bytes())
+}
+
+/// `note` with a reason that may contain a non-UTF-8 path.
+pub fn note_bytes(key: &str, reason: &[u8]) {
     if mem_seen(key) {
         return;
     }
@@ -245,7 +268,7 @@ pub fn note(key: &str, reason: &str) {
     // otherwise make EVERY render retry and write to stderr. (The reason still
     // reached stderr once, which is the last resort.)
     // ponytail: two renderers racing at the hour boundary may both log.
-    emit(key, reason);
+    emit_bytes(key, reason);
     if let Some(st) = &stamp {
         let _ = write_stamp(st); // false only loses the rate limit
     }
