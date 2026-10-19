@@ -117,6 +117,9 @@ export NERDFLAIR_MCP_HEALTH=${WITH_MCP:-0}
 # Point per-repo cost accounting at the scratch dir so a load test never
 # contaminates the real ledger that drives the dollar readouts.
 export NERDFLAIR_REPO_COST_FILE="$RUN_DIR/usage.tsv"
+# Same for every renderer cache: a private dir in the scratch dir, never the user's real one.
+mkdir -m 700 "$RUN_DIR/cache"
+export NERDFLAIR_CACHE_DIR="$RUN_DIR/cache"
 
 printf 'loadtest: %s\n' "$BIN"
 printf '  workers=%s secs=%s pace=%ss rss_cap=%sMB\n' \

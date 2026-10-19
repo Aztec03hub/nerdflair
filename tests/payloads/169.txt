@@ -1,0 +1,1 @@
+limits: 5h present, 7d absent, record 7d in the future: dim recorded 7d

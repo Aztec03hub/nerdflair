@@ -14,6 +14,7 @@ instead (a last resort: mid-session it may mangle the TUI, which is better than
 a failure with no record), once per kind.
 """
 import os
+import re
 import sys
 import time
 
@@ -51,8 +52,16 @@ def _write(line):
             pass
 
 
+_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean(s):
+    """No terminal-active character (C0, DEL, C1 incl. U+009B CSI, ESC, CR, newline) reaches a log."""
+    return _CONTROLS.sub(" ", str(s))
+
+
 def _line(msg):
-    return f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {' '.join(str(msg).split())}\n"
+    return f"{time.strftime('%Y-%m-%d %H:%M:%S')} nfpty: {clean(msg)}\n"
 
 
 def note_once(kind, msg):

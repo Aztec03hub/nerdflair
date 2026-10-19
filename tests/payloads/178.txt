@@ -1,0 +1,1 @@
+limits: record percentage over 100 is clamped to 100

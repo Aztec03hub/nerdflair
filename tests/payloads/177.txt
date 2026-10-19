@@ -1,0 +1,1 @@
+limits: record reset absurdly far ahead (over 8 days): corrupt, nothing shown

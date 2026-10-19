@@ -1,0 +1,1 @@
+limits: zero-padded payload percentage "0101" is over 100 on its decimal value: drawn as 100, alert colour

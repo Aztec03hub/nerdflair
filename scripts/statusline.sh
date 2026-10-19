@@ -262,7 +262,9 @@ _mcp_probe_names=""
 # isolate a test) silently left the other two reading the live machine's cache:
 # the health counts came from the override and the NAMES from /tmp, which is
 # exactly the disagreement between the two that the probe exists to prevent.
-_MCP_CACHE="${NERDFLAIR_MCP_CACHE:-/tmp/nerdflair-mcphealth-${UID}}"
+# Empty when there is no private cache dir (then no probe cache and no probe).
+if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _MCP_CACHE="$NERDFLAIR_MCP_CACHE"
+else _nf_cache_path "nerdflair-mcphealth-${UID}"; _MCP_CACHE="$_NF_CP"; fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
   # `read` exits 1 at EOF without a trailing newline and the probe writes none:
   # the variables ARE set, so the `|| true` is correct, not an absorbed error.
@@ -412,7 +414,7 @@ _git_cache_file=""
 _git_cache_fresh=false
 if [[ -n "$git_dir" ]]; then
   _git_dir_hash=$(printf '%s' "$git_dir" | cksum | cut -d' ' -f1)
-  _git_cache_file="/tmp/nerdflair-git-${_git_dir_hash}"
+  _nf_cache_path "nerdflair-git-${_git_dir_hash}"; _git_cache_file="$_NF_CP"   # empty: no cache dir, compute every render
   if [[ -f "$_git_cache_file" ]]; then
     _cache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_git_cache_file" 2>/dev/null || stat -f %m "$_git_cache_file" 2>/dev/null || echo 0) ))
     (( _cache_age < _GIT_CACHE_TTL )) && _git_cache_fresh=true
@@ -487,8 +489,11 @@ if [[ -n "$git_dir" ]]; then
     # every field after _gc_remote by one. \x1f is not IFS-whitespace.
     # Not after a git timeout: the empty result is not "clean, no branch".
     if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind" > "$_git_cache_file" \
-        || _nf_err "tmp-write:${_git_cache_file##*/}" "cannot write $_git_cache_file (git re-runs every render)"
+      if [[ -n "$_git_cache_file" ]]; then
+        printf -v _gc_payload '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$_gc_dirty" "$_gc_added" "$_gc_removed" "$_gc_branch" "$_gc_remote" "$_gc_worktree" "$_gc_ahead" "$_gc_behind"
+        _nf_cache_put "$_git_cache_file" "$_gc_payload" \
+          || _nf_err "tmp-write:${_git_cache_file##*/}" "cannot write $_git_cache_file (git re-runs every render)"
+      fi
     fi
   fi
   # A fresh computation beats the file (a failed write leaves the old one); after a
@@ -538,7 +543,7 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
   _multi_total_count=${#_multi_git_subs[@]}
   _multi_cache_fresh=false
   _cwd_hash=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
-  _multi_cache_file="/tmp/nerdflair-multibranch-${_cwd_hash}"
+  _nf_cache_path "nerdflair-multibranch-${_cwd_hash}"; _multi_cache_file="$_NF_CP"   # empty: no cache dir
   if [[ -f "$_multi_cache_file" ]]; then
     _mcache_age=$(( ${EPOCHSECONDS} - $(stat -c %Y "$_multi_cache_file" 2>/dev/null || stat -f %m "$_multi_cache_file" 2>/dev/null || echo 0) ))
     (( _mcache_age < _GIT_CACHE_TTL )) && _multi_cache_fresh=true
@@ -564,8 +569,11 @@ if (( ${#_multi_git_subs[@]} > 0 )); then
     done
     # Cache: off-count on line 1, joined list on line 2 (list may be empty).
     if [[ -z "${_NF_GIT_TIMED_OUT:-}" ]]; then
-      printf '%s\n%s' "$_mb_off" "$_mb_list" > "$_multi_cache_file" \
-        || _nf_err "tmp-write:${_multi_cache_file##*/}" "cannot write $_multi_cache_file"
+      if [[ -n "$_multi_cache_file" ]]; then
+        printf -v _mb_payload '%s\n%s' "$_mb_off" "$_mb_list"
+        _nf_cache_put "$_multi_cache_file" "$_mb_payload" \
+          || _nf_err "tmp-write:${_multi_cache_file##*/}" "cannot write $_multi_cache_file"
+      fi
       _mb_have=1
     fi
   fi
@@ -1374,9 +1382,11 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
   fi
   [[ -z "$_rc_slug" && -n "$project_dir" ]] && _rc_slug="${project_dir##*/}"
   if [[ -n "$_rc_slug" ]]; then
-    _rc_stamp="/tmp/nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}"
+    # No cache dir: the validated stamp dir carries the TTL marker; with neither, say so.
+    _nf_cache_or_stamp "nerdflair-repocost-${UID}-${session_id//[^a-zA-Z0-9]/_}" "repocost-${session_id}"; _rc_stamp="$_NF_CP"
+    [[ -z "$_rc_stamp" ]] && _nf_err repocost-skipped "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append"
     _rc_due=true
-    if [[ -f "$_rc_stamp" ]]; then
+    if [[ -n "$_rc_stamp" && -f "$_rc_stamp" ]]; then
       _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_stamp" 2>/dev/null || stat -f %m "$_rc_stamp" 2>/dev/null || echo 0) ))
       (( _rc_age < _REPO_COST_TTL )) && _rc_due=false
     fi
@@ -1403,7 +1413,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # and forever: the same permanent wedge flock was adopted to remove,
     # re-entering through the migration. rmdir only succeeds on an empty dir.
     [[ -d "$_RC_LOCK" ]] && rmdir "$_RC_LOCK" 2>/dev/null || true
-    if [[ "$_rc_due" == "true" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
+    # Without any stamp there is no once-per-TTL limit, so appending would write a
+    # ledger row every render: skip the sample (logged above as repocost-skipped).
+    if [[ "$_rc_due" == "true" ]] && [[ -n "$_rc_stamp" ]] && [[ -n "$cost" ]] && [[ "$cost" != "0" ]]; then
       # Exit 75 = lock held by the compactor: contention, silent (the next
       # sample carries the total). 76 = the append itself failed. Anything else
       # is the lock redirect failing. The first two redirections are ordered
@@ -1434,7 +1446,7 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
       # whole ledger for as long as a compaction held the lock: the per-refresh
       # cost scaling with a file that grows on its own, which is the incident
       # pattern. A skipped sample costs nothing, the column being cumulative.
-      : > "$_rc_stamp" 2>/dev/null || _nf_err "tmp-write:${_rc_stamp##*/}" "cannot write $_rc_stamp"
+      _nf_cache_put "$_rc_stamp" "" || _nf_err "tmp-write:${_rc_stamp##*/}" "cannot write $_rc_stamp"
       # Compact when the log gets big AND the cooldown has expired, writing via
       # a temp file so a reader without the lock never sees a partial.
       #
@@ -1545,9 +1557,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     # One awk pass over the log costs ~7ms, which is 14% of the render budget --
     # far too much for a number that moves once a minute. Recompute only on the
     # same cadence as the append, and read the memoised value otherwise.
-    _rc_memo="/tmp/nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}"
+    _nf_cache_or_stamp "nerdflair-repocost-total-${UID}-${_rc_slug//[^a-zA-Z0-9]/_}" "repocost-total-${_rc_slug}"; _rc_memo="$_NF_CP"
     _rc_total=""
-    if [[ "$_rc_due" == "false" && -r "$_rc_memo" ]]; then
+    if [[ "$_rc_due" == "false" && -n "$_rc_memo" && -r "$_rc_memo" ]]; then
       _rc_total=$(<"$_rc_memo")
     elif [[ -e "$_REPO_COST_FILE" && ! -r "$_REPO_COST_FILE" ]]; then
       _nf_err ledger-read "$_REPO_COST_FILE exists but is not readable; repo total unavailable"
@@ -1558,7 +1570,9 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
       ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
         || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
-      printf '%s' "$_rc_total" > "$_rc_memo" 2>/dev/null || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
+      if [[ -n "$_rc_memo" ]]; then
+        _nf_cache_put "$_rc_memo" "$_rc_total" || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
+      fi
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
@@ -1580,7 +1594,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && ! command -v claude &>/dev/null;
   # The segment simply vanishes; say why (once an hour).
   _nf_err mcp-no-claude "claude is not on PATH; MCP health probe disabled"
 fi
-if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && command -v claude &>/dev/null; then
+if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v claude &>/dev/null; then
   _mh_cache="$_MCP_CACHE"
   _mh_lock="${_mh_cache}.lock"
   _mh_fresh=false
@@ -1720,29 +1734,35 @@ printf -v time_icon '\xef\x80\x97'       # U+F017 clock
 # oldest first. One file per session_id, so the many concurrent Claude Code
 # sessions never contend; written temp-then-rename so a reader never tears.
 _SMP_KEEP=${NERDFLAIR_SAMPLES:-16}
+_SMP_NUM='(0|[1-9][0-9]{0,14})'   # canonical non-negative integer, no leading zero
 _smp_prev_api=""; _smp_prev_used10=""; _smp_prev_epoch=""; _smp_prev_rate=""
 _smp_hist=()
 _smp_file=""
 if [[ -n "$session_id" ]]; then
-  _smp_file="/tmp/nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"
-  if [[ -r "$_smp_file" ]]; then
-    _smp_ln=0
+  _nf_cache_path "nerdflair-sample-${UID}-${session_id//[^a-zA-Z0-9]/_}"; _smp_file="$_NF_CP"   # empty: no cache dir, no history
+  if [[ -n "$_smp_file" && -r "$_smp_file" ]]; then
+    _smp_ln=0; _smp_bad=""
+    # canonical digits only (no leading zero: '08' is invalid octal in (( ))): these words reach (( )) below, where a bare word is evaluated as a variable name
     while IFS= read -r _sl || [[ -n "$_sl" ]]; do
       if (( _smp_ln == 0 )); then
         if [[ "$_sl" == v2\ * ]]; then
-          _smp_prev_rate="${_sl#v2 }"
+          if [[ "${_sl#v2 }" =~ ^$_SMP_NUM$ ]]; then _smp_prev_rate="${_sl#v2 }"; else _smp_bad=1; fi
         else
           # v1: "api used10 epoch rate" on one line. Read it, then let it be
           # rewritten in v2 on this render.
-          IFS=' ' read -r _smp_prev_api _smp_prev_used10 _smp_prev_epoch _smp_prev_rate <<< "$_sl"
-          [[ -n "$_smp_prev_epoch" ]] && _smp_hist+=("$_smp_prev_epoch $_smp_prev_used10 $_smp_prev_api")
+          if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then
+            IFS=' ' read -r _smp_v1_api _smp_v1_used10 _smp_v1_epoch _smp_prev_rate <<< "$_sl"
+            _smp_hist+=("$_smp_v1_epoch $_smp_v1_used10 $_smp_v1_api")
+          elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
           break
         fi
       else
-        [[ -n "$_sl" ]] && _smp_hist+=("$_sl")
+        if [[ "$_sl" =~ ^$_SMP_NUM\ $_SMP_NUM\ $_SMP_NUM$ ]]; then _smp_hist+=("$_sl")
+        elif [[ -n "$_sl" ]]; then _smp_bad=1; fi
       fi
       (( _smp_ln++ ))
     done < "$_smp_file"
+    [[ -n "$_smp_bad" ]] && _nf_err sample-read "$_smp_file has malformed lines; ignored (ETA history restarts)"
     # newest entry also feeds the two-point paths below
     if (( ${#_smp_hist[@]} > 0 )); then
       IFS=' ' read -r _smp_prev_epoch _smp_prev_used10 _smp_prev_api <<< "${_smp_hist[-1]}"
@@ -1962,6 +1982,80 @@ if [[ -n "$_burn_val" && "$_burn_val" != 0 && "$_burn_val" != 0.00 ]]; then
   burn_segment="${_burn_color}${burn_icon} \$${_burn_val}/h${RESET}"
 fi
 
+# ── Rate-limit windows: payload, derived, or last-known ──────────
+# Claude Code drops a window once its resets_at passes, and sends none before
+# the session's first response, each independently. A window in the payload is
+# shown as is; 5h missing while 7d is present means the 5h window lapsed
+# (nothing used), a dim 0%; both missing falls back to the account-wide record
+# (limits-last), and the record's live 5h beats the derived 0%. Read-merge-write is unlocked: a race
+# between sessions costs at most one stale window, healed by the next write after 30 s. Nothing is invented: no record means no segment, silently.
+# Twin of the rate-limit resolution block in rust/src/main.rs.
+_rl_h5=${rl_5h_pct%.*}; _rl_h7=${rl_7d_pct%.*}
+_rl_has5=0; _rl_has7=0
+[[ -n "$_rl_h5" ]] && _rl_has5=1
+[[ -n "$_rl_h7" ]] && _rl_has7=1
+_rl_rec5=""; _rl_rec7=""     # "pct:resets_at" or empty
+_rl_tok_ok() { [[ "$1" == - ]] || [[ "$1" =~ ^$_SMP_NUM:$_SMP_NUM$ ]]; }
+_rl_digits() { [[ "$1" =~ ^[0-9]{1,15}$ ]]; }
+_RL_CUR=""
+_rl_cur() {   # pct reset -> _RL_CUR "p:r" when both are plain numbers and reset > 0
+  _RL_CUR=""
+  _rl_digits "$1" && _rl_digits "$2" && (( 10#$2 > 0 && 10#$2 <= EPOCHSECONDS + 691200 )) && _RL_CUR="$(( 10#$1 > 100 ? 100 : 10#$1 )):$((10#$2))"
+  return 0
+}
+_nf_cache_path "limits-last"; _rl_file="$_NF_CP"
+if [[ -n "$_rl_file" && -e "$_rl_file" ]]; then
+  _rl_line=""
+  if { IFS= read -r _rl_line || [[ -n "$_rl_line" ]]; } 2>/dev/null < "$_rl_file"; then
+    _rl_t0=""; _rl_t1=""; _rl_t2=""; _rl_tx=""
+    read -r _rl_t0 _rl_t1 _rl_t2 _rl_tx <<< "$_rl_line"
+    # Single spaces only (read would also split on tabs and runs of spaces); Rust splits on ' '.
+    _rl_shape=0; [[ "$_rl_line" =~ ^v1\ [^\ ]+\ [^\ ]+$ ]] && _rl_shape=1
+    if (( _rl_shape )) && [[ "$_rl_t0" == v1 && -z "$_rl_tx" && -n "$_rl_t2" ]] && _rl_tok_ok "$_rl_t1" && _rl_tok_ok "$_rl_t2"; then
+      # A reset more than ~8 days ahead cannot be real: corrupt, as in Rust. Percent is clamped to 100.
+      if { [[ "$_rl_t1" == - ]] || (( ${_rl_t1#*:} <= EPOCHSECONDS + 691200 )); } \
+         && { [[ "$_rl_t2" == - ]] || (( ${_rl_t2#*:} <= EPOCHSECONDS + 691200 )); }; then
+        [[ "$_rl_t1" != - ]] && _rl_rec5="$(( ${_rl_t1%%:*} > 100 ? 100 : ${_rl_t1%%:*} )):${_rl_t1#*:}"
+        [[ "$_rl_t2" != - ]] && _rl_rec7="$(( ${_rl_t2%%:*} > 100 ? 100 : ${_rl_t2%%:*} )):${_rl_t2#*:}"
+      else
+        _nf_err limits-last "${_rl_file} is corrupt; last-known 5h/7d limits ignored"
+      fi
+    else
+      _nf_err limits-last "${_rl_file} is corrupt; last-known 5h/7d limits ignored"
+    fi
+  else
+    _nf_err limits-last "cannot read ${_rl_file}; last-known 5h/7d limits unavailable"
+  fi
+fi
+if (( _rl_has5 || _rl_has7 )) && [[ -n "$_rl_file" ]]; then
+  _rl_p5=""; _rl_p7=""
+  (( _rl_has5 )) && { _rl_cur "$_rl_h5" "$rl_5h_reset"; _rl_p5="$_RL_CUR"; }
+  (( _rl_has7 )) && { _rl_cur "$_rl_h7" "$rl_7d_reset"; _rl_p7="$_RL_CUR"; }
+  if [[ -n "${_rl_p5}${_rl_p7}" ]]; then
+    _rl_write=1
+    if [[ -f "$_rl_file" ]]; then
+      # A future mtime (clock stepped back) counts as old, as file_age does in Rust.
+      _rl_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rl_file" 2>/dev/null || stat -f %m "$_rl_file" 2>/dev/null || echo 0) ))
+      (( _rl_age >= 0 && _rl_age < 30 )) && _rl_write=0
+    fi
+    if (( _rl_write )); then
+      _rl_m5="${_rl_p5:-$_rl_rec5}"; _rl_m7="${_rl_p7:-$_rl_rec7}"
+      _nf_cache_put "$_rl_file" "v1 ${_rl_m5:--} ${_rl_m7:--}"$'\n' \
+        || _nf_err limits-last-write "cannot write ${_rl_file}; last-known limits will not be kept"
+    fi
+  fi
+fi
+_rl_blk_idle=0; _rl_blk_reset=""
+_rl_rec5_live=0
+[[ -n "$_rl_rec5" ]] && (( ${_rl_rec5#*:} > EPOCHSECONDS )) && _rl_rec5_live=1
+if (( _rl_has5 )); then
+  _rl_blk_reset="$rl_5h_reset"
+elif (( _rl_has7 && ! _rl_rec5_live )); then
+  _rl_blk_idle=1
+elif [[ -n "$_rl_rec5" ]]; then
+  if (( ${_rl_rec5#*:} <= EPOCHSECONDS )); then _rl_blk_idle=1; else _rl_blk_reset="${_rl_rec5#*:}"; fi
+fi
+
 # ── Billing block: spend in the 5-hour rate-limit window ─────────
 printf -v block_icon '\xef\x82\x94'       # U+F094 moon-o / block marker
 block_segment=""
@@ -1970,16 +2064,19 @@ block_segment=""
 # hours, so this is pinned to the block Anthropic is actually metering rather
 # than to a guess of our own. Without that field there is no block to report,
 # and a made-up window would be worse than none.
-if [[ -n "$_ledger" && -n "${rl_5h_reset:-}" ]]; then
-  if (( rl_5h_reset > 0 )) 2>/dev/null; then
-    _blk_start=$(( rl_5h_reset - 18000 ))
+if (( _rl_blk_idle )); then
+  # The 5h window is lapsed (derived 0%): idle, not a vanished segment.
+  block_segment="${DIM}${block_icon} idle${RESET}"
+elif [[ -n "$_ledger" && -n "${_rl_blk_reset:-}" ]]; then
+  if (( _rl_blk_reset > 0 )) 2>/dev/null; then
+    _blk_start=$(( _rl_blk_reset - 18000 ))
     # EPOCHSECONDS >= rl_5h_reset means the window in the payload has already
     # lapsed and the host has not refreshed it yet, which is the normal state
     # on the first render after a session wakes. Summing to now then spans the
     # lapsed block AND the time since, so a resets_at one hour stale reported
     # SIX hours of spend as the current block: measured $282.99 against a true
     # $163. Say idle rather than invent a number.
-    if (( EPOCHSECONDS >= rl_5h_reset )); then
+    if (( EPOCHSECONDS >= _rl_blk_reset )); then
       block_segment="${DIM}${block_icon} idle${RESET}"
     elif (( EPOCHSECONDS >= _blk_start )); then
       read -r _kspent _kspan _kold _knew < <(_window_spend "$_blk_start" "$EPOCHSECONDS")
@@ -2134,10 +2231,16 @@ fi
 # Only when something actually moved, so an idle pane re-rendering on the 30s
 # timer does not churn the disk or pollute the slope set with zero-delta pairs.
 if [[ -n "$_smp_file" ]]; then
+  # Never write a value the reader above refuses (fractional, negative, 16+ digits, leading
+  # zero): it would drop the whole history next render. Twin of main.rs (writes 0).
+  _smp_api_w=${total_api_ms:-0}; _smp_u_w=${_used10:-0}; _smp_r_w=${_rate_show:-0}
+  [[ "$_smp_api_w" =~ ^$_SMP_NUM$ ]] || _smp_api_w=0
+  [[ "$_smp_u_w" =~ ^$_SMP_NUM$ ]] || _smp_u_w=0
+  [[ "$_smp_r_w" =~ ^$_SMP_NUM$ ]] || _smp_r_w=0
   _smp_moved=0
   if (( ${#_smp_hist[@]} == 0 )); then
     _smp_moved=1
-  elif [[ "${total_api_ms:-0} ${_used10:-0}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
+  elif [[ "${_smp_api_w} ${_smp_u_w}" != "${_smp_prev_api:-} ${_smp_prev_used10:-}" ]]; then
     _smp_moved=1
   fi
   if (( _smp_moved )); then
@@ -2146,16 +2249,15 @@ if [[ -n "$_smp_file" ]]; then
     if [[ -n "$_ctx_dropped" ]]; then
       _smp_hist=()
     fi
-    _smp_hist+=("${EPOCHSECONDS} ${_used10:-0} ${total_api_ms:-0}")
+    _smp_hist+=("${EPOCHSECONDS} ${_smp_u_w} ${_smp_api_w}")
     while (( ${#_smp_hist[@]} > _SMP_KEEP )); do
       _smp_hist=("${_smp_hist[@]:1}")
     done
-    {
-      printf 'v2 %s\n' "${_rate_show:-0}"
-      printf '%s\n' "${_smp_hist[@]}"
-    } > "${_smp_file}.tmp" 2>/dev/null && mv -f "${_smp_file}.tmp" "$_smp_file" 2>/dev/null \
+    printf -v _smp_body 'v2 %s\n' "$_smp_r_w"
+    printf -v _smp_lines '%s\n' "${_smp_hist[@]}"
+    _nf_cache_put "$_smp_file" "${_smp_body}${_smp_lines}" \
       && _nf_ok sample-write \
-      || { _nf_err sample-write "cannot write or rename ${_smp_file}.tmp; ETA/throughput history will not accumulate"; rm -f "${_smp_file}.tmp" 2>/dev/null; }
+      || _nf_err sample-write "cannot write or rename ${_smp_file}; ETA/throughput history will not accumulate"
   fi
 fi
 
@@ -2168,9 +2270,9 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
   # `tmux display-message` is only ~1ms standalone but ~3.3ms inside the render
   # path. The session name for a given pane changes about never, so cache it
   # per-pane. Renaming a session costs you one stale minute.
-  _tx_cache="/tmp/nerdflair-tmux-${UID}-${TMUX_PANE//[^a-zA-Z0-9]/_}"
+  _nf_cache_path "nerdflair-tmux-${UID}-${TMUX_PANE//[^a-zA-Z0-9]/_}"; _tx_cache="$_NF_CP"   # empty: no cache dir
   _tmux_name=""
-  if [[ -f "$_tx_cache" ]]; then
+  if [[ -n "$_tx_cache" && -f "$_tx_cache" ]]; then
     _tx_age=$(( EPOCHSECONDS - $(stat -c %Y "$_tx_cache" 2>/dev/null || stat -f %m "$_tx_cache" 2>/dev/null || echo 0) ))
     (( _tx_age < 60 )) && _tmux_name=$(<"$_tx_cache")
   fi
@@ -2178,8 +2280,8 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
     _nf_cmd tmux '' tmux display-message -p '#S' \
       || _nf_err tmux "tmux display-message failed; session name segment hidden"
     _tmux_name="$_NF_OUT"
-    if [[ -n "$_tmux_name" ]]; then
-      printf '%s' "$_tmux_name" > "$_tx_cache" 2>/dev/null || _nf_err "tmp-write:${_tx_cache##*/}" "cannot write $_tx_cache"
+    if [[ -n "$_tmux_name" && -n "$_tx_cache" ]]; then
+      _nf_cache_put "$_tx_cache" "$_tmux_name" || _nf_err "tmp-write:${_tx_cache##*/}" "cannot write $_tx_cache"
     fi
   fi
   [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
@@ -2194,6 +2296,7 @@ _rl_part() {
   [[ -z "$_pct" ]] && return 0
   _pct=${_pct%.*}
   [[ -z "$_pct" ]] && return 0
+  [[ "$_pct" =~ ^[0-9]{1,15}$ ]] && (( 10#$_pct > 100 )) && _pct=100
   _color="$DARK_GREEN"
   (( _pct >= 60 )) && _color="$MUSTARD"
   (( _pct >= 85 )) && _color="$ALERT"
@@ -2201,8 +2304,21 @@ _rl_part() {
   _cd=$(_fmt_countdown "$_reset")
   [[ -n "$_cd" ]] && printf '%s' "${DIM}/${_cd}${RESET}"
 }
-_rl5=$(_rl_part "$rl_5h_pct" "$rl_5h_reset" "5h ")
-_rl7=$(_rl_part "$rl_7d_pct" "$rl_7d_reset" "7d ")
+_rl_dim() {   # label rec -> _RL_D: dim last-known figure with countdown, or dim 0% once its reset passed
+  local _l="$1" _r="$2" _cd
+  _RL_D=""; [[ -z "$_r" ]] && return 0
+  if (( ${_r#*:} > EPOCHSECONDS )); then
+    _cd=$(_fmt_countdown "${_r#*:}")
+    _RL_D="${DIM}${_l}${_r%%:*}%${_cd:+/$_cd}${RESET}"
+  else
+    _RL_D="${DIM}${_l}0%${RESET}"
+  fi
+}
+if (( _rl_has5 )); then _rl5=$(_rl_part "$rl_5h_pct" "$rl_5h_reset" "5h ")
+elif (( _rl_has7 && ! _rl_rec5_live )); then _rl5="${DIM}5h 0%${RESET}"
+else _rl_dim "5h " "$_rl_rec5"; _rl5="$_RL_D"; fi
+if (( _rl_has7 )); then _rl7=$(_rl_part "$rl_7d_pct" "$rl_7d_reset" "7d ")
+else _rl_dim "7d " "$_rl_rec7"; _rl7="$_RL_D"; fi
 if [[ -n "$_rl5" || -n "$_rl7" ]]; then
   limits_segment="$_rl5"
   [[ -n "$_rl5" && -n "$_rl7" ]] && limits_segment+="${DIM} ${RESET}"
@@ -2281,10 +2397,11 @@ if [[ -n "$cost_segment" ]]; then
   fi
   row3_right+="$cost_segment"
 else
-  # No cost yet (fresh session): still surface limits, which matter most early.
+  # No cost yet (fresh session): the same list as above minus the cost itself.
+  # Only what has no data is dropped.
   _pre=""
-  [[ -n "$_chime_segment" ]] && _pre="$_chime_segment"
-  for _extra in "$mcphealth_segment" "$limits_segment" "$compact_segment"; do
+  for _extra in "$_chime_segment" "$tmux_segment" "$mcphealth_segment" "$limits_segment" "$compact_segment" \
+                "$speed_segment" "$time_segment" "$burn_segment" "$block_segment" "$repocost_segment"; do
     [[ -z "$_extra" ]] && continue
     [[ -n "$_pre" ]] && _pre+="$BULLET"
     _pre+="$_extra"

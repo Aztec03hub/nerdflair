@@ -79,7 +79,7 @@ case $? in 1) ((gaps++));; 2|3) ((errs++));; esac
 
 # 3. Total a billing window that has already lapsed. Case 6.
 run_mutation lapsed_block \
-  'if (( EPOCHSECONDS >= rl_5h_reset )); then' \
+  'if (( EPOCHSECONDS >= _rl_blk_reset )); then' \
   'if (( 0 )); then' \
   'lapsed resets_at must not total two blocks'
 case $? in 1) ((gaps++));; 2|3) ((errs++));; esac

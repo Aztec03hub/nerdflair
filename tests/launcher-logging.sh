@@ -54,12 +54,14 @@ cp "$HOVER_SRC/claude-shim" "$NFB/claude"; cp "$HOVER_SRC/nf-log.sh" "$NFB/nf-lo
 printf '#!/bin/sh\nexit 0\n' > "$NFB/nf-tmux-heal"; chmod +x "$NFB/claude" "$NFB/nf-tmux-heal"
 
 # Run the shim on a pty (it only wraps when stdin, stdout and stderr are ttys).
-run_tty() { # PATH -> output of one `claude` start
-  python3 - "$1" "$NFB/claude" <<'PY'
+run_tty() { # PATH [CALLER_TRUECOLOR_VALUE] -> output of one `claude` start
+  python3 - "$1" "$NFB/claude" ${2+"$2"} <<'PY'
 import os, pty, sys
 path, shim = sys.argv[1], sys.argv[2]
 env = dict(os.environ, PATH=path, TMUX="/nonexistent/sock,1,0", TERM="xterm")
-env.pop("CLAUDE_CODE_TMUX_TRUECOLOR", None)          # the shim must supply it, not the caller
+env.pop("CLAUDE_CODE_TMUX_TRUECOLOR", None)          # default: the caller sets nothing
+if len(sys.argv) > 3:
+    env["CLAUDE_CODE_TMUX_TRUECOLOR"] = sys.argv[3]   # an explicit caller value (may be empty)
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe("bash", ["bash", shim, "--flag"], env)
@@ -95,6 +97,13 @@ printf '' > "$ROOT/hover-ok/mklayout.py"; printf '' > "$ROOT/hover-ok/panel.py";
 ln -sfn "$ROOT/hover-ok" "$HOME/.nerdflair/hover"
 shim_case "python3 missing" "shim: python3 not on PATH" "$NFB:$ROOT/real:$ROOT/bin-nopy"
 check "shim: claude starts with CLAUDE_CODE_TMUX_TRUECOLOR=1 (no 256-colour clamp inside tmux)" 1 "$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" | grep -c 'TRUECOLOR=1')"
+
+# F6: the caller's intent. Claude Code treats ANY non-empty value as on, so 0/false/no/off must reach it UNSET.
+for _c in "unset|unset|TRUECOLOR=1" "empty||TRUECOLOR=1" "1|1|TRUECOLOR=1" "true|true|TRUECOLOR=1" "0|0|TRUECOLOR=unset" "false|false|TRUECOLOR=unset" "x|x|TRUECOLOR=x"; do
+  IFS='|' read -r _n _v _want <<<"$_c"
+  if [[ "$_n" == unset ]]; then _o=$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy"); else _o=$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" "$_v"); fi
+  check "shim: caller CLAUDE_CODE_TMUX_TRUECOLOR $_n reaches claude as $_want" 1 "$(grep -c "^$_want" <<<"$_o")"
+done
 
 # H2: dangling hover link
 rm -f "$HOME/.nerdflair/hover"; ln -sfn "$ROOT/gone" "$HOME/.nerdflair/hover"
@@ -231,6 +240,34 @@ alive=$(kill -0 "$WPID" 2>/dev/null && echo 1 || echo 0)
 check "heal missing: reported" 0 "$found"
 check "heal missing: the watcher is still running" 1 "$alive"
 stop_watcher
+
+# ── no terminal control ever reaches launcher.log (reasons carry paths and python errors) ──
+resetlog
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1
+  nf_log hostile $'path \x1b]0;pwn\x07\x1b[2J \xc2\x9b[2J \xff\x9b \r\nforged: line ' ; nf_log utf8 '日本 “x” Д' )
+_raw=$(LC_ALL=C cat "$LOG" 2>/dev/null)
+check "launcher.log: ESC, BEL, CR, U+009B and a raw 0x9b never reach the file" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" != *$'\x1b'* && "$_raw" != *$'\x07'* && "$_raw" != *$'\r'* && "$_raw" != *$'\x9b'* ]] ) && echo yes || echo no)"
+check "launcher.log: a newline in a reason cannot forge a second line" 2 "$(wc -l < "$LOG" | tr -d ' ')"
+check "launcher.log: valid UTF-8 (CJK, smart quotes, Cyrillic) is kept byte for byte" yes \
+  "$( ( LC_ALL=C; [[ "$_raw" == *'日本 “x” Д'* ]] ) && echo yes || echo no)"
+
+# a long reason with one stray C1 byte must not stall the caller (the byte loop is bounded to 1600 bytes)
+resetlog
+_big=$(head -c 50000 /dev/zero | tr '\0' 'a')$(printf '\x9b')
+_t0=$EPOCHREALTIME
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log slow "$_big" )
+_ms=$(( (${EPOCHREALTIME/./} - ${_t0/./}) / 1000 ))
+check "launcher.log: a 50 KB reason with a stray 0x9b is logged in under 1000 ms" yes "$([[ $_ms -lt 1000 ]] && echo yes || echo "no (${_ms} ms)")"
+check "launcher.log: that reason was cut to the bound" yes "$([[ $(wc -c < "$LOG") -lt 1800 ]] && echo yes || echo no)"
+
+# a CJK character straddling byte 1600 must not leave a partial sequence (strict UTF-8 decode)
+resetlog
+_cjk=$(head -c 1599 /dev/zero | tr '\0' 'a')日本語日本語
+( . "$HOVER_SRC/nf-log.sh"; NF_LOG_NOSTAMP=1 nf_log straddle "$_cjk" )
+check "launcher.log: a reason cut inside a CJK character still decodes as strict UTF-8" ok \
+  "$(python3 -I -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' < "$LOG" >/dev/null 2>&1 && echo ok || echo bad)"
+check "launcher.log: that cut is marked with ..." yes "$(LC_ALL=C; [[ "$(cat "$LOG")" == *'...' ]] && echo yes || echo no)"
 
 # Remove only what mktemp made, checked first: no glob, no guess.
 python3 - "$ROOT" <<'PY'

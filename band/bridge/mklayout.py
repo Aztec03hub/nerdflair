@@ -64,6 +64,12 @@ CARDS = [
         "5h and 7d windows from the payload's rate_limits",
         "percentage used, then time until the window resets",
         "Anthropic's own server-side metering, not an estimate",
+        "dim = last known (limits-last, from any session) or a derived 0%",
+    ]),
+    ("block", "\uf094", "Billing block", (192, 132, 252), [
+        "spend inside the CURRENT 5-hour rate-limit window",
+        "window is rate_limits.five_hour.resets_at (or the last-known record) less 5h",
+        "says idle rather than guess when that window has lapsed",
     ]),
     ("mcp_health", r"\d+/\d+", "MCP health", (74, 222, 128), [
         "connected / total, then failed and needing auth",
@@ -398,6 +404,22 @@ def build_ex(target, skip=(), shadow=None):
     return segs, truth
 
 
+def band_drift(root):
+    """The limits and block cards exist twice, here and in band/hooks/register.tsx. Their texts
+    must match, or the hover card in the plugin says something else than the bridge card."""
+    with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
+        tsx = fh.read()
+    for cid in ("limits", "block"):
+        m = re.search(r"^  %s: \{(.*?)^  \},?$" % cid, tsx, re.S | re.M)
+        assert m, f"register.tsx has no CARDS entry for {cid}"
+        body = m.group(1)
+        title = re.search(r"title: ('|\")(.*?)\1", body).group(2)
+        lines = [x[1] for x in re.findall(r"""^\s+('|")(.*)\1,?$""", body.split("lines:", 1)[1], re.M)]
+        mk = next(c for c in CARDS if c[0] == cid)
+        assert title == mk[2], f"card {cid}: title drifted: register.tsx {title!r} vs mklayout.py {mk[2]!r}"
+        assert lines == mk[4], f"card {cid}: lines drifted between register.tsx and mklayout.py:\n  tsx: {lines}\n  py:  {mk[4]}"
+
+
 def cards_check():
     """Every readout the REAL renderer draws must land on a card of its own.
 
@@ -411,31 +433,44 @@ def cards_check():
     import glob
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
+    band_drift(root)
     # The tmux readout comes from a per-pane cache, else from a live tmux; seed
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
-    tcache = f"/tmp/nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}"
+    # A private (0700) cache dir of our own, handed to the renderer: never the user's real one.
+    import shutil
+    import tempfile
+    cdir = tempfile.mkdtemp(prefix="nf-cards-cache-")
+    tcache = os.path.join(cdir, f"nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}")
     try:
-        # O_NOFOLLOW: a pre-planted symlink at this predictable name must not be written through.
-        fd = os.open(tcache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as fh:
+        with open(tcache, "w") as fh:
             fh.write("cards")
-    except OSError as e:
-        sys.exit(f"cards-check: cannot seed the tmux cache {tcache}: {e}")
-    try:
-        _cards_check_body(root, binary, pane)
+        # Seed a FRESH mcp health cache too (it used to be the user's live /tmp one), so the
+        # readout is drawn and no real `claude mcp list` probe is spawned.
+        with open(os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"), "w") as fh:
+            fh.write("3\x1f1\x1f0\x1fa\x1eb")
+        _cards_check_body(root, binary, pane, cdir)
     finally:
-        try:
-            os.remove(tcache)
-        except OSError:
-            pass
+        shutil.rmtree(cdir, ignore_errors=True)
 
 
-def _cards_check_body(root, binary, pane):
+def _cards_check_body(root, binary, pane, cdir):
     import glob
     import shutil
     import tempfile
-    env = dict(os.environ, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane)
+    # A temp HOME: the renderer reads ~/.claude/nerdflair/state.json (chime settings draw an
+    # extra "random" readout that has no card) and writes its error log and ledger there.
+    home = os.path.join(cdir, "home")
+    os.makedirs(os.path.join(home, ".claude", "nerdflair"), exist_ok=True)
+    # TODO N13: the "random" chime readout still needs a hover card (then run this twice, once with it).
+    # Pinned chime settings: a style of "random" draws a volume-icon readout (before any cost)
+    # that has no card yet, so the result would depend on whoever's state.json this ran against.
+    with open(os.path.join(home, ".claude", "nerdflair", "state.json"), "w") as fh:
+        fh.write('{"mode":"full","width":"auto","flair":true,"terminal_bell":"on","chime_sound":"Glass",'
+                 '"chime_volume":"1","chime_style":"Vibraphone","chime_events":"Notification,PermissionRequest,Stop",'
+                 '"color":"vibrant","last_session":"","chime_recent_styles":[]}')
+    env = dict(os.environ, HOME=home, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
+               NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
     base = tempfile.mkdtemp(prefix="nf-cards-")
     try:
         fixtures = _cards_fixtures(base)

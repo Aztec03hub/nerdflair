@@ -1,0 +1,1 @@
+limits: payload percentage over 100 is drawn as 100

@@ -1,0 +1,1 @@
+limits: record reset 5 s past the 8-day bound: corrupt, nothing shown

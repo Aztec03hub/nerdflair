@@ -72,8 +72,18 @@ def _stderr_once(key, msg):
             pass            # no stderr either: nothing left, and the logger must never raise
 
 
+_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(s):
+    """No terminal-active character (ESC, CR, newline, C0, DEL, C1 incl. U+009B) reaches a log:
+    process argument lists and paths in these lines are attacker-influenced."""
+    return _CONTROLS.sub(" ", str(s))
+
+
 def _append(path, line):
     """Append one line, one rotated generation, never raise."""
+    line = _clean(line)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
@@ -83,7 +93,9 @@ def _append(path, line):
             pass            # no log yet
         except OSError as e:
             _stderr_once("rotate:" + path, f"cannot rotate {path}: {e}")
-        with open(path, "a") as f:
+        # errors="replace": a lone surrogate (os.fsdecode of a non-UTF-8 path) must not raise
+        # UnicodeEncodeError, which is not an OSError and would end the watcher
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
             f.write(line + "\n")
     except OSError as e:
         _stderr_once("write:" + path, f"cannot write {path}: {e}; lost: {line}")
@@ -111,7 +123,7 @@ def transition(key, reason):
     else:
         return
     log(msg)
-    _append(LAUNCHER_LOG, time.strftime("%Y-%m-%dT%H:%M:%S%z ") + "watch: " + " ".join(msg.split()))
+    _append(LAUNCHER_LOG, time.strftime("%Y-%m-%dT%H:%M:%S%z ") + "watch: " + msg)
 
 
 SS_LINE = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+(\S.*?)\s+\d+\s+\*\s+\d+\s+users:\(\(\"tmux: server\"")
