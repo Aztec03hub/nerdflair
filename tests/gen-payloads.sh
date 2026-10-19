@@ -342,4 +342,8 @@ emit "limits: record reset 5 s past the 8-day bound: corrupt, nothing shown" \
   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+691205@@'
 emit "limits: payload percentage over 100 is drawn as 100" \
   "$(mut '.rate_limits.five_hour.used_percentage=150')" "${E_FULL[@]}"
+for z in 0120 0144 0101 0189; do
+  emit "limits: zero-padded payload percentage \"$z\" is over 100 on its decimal value: drawn as 100, alert colour" \
+    "$(mut ".rate_limits.five_hour.used_percentage=\"$z\"")" "${E_FULL[@]}"
+done
 echo "generated $N payloads in $OUT"

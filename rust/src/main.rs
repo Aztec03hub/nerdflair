@@ -1776,19 +1776,27 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         // `_rl5=$(_rl_part ...)` runs in a subshell, so a fatal arithmetic
         // error there truncates only this part's output, not the render.
-        let p = match arith(head) {
-            Ar::Fatal => {
-                arith_note("fatal", label, head);
-                return String::new();
-            }
-            Ar::Val(v) => v,
-            Ar::Syntax => {
-                arith_note("syntax", label, head);
-                0
+        // A plain-digit percentage over 100 (judged on its DECIMAL value, as bash's 10# does, so
+        // "0120" counts as 120) is drawn as 100 and never reaches the arithmetic below.
+        let clamped = head.len() <= 15
+            && head.bytes().all(|b| b.is_ascii_digit())
+            && head.parse::<i64>().map_or(false, |d| d > 100);
+        let p = if clamped {
+            100
+        } else {
+            match arith(head) {
+                Ar::Fatal => {
+                    arith_note("fatal", label, head);
+                    return String::new();
+                }
+                Ar::Val(v) => v,
+                Ar::Syntax => {
+                    arith_note("syntax", label, head);
+                    0
+                }
             }
         };
-        // A plain-digit percentage over 100 is drawn as 100 (the record clamps it too).
-        let head = if head.bytes().all(|b| b.is_ascii_digit()) && head.len() <= 15 && p > 100 { "100" } else { head };
+        let head = if clamped { "100" } else { head };
         let mut color = pal.dark_green;
         if p >= 60 {
             color = pal.mustard;
