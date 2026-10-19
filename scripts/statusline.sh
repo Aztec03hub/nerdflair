@@ -2000,7 +2000,7 @@ _rl_digits() { [[ "$1" =~ ^[0-9]{1,15}$ ]]; }
 _RL_CUR=""
 _rl_cur() {   # pct reset -> _RL_CUR "p:r" when both are plain numbers and reset > 0
   _RL_CUR=""
-  _rl_digits "$1" && _rl_digits "$2" && (( 10#$2 > 0 )) && _RL_CUR="$(( 10#$1 > 100 ? 100 : 10#$1 )):$((10#$2))"
+  _rl_digits "$1" && _rl_digits "$2" && (( 10#$2 > 0 && 10#$2 <= EPOCHSECONDS + 691200 )) && _RL_CUR="$(( 10#$1 > 100 ? 100 : 10#$1 )):$((10#$2))"
   return 0
 }
 _nf_cache_path "limits-last"; _rl_file="$_NF_CP"
@@ -2009,7 +2009,9 @@ if [[ -n "$_rl_file" && -e "$_rl_file" ]]; then
   if { IFS= read -r _rl_line || [[ -n "$_rl_line" ]]; } 2>/dev/null < "$_rl_file"; then
     _rl_t0=""; _rl_t1=""; _rl_t2=""; _rl_tx=""
     read -r _rl_t0 _rl_t1 _rl_t2 _rl_tx <<< "$_rl_line"
-    if [[ "$_rl_t0" == v1 && -z "$_rl_tx" && -n "$_rl_t2" ]] && _rl_tok_ok "$_rl_t1" && _rl_tok_ok "$_rl_t2"; then
+    # Single spaces only (read would also split on tabs and runs of spaces); Rust splits on ' '.
+    _rl_shape=0; [[ "$_rl_line" =~ ^v1\ [^\ ]+\ [^\ ]+$ ]] && _rl_shape=1
+    if (( _rl_shape )) && [[ "$_rl_t0" == v1 && -z "$_rl_tx" && -n "$_rl_t2" ]] && _rl_tok_ok "$_rl_t1" && _rl_tok_ok "$_rl_t2"; then
       # A reset more than ~8 days ahead cannot be real: corrupt, as in Rust. Percent is clamped to 100.
       if { [[ "$_rl_t1" == - ]] || (( ${_rl_t1#*:} <= EPOCHSECONDS + 691200 )); } \
          && { [[ "$_rl_t2" == - ]] || (( ${_rl_t2#*:} <= EPOCHSECONDS + 691200 )); }; then
@@ -2294,6 +2296,7 @@ _rl_part() {
   [[ -z "$_pct" ]] && return 0
   _pct=${_pct%.*}
   [[ -z "$_pct" ]] && return 0
+  [[ "$_pct" =~ ^[0-9]{1,15}$ ]] && (( 10#$_pct > 100 )) && _pct=100
   _color="$DARK_GREEN"
   (( _pct >= 60 )) && _color="$MUSTARD"
   (( _pct >= 85 )) && _color="$ALERT"

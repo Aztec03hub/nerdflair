@@ -318,6 +318,22 @@ def build_ex(target, skip=(), shadow=None):
     return segs, truth
 
 
+def band_drift(root):
+    """The limits and block cards exist twice, here and in band/hooks/register.tsx. Their texts
+    must match, or the hover card in the plugin says something else than the bridge card."""
+    with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
+        tsx = fh.read()
+    for cid in ("limits", "block"):
+        m = re.search(r"^  %s: \{(.*?)^  \},?$" % cid, tsx, re.S | re.M)
+        assert m, f"register.tsx has no CARDS entry for {cid}"
+        body = m.group(1)
+        title = re.search(r"title: ('|\")(.*?)\1", body).group(2)
+        lines = [x[1] for x in re.findall(r"""^\s+('|")(.*)\1,?$""", body.split("lines:", 1)[1], re.M)]
+        mk = next(c for c in CARDS if c[0] == cid)
+        assert title == mk[2], f"card {cid}: title drifted: register.tsx {title!r} vs mklayout.py {mk[2]!r}"
+        assert lines == mk[4], f"card {cid}: lines drifted between register.tsx and mklayout.py:\n  tsx: {lines}\n  py:  {mk[4]}"
+
+
 def cards_check():
     """Every readout the REAL renderer draws must land on a card of its own.
 
@@ -331,6 +347,7 @@ def cards_check():
     import glob
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
+    band_drift(root)
     # The tmux readout comes from a per-pane cache, else from a live tmux; seed
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"

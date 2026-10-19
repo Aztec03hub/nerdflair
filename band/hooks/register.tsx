@@ -88,6 +88,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
       "5h and 7d windows from the payload's rate_limits",
       'percentage used, then time until the window resets',
       "Anthropic's own server-side metering, not an estimate",
+      'dim = last known (limits-last, from any session) or a derived 0%',
     ],
   },
   compact_eta: {

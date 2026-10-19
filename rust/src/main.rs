@@ -1505,7 +1505,8 @@ fn render_inner(input: &str) -> Result<String, String> {
                 if (1..=15).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()) { s.parse().ok() } else { None }
             };
             let cur = |h: &str, r: &str| -> RlWin {
-                Some((digits(h)?.min(100), digits(r).filter(|v| *v > 0)?))
+                // Same 8-day bound as the reader: a ms resets_at must not poison the whole record.
+                Some((digits(h)?.min(100), digits(r).filter(|v| *v > 0 && *v <= now + 691_200)?))
             };
             let pay = [if has5 { cur(&h5, &f.rl_5h_reset) } else { None }, if has7 { cur(&h7, &f.rl_7d_reset) } else { None }];
             // ponytail: read-merge-write is not locked; two sessions racing within one render
@@ -1786,6 +1787,8 @@ fn render_inner(input: &str) -> Result<String, String> {
                 0
             }
         };
+        // A plain-digit percentage over 100 is drawn as 100 (the record clamps it too).
+        let head = if head.bytes().all(|b| b.is_ascii_digit()) && head.len() <= 15 && p > 100 { "100" } else { head };
         let mut color = pal.dark_green;
         if p >= 60 {
             color = pal.mustard;
@@ -2717,7 +2720,7 @@ fn read_limits_last(p: &Path) -> [RlWin; 2] {
         }
     };
     // First line only (the bash twin reads one line): a second line is ignored in both.
-    let toks: Vec<&str> = text.split('\n').next().unwrap_or("").split(' ').collect();
+    let toks: Vec<&str> = text.split('\n').next().unwrap_or("").split(' ').collect(); // single spaces only; bash checks the same
     let win = |t: &str| -> Option<Option<(i64, i64)>> {
         if t == "-" {
             return Some(None);

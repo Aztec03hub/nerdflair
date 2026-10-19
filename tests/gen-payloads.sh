@@ -336,4 +336,10 @@ emit "limits: record reset absurdly far ahead (over 8 days): corrupt, nothing sh
   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:999999999999 71:999999999999'
 emit "limits: record percentage over 100 is clamped to 100" \
   "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 150:@@NOW+11430@@ 71:@@NOW+200030@@'
+emit "limits: record reset 5 s inside the 8-day bound: still shown" \
+  "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+691195@@'
+emit "limits: record reset 5 s past the 8-day bound: corrupt, nothing shown" \
+  "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+691205@@'
+emit "limits: payload percentage over 100 is drawn as 100" \
+  "$(mut '.rate_limits.five_hour.used_percentage=150')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"

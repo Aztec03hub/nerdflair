@@ -586,10 +586,25 @@ s_limits_merge() { OLDREC > "$CASE_DIR/cache/limits-last"; touch -d '2 hours ago
 chk_limits_merged() { check "limits-last [$1]: window absent from the payload is kept from the record" "v1 5:$(( NOW + 8000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last")"; }
 s_limits_twoline() { printf 'v1 5:%s 6:%s\nextra\n' $(( NOW + 8000 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
 s_limits_farreset() { printf 'v1 5:%s 6:%s\n' $(( NOW + 99999999 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
+s_limits_msreset() {   # a ms resets_at must not be stored, and must not cost the other window its data
+  OLDREC > "$CASE_DIR/cache/limits-last"; touch -d '2 hours ago' "$CASE_DIR/cache/limits-last"
+  PAYLOAD=$(payload lim ",\"rate_limits\":{\"five_hour\":{\"used_percentage\":10,\"resets_at\":${NOW}000},\"seven_day\":{\"used_percentage\":20,\"resets_at\":$(( NOW + 200000 ))}}")
+}
+chk_limits_msreset() { check "limits-last [$1]: ms reset not stored, 5h kept from the record, 7d updated" "v1 5:$(( NOW + 8000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last")"; }
+s_limits_dblspace() { printf 'v1  5:%s 6:%s\n' $(( NOW + 8000 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
+s_limits_tab() { printf 'v1\t5:%s 6:%s\n' $(( NOW + 8000 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
+chk_limits_firstline() {
+  local o; o=$(sed 's/\x1b\[[0-9;]*m//g' "$CASE_DIR/out.$RENDERS")
+  [[ "$o" == *"5h 5%"* && "$o" == *"7d 6%"* ]] && printf '  PASS  limits-last [%s]: the first line of the record is the one rendered\n' "$1" \
+    || { printf '  FAIL  limits-last [%s]: first line not rendered: %s\n' "$1" "$o"; fail=1; }
+}
+run_case limits-last-ms-reset      -                       0 s_limits_msreset chk_limits_msreset
+run_case limits-last-double-space  limits-last             1 s_limits_dblspace
+run_case limits-last-tab           limits-last             1 s_limits_tab
 run_case limits-last-future-mtime  -                       0 s_limits_future_mtime chk_limits_rewritten
 run_case limits-last-throttle      -                       0 s_limits_throttle chk_limits_throttled
 run_case limits-last-merge         -                       0 s_limits_merge chk_limits_merged
-run_case limits-last-two-lines     -                       0 s_limits_twoline
+run_case limits-last-two-lines     -                       0 s_limits_twoline chk_limits_firstline
 run_case limits-last-far-reset     limits-last             1 s_limits_farreset
 run_case limits-last-corrupt       limits-last             1 s_limits_corrupt
 run_case limits-last-healthy       -                       0 s_limits_healthy

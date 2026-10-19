@@ -55,19 +55,20 @@ for impl in rust bash; do
   expect "both absent, no record: nothing" $impl "$(render $impl "" "$(base 1.25 "")")" "!5h" "!7d"
   expect "cost 0.00 with MCP configured: api time and block stay" $impl \
     "$(render $impl "v1 42:$PAST 71:$PAST" "$(base 0 "")")" "context7" " 4m" "idle" "5h 0%"
+  for rec in "v1 42:$PAST 71:$PAST" "v1 42:$FUT5 71:$FUT7"; do
   # ORDER: the cost-less row is the cost row minus the trailing cost, readout for readout.
-  rec="v1 42:$PAST 71:$PAST"
-  norm() { sed 's/ \+/ /g; s/ *$//' <<<"$1"; }
-  # Under 2 minutes of session time there is no lifetime burn rate or ETA to differ on.
-  # The cost-less row also carries the chime label (cost 0.00 only), which is not a readout of the cost row.
-  costrow=$(DUR=100000 norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 1.25 "")" | rg -F context7 | head -n 1)")
-  nocost=$(norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 0 "")" | rg -F context7 | head -n 1)")
-  nocost=$(sed 's/ [^ ]* random ·//' <<<"$nocost")
-  want="${costrow% · *1.25}"
-  [[ "$nocost" == "$want" ]] && printf '  PASS  cost-less row equals the cost row minus the cost [%s]\n' $impl \
-    || { printf '  FAIL  cost-less row differs from the cost row [%s]\n        cost row minus cost: %s\n        cost-less row:       %s\n' $impl "$want" "$nocost"; fail=1; }
-  expect "cost-less row keeps limits" $impl "$nocost" "5h 0% 7d 0%"
-  [[ "$nocost" =~ 5h\ 0%.*\ 4m.*idle ]] && printf '  PASS  row order [%s]\n' $impl || { printf '  FAIL  row order [%s]: %s\n' $impl "$nocost"; fail=1; }
+    norm() { sed 's/ \+/ /g; s/ *$//' <<<"$1"; }
+    # Under 2 minutes of session time there is no lifetime burn rate or ETA to differ on.
+    # The cost-less row also carries the chime label (cost 0.00 only), which is not a readout of the cost row.
+    costrow=$(DUR=100000 norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 1.25 "")" | rg -F context7 | head -n 1)")
+    nocost=$(norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 0 "")" | rg -F context7 | head -n 1)")
+    nocost=$(sed 's/ [^ ]* random ·//' <<<"$nocost")
+    want="${costrow% · *1.25}"
+    [[ "$nocost" == "$want" ]] && printf '  PASS  cost-less row equals the cost row minus the cost [%s]\n' $impl \
+      || { printf '  FAIL  cost-less row differs from the cost row [%s]\n        cost row minus cost: %s\n        cost-less row:       %s\n' $impl "$want" "$nocost"; fail=1; }
+    expect "cost-less row keeps limits" $impl "$nocost" "5h " "7d "
+    [[ "$nocost" =~ 5h\ [0-9]+%.*\ 4m ]] && printf '  PASS  row order [%s]\n' $impl || { printf '  FAIL  row order [%s]: %s\n' $impl "$nocost"; fail=1; }
+  done
 done
 (( fail )) && { echo "limits-costless: FAIL"; exit 1; }
 echo "limits-costless: PASS"
