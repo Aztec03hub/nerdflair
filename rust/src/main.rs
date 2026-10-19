@@ -1333,7 +1333,7 @@ fn render_inner(input: &str) -> Result<String, String> {
 
     // Read the previous sample first: several segments below difference
     // against it. used_percentage is legitimately fractional, so keep tenths.
-    let smp_path = if f.session_id.is_empty() { None } else { sample_path(uid, &f.session_id) };
+    let smp_path = if f.session_id.is_empty() || json_mode() { None } else { sample_path(uid, &f.session_id) };
     let ring = smp_path.as_ref().map(|p| read_ring(p)).unwrap_or(Ring { rate: 0, hist: Vec::new() });
     let prev = ring.hist.last();
     let used10: Option<i64> = if f.used_pct.is_empty() {
@@ -1485,6 +1485,50 @@ fn render_inner(input: &str) -> Result<String, String> {
         burn_segment = format!("{}{} ${}/h{}", color, BURN_ICON, burn_val, RESET);
     }
 
+    // ── Rate-limit windows: payload, derived, or last-known ──────
+    // Claude Code drops a window once its resets_at passes, and sends none
+    // before the session's first response, each independently. So: a window in
+    // the payload is shown as is; 5h missing while 7d is present means the 5h
+    // window lapsed (nothing used), shown as a dim 0%; both missing falls back
+    // to the account-wide record (limits-last). Nothing is ever invented: no
+    // record means no segment, silently (API-key users never have limits).
+    let rl_head = |s: &str| -> String {
+        match s.rfind('.') { Some(i) => s[..i].to_string(), None => s.to_string() }
+    };
+    let (h5, h7) = (rl_head(&f.rl_5h_pct), rl_head(&f.rl_7d_pct));
+    let (has5, has7) = (!h5.is_empty(), !h7.is_empty());
+    let lim_path = limits_last_path();
+    let rec: [RlWin; 2] = lim_path.as_ref().map(|p| read_limits_last(p)).unwrap_or([None, None]);
+    if (has5 || has7) && !json_mode() {
+        if let Some(p) = lim_path.as_ref() {
+            let digits = |s: &str| -> Option<i64> {
+                if (1..=15).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()) { s.parse().ok() } else { None }
+            };
+            let cur = |h: &str, r: &str| -> RlWin {
+                // Same 8-day bound as the reader: a ms resets_at must not poison the whole record.
+                Some((digits(h)?.min(100), digits(r).filter(|v| *v > 0 && *v <= now + 691_200)?))
+            };
+            let pay = [if has5 { cur(&h5, &f.rl_5h_reset) } else { None }, if has7 { cur(&h7, &f.rl_7d_reset) } else { None }];
+            // ponytail: read-merge-write is not locked; two sessions racing within one render
+            // can clobber one window with a value at most one window stale, healed by the next
+            // write after 30 s. Writes are atomic (temp + rename), so a reader never sees a torn file.
+            let merged = [pay[0].or(rec[0]), pay[1].or(rec[1])];
+            if (pay[0].is_some() || pay[1].is_some()) && (!p.is_file() || file_age(p) >= 30) {
+                if let Err(e) = cache_write(p, fmt_limits_last(&merged).as_bytes()) {
+                    errlog::note_io("limits-last-write", &format!("cannot write {}; last-known limits will not be kept", p.display()), &e);
+                }
+            }
+        }
+    }
+    // The record's 5h window beats the derived 0% while its reset is still ahead.
+    let rec5_live = matches!(rec[0], Some((_, r)) if r > now);
+    let blk_idle = !has5 && !rec5_live && (has7 || matches!(rec[0], Some((_, r)) if r <= now));
+    let blk_reset: String = if has5 {
+        f.rl_5h_reset.clone()
+    } else {
+        match rec[0] { Some((_, r)) if r > now => r.to_string(), _ => String::new() }
+    };
+
     // ── Billing block ────────────────────────────────────────────
     // Spend inside the CURRENT five-hour rate-limit window. The window is the
     // payload's own `rate_limits.five_hour.resets_at` less five hours, so this
@@ -1497,10 +1541,13 @@ fn render_inner(input: &str) -> Result<String, String> {
     // No field means no block.
     // trim_end: bash's $(...) strips trailing newlines, so a ledger of
     // nothing but newlines is empty there and must be here too.
-    if !ledger.trim_end_matches('\n').is_empty()
-        && !f.rl_5h_reset.is_empty()
+    if blk_idle {
+        // The 5h window is lapsed (derived 0%): idle, not a vanished segment.
+        block_segment = format!("{}{} idle{}", pal.dim, BLOCK_ICON, RESET);
+    } else if !ledger.trim_end_matches('\n').is_empty()
+        && !blk_reset.is_empty()
     {
-        if let Some(reset) = bash_int(&f.rl_5h_reset).filter(|r| *r > 0) {
+        if let Some(reset) = bash_int(&blk_reset).filter(|r| *r > 0) {
             let block_start = reset - 18000;
             // `now >= reset` means the window in the payload has already
             // lapsed and the host has not refreshed it yet, which is the
@@ -1729,17 +1776,27 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         // `_rl5=$(_rl_part ...)` runs in a subshell, so a fatal arithmetic
         // error there truncates only this part's output, not the render.
-        let p = match arith(head) {
-            Ar::Fatal => {
-                arith_note("fatal", label, head);
-                return String::new();
-            }
-            Ar::Val(v) => v,
-            Ar::Syntax => {
-                arith_note("syntax", label, head);
-                0
+        // A plain-digit percentage over 100 (judged on its DECIMAL value, as bash's 10# does, so
+        // "0120" counts as 120) is drawn as 100 and never reaches the arithmetic below.
+        let clamped = head.len() <= 15
+            && head.bytes().all(|b| b.is_ascii_digit())
+            && head.parse::<i64>().map_or(false, |d| d > 100);
+        let p = if clamped {
+            100
+        } else {
+            match arith(head) {
+                Ar::Fatal => {
+                    arith_note("fatal", label, head);
+                    return String::new();
+                }
+                Ar::Val(v) => v,
+                Ar::Syntax => {
+                    arith_note("syntax", label, head);
+                    0
+                }
             }
         };
+        let head = if clamped { "100" } else { head };
         let mut color = pal.dark_green;
         if p >= 60 {
             color = pal.mustard;
@@ -1758,8 +1815,25 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         s
     };
-    let rl5 = rl_part(&f.rl_5h_pct, &f.rl_5h_reset, "5h ");
-    let rl7 = rl_part(&f.rl_7d_pct, &f.rl_7d_reset, "7d ");
+    let dim_win = |label: &str, w: RlWin| -> String {
+        match w {
+            Some((p, r)) if r > now => {
+                let cd = fmtx::countdown(r, now);
+                let tail = if cd.is_empty() { String::new() } else { format!("/{}", cd) };
+                format!("{}{}{}%{}{}", pal.dim, label, p, tail, RESET)
+            }
+            Some(_) => format!("{}{}0%{}", pal.dim, label, RESET),
+            None => String::new(),
+        }
+    };
+    let rl5 = if has5 {
+        rl_part(&f.rl_5h_pct, &f.rl_5h_reset, "5h ")
+    } else if has7 && !rec5_live {
+        format!("{}5h 0%{}", pal.dim, RESET)
+    } else {
+        dim_win("5h ", rec[0])
+    };
+    let rl7 = if has7 { rl_part(&f.rl_7d_pct, &f.rl_7d_reset, "7d ") } else { dim_win("7d ", rec[1]) };
     let mut limits_segment = String::new();
     if !rl5.is_empty() || !rl7.is_empty() {
         limits_segment.push_str(&rl5);
@@ -1823,11 +1897,22 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         row3_right.push_str(&cost_segment);
     } else {
+        // Same order as above, minus the cost itself. Only what has no data
+        // is dropped: a fresh session still shows tmux, rate, time, burn,
+        // block and repo cost whenever they exist.
         let mut pre = String::new();
-        if !chime_segment.is_empty() {
-            pre = chime_segment.clone();
-        }
-        for extra in [&mcphealth_segment, &limits_segment, &compact_segment] {
+        for extra in [
+            &chime_segment,
+            &tmux_segment,
+            &mcphealth_segment,
+            &limits_segment,
+            &compact_segment,
+            &speed_segment,
+            &time_segment,
+            &burn_segment,
+            &block_segment,
+            &repocost_segment,
+        ] {
             if extra.is_empty() {
                 continue;
             }
@@ -1850,7 +1935,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // so there is nothing for the bash reference to disagree about, and the
     // default text path is byte-for-byte untouched (difftest never passes
     // --json). Adding a segment means adding one line to this table.
-    if std::env::args().any(|a| a == "--json") {
+    if json_mode() {
         // Remote Control, emitted here because THIS process is the only one
         // positioned to answer it. Claude Code sets
         // CLAUDE_CODE_BRIDGE_SESSION_ID in its own process when a bridge
@@ -2616,6 +2701,62 @@ fn usage_row_ok(cols: &[&str], maxcost: f64) -> bool {
 /// session_id, not helpers sharing one. Write is printf-to-temp then rename.
 struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 
+/// `--json` is the plugin band's call, with a made-up payload. It must leave every
+/// per-session and account-wide state file alone (sample ring, ledger, repo-cost
+/// stamp, limits-last), or it corrupts what the real status line measured.
+fn json_mode() -> bool {
+    std::env::args().any(|a| a == "--json")
+}
+
+/// Account-wide last-known rate limits, in the private cache dir. One line:
+/// `v1 <5h> <7d>` where a window is `<pct>:<resets_at>` or `-`. Twin of
+/// `_rl_last_read` in statusline.sh.
+type RlWin = Option<(i64, i64)>;
+
+fn limits_last_path() -> Option<PathBuf> {
+    cache_path("limits-last")
+}
+
+fn read_limits_last(p: &Path) -> [RlWin; 2] {
+    let text = match std::fs::read_to_string(p) {
+        Ok(t) => t,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                errlog::note_io("limits-last", &format!("cannot read {}; last-known 5h/7d limits unavailable", p.display()), &e);
+            }
+            return [None, None];
+        }
+    };
+    // First line only (the bash twin reads one line): a second line is ignored in both.
+    let toks: Vec<&str> = text.split('\n').next().unwrap_or("").split(' ').collect(); // single spaces only; bash checks the same
+    let win = |t: &str| -> Option<Option<(i64, i64)>> {
+        if t == "-" {
+            return Some(None);
+        }
+        let (a, b) = t.split_once(':')?;
+        if canon_num(a) && canon_num(b) && !a.is_empty() && !b.is_empty() {
+            // A reset more than ~8 days ahead (7d window plus slack) cannot be real: corrupt.
+            let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
+            if b > epoch_secs() + 691_200 { return None; }
+            Some(Some((a.min(100), b)))
+        } else {
+            None
+        }
+    };
+    if toks.len() == 3 && toks[0] == "v1" {
+        if let (Some(a), Some(b)) = (win(toks[1]), win(toks[2])) {
+            return [a, b];
+        }
+    }
+    errlog::note("limits-last", &format!("{} is corrupt; last-known 5h/7d limits ignored", p.display()));
+    [None, None]
+}
+
+fn fmt_limits_last(w: &[RlWin; 2]) -> String {
+    let one = |x: &RlWin| x.map_or("-".to_string(), |(p, r)| format!("{}:{}", p, r));
+    format!("v1 {} {}\n", one(&w[0]), one(&w[1]))
+}
+
 fn sample_path(uid: u32, session: &str) -> Option<PathBuf> {
     cache_path(&format!("nerdflair-sample-{}-{}", uid, slugify(session)))
 }
@@ -2776,7 +2917,7 @@ fn repo_cost_segment(
         errlog::note("repocost-skipped", "repo cost is not recorded: no cache dir and no stamp dir to rate limit the ledger append");
     }
     let maxcost = env_int("NERDFLAIR_REPO_COST_MAX", 100_000) as f64;
-    let mut due = true;
+    let mut due = !json_mode();
     if stamp.as_ref().map_or(false, |s| s.is_file() && file_age(s) < ttl) {
         due = false;
     }

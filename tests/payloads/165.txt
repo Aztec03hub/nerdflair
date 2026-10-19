@@ -1,0 +1,1 @@
+limits: 7d present, 5h absent: dim 5h 0% (window lapsed) and block says idle

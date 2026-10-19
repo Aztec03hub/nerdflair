@@ -1,0 +1,1 @@
+limits: record reset 5 s inside the 8-day bound: still shown

@@ -1,0 +1,1 @@
+limits: both absent, record has both windows in the future: dim recorded figures with countdown

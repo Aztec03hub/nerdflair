@@ -1,0 +1,1 @@
+limits: both absent, record 5h expired and 7d in the future (mixed)

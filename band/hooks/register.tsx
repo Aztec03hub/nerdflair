@@ -93,6 +93,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
       "5h and 7d windows from the payload's rate_limits",
       'percentage used, then time until the window resets',
       "Anthropic's own server-side metering, not an estimate",
+      'dim = last known (limits-last, from any session) or a derived 0%',
     ],
   },
   compact_eta: {
@@ -129,7 +130,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     color: '#c084fc',
     lines: [
       'spend inside the CURRENT 5-hour rate-limit window',
-      'window is rate_limits.five_hour.resets_at less 5h',
+      'window is rate_limits.five_hour.resets_at (or the last-known record) less 5h',
       'says idle rather than guess when that window has lapsed',
     ],
   },

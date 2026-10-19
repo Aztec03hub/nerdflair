@@ -1,0 +1,33 @@
+{
+  "context_window": {
+    "context_window_size": 200000,
+    "total_input_tokens": 74000,
+    "total_output_tokens": 12000,
+    "used_percentage": 37
+  },
+  "cost": {
+    "total_api_duration_ms": 240000,
+    "total_cost_usd": 4.73,
+    "total_duration_ms": 1860000
+  },
+  "effort": {
+    "level": "high"
+  },
+  "fast_mode": false,
+  "model": {
+    "display_name": "Opus 4.6",
+    "id": "claude-opus-4-6-20250101"
+  },
+  "output_style": {
+    "name": "default"
+  },
+  "session_id": "sess-fixed-0001",
+  "thinking": {
+    "enabled": true
+  },
+  "transcript_path": "/nonexistent/transcript.jsonl",
+  "workspace": {
+    "current_dir": "@@REPO:clean@@",
+    "project_dir": "@@REPO:clean@@"
+  }
+}

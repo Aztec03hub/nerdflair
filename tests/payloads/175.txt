@@ -1,0 +1,1 @@
+limits: 7d present, 5h absent, record 5h still ahead: the record beats the derived 0%, block runs off its reset
