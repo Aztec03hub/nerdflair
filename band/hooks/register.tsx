@@ -25,10 +25,15 @@ let homeLookup: Promise<void> | null = null // the lookup in flight: overlapping
 // not a failure of the lookup or the renderer: it is retried on the next render, not backed
 // off and not drawn red. Only a run of consecutive aborts is reported (it would mean every
 // render is being cut off, which the user must be told).
-const isAbort = (err: unknown) => /abort/i.test(String(err))
+// The engine's exact texts (claude 2.1.303, $.process.run): a superseded run rejects with
+// "<plugin>: $.process.run(<cmd>) aborted"; a run that hit timeoutMs rejects with
+// "<plugin>: $.process.run(<cmd>) aborted: still running after <N>ms". So only a message that
+// ENDS in "aborted" is a supersede; a timeout also contains "aborted" and must not match.
+const isAbort = (err: unknown) => /\) aborted$/.test(String(err))
+const isTimeout = (msg: string) => /still running after \d+ms|time(d)? ?out/i.test(msg)
 const ABORT_REPORT_AFTER = 5
-let abortStreak = 0
-let runAborted = false // the refresh that just ended was aborted, not failed
+let homeAbortStreak = 0 // consecutive aborted HOME lookups; any other outcome resets it
+let refreshAbortStreak = 0 // consecutive aborted refreshes; any other outcome resets it
 let homeTriedAt = -Infinity // when the HOME lookup last ran: a failing one is retried every 30 s, not every render
 const BIN = () => `${HOME}/.local/bin/nerdflair-statusline`
 // The popup helper, installed beside this file. tmux draws it, because the
@@ -302,7 +307,8 @@ function ago(ms: number): string {
 
 const TTL_MS = 2000
 const STALE_MS = 30000
-let inflight: Promise<Seg[] | null> | null = null
+// 'aborted' = superseded by a newer render: not a failure. Every render sharing the refresh sees the same result.
+let inflight: Promise<Seg[] | 'aborted' | null> | null = null
 let lastFailAt = 0
 const FAIL_BACKOFF_MS = 5000
 
@@ -312,8 +318,8 @@ export function resetStateForTests(): void {
   HOME = ''
   homeTriedAt = -Infinity
   homeLookup = null
-  abortStreak = 0
-  runAborted = false
+  homeAbortStreak = 0
+  refreshAbortStreak = 0
   cache = null
   lastError = ''
   inflight = null
@@ -377,12 +383,15 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
         HOME = h.exitCode === 0 ? h.stdout.trim() : ''
         if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
-        abortStreak = 0
+        if (homeAbortStreak >= ABORT_REPORT_AFTER) note($, 'HOME lookup', `recovered after ${homeAbortStreak} aborted renders`)
+        homeAbortStreak = 0
       } catch (err) {
-        if (isAbort(err)) {
+        if (isAbort(err) && !isTimeout(String(err))) {
           homeTriedAt = -Infinity // retry on the very next render
-          if (++abortStreak >= ABORT_REPORT_AFTER) why = `printenv HOME aborted ${abortStreak} renders in a row: ${err}`
+          // Stable text, reported once at the threshold, so note() dedupes it.
+          if (++homeAbortStreak === ABORT_REPORT_AFTER) why = `printenv HOME aborted ${ABORT_REPORT_AFTER} renders in a row: ${err}`
         } else {
+          homeAbortStreak = 0
           why = `printenv HOME failed: ${err}`
         }
       }
@@ -539,13 +548,17 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         // Do NOT swallow this. A silent catch here is why the first version
         // drew nothing with no way to find out why. It is reported, with the
         // step that failed, to the debug log and into the band.
+        // ENOENT and timeout are tested BEFORE abort: a timeout message also contains "aborted".
         const msg = String(err)
-        if (isAbort(err)) {
-          runAborted = true
-          if (++abortStreak >= ABORT_REPORT_AFTER) report($, `refresh aborted ${abortStreak} renders in a row at ${stage}`, msg)
-        } else if (stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) {
+        const aborted = !(stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) && !isTimeout(msg) && isAbort(err)
+        if (aborted) {
+          if (++refreshAbortStreak === ABORT_REPORT_AFTER) report($, `refresh aborted ${ABORT_REPORT_AFTER} renders in a row`, msg)
+          return 'aborted' as const
+        }
+        refreshAbortStreak = 0
+        if (stage === 'run' && /ENOENT|not found|No such file/i.test(msg)) {
           report($, `renderer not found at ${BIN()}; run the installer`, msg)
-        } else if (stage === 'run' && /time(d)? ?out/i.test(msg)) {
+        } else if (stage === 'run' && isTimeout(msg)) {
           report($, 'renderer timed out (5 s)', msg)
         } else {
           report($, `refresh failed at ${stage}`, msg)
@@ -555,7 +568,12 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
     })().finally(() => {
       inflight = null
     }))
-    if (segs) {
+    if (segs !== 'aborted') {
+      // Success or a real failure ends the run of aborts.
+      if (refreshAbortStreak >= ABORT_REPORT_AFTER) note($, 'refresh', `recovered after ${refreshAbortStreak} aborted renders`)
+      refreshAbortStreak = 0
+    }
+    if (segs && segs !== 'aborted') {
       // Stamped when the refresh FINISHED: a 2 s+ renderer would otherwise cache figures
       // that are already past TTL_MS and get re-run by the very next render.
       // A rejecting clock must not throw away good segments: fall back to the pre-refresh time, noted.
@@ -568,20 +586,18 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
       if (lastError) seen.delete(lastError)
       lastError = ''
       lastFailAt = 0
-      abortStreak = 0
+    } else if (segs === 'aborted') {
+      // Superseded, not failed: no back-off, the next render retries. Same for every render that shared this run.
     } else {
       // A renderer that keeps failing must not leave figures frozen as if
       // they were live: until 30 s pass the old ones stay, marked `stale`
       // below with the reason; after that they go and the red error shows.
       // Back off: a renderer that fails is not re-run on every render. Stamped AFTER the
       // refresh settled (a 5 s timeout would otherwise leave a stamp 5 s old, no back-off).
-      if (runAborted) runAborted = false // superseded, not failed: no back-off, the next render retries
-      else {
-        lastFailAt = await $.clock.now().catch((err: unknown) => {
-          note($, 'clock', `clock.now() rejected after a failed refresh; using the earlier time: ${err}`)
-          return now
-        })
-      }
+      lastFailAt = await $.clock.now().catch((err: unknown) => {
+        note($, 'clock', `clock.now() rejected after a failed refresh; using the earlier time: ${err}`)
+        return now
+      })
       if (cache && now - cache.at > STALE_MS) cache = null
     }
   }
@@ -603,7 +619,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
     // No figures to show. Say why in the band. An empty reason cannot happen
     // (every failed refresh sets one), so if it does, that is itself reported.
     if (!lastError) {
-      if (runAborted || inflight || abortStreak > 0) return null // superseded or in flight, not a failure
+      if (inflight || refreshAbortStreak > 0 || homeAbortStreak > 0) return null // superseded or in flight, not a failure
       report($, 'band', 'no figures and no recorded reason (plugin bug)')
     }
     return (

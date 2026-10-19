@@ -13,10 +13,16 @@
 # opposed to a deliberate no-wrap case) it says why in
 # ~/.local/state/nerdflair/launcher.log, once an hour per reason (nf-log.sh).
 set -u
-# Claude Code clamps its status line to 256 colours whenever $TMUX is set, unless this is set (the
-# opt-in is read from its binary 2026-10-19). Windows started by a command never read ~/.bashrc, so
-# the shim makes sure every wrapped or plain start inside tmux keeps truecolor. A value already set stays.
-export CLAUDE_CODE_TMUX_TRUECOLOR="${CLAUDE_CODE_TMUX_TRUECOLOR:-1}"
+# Claude Code clamps its status line to 256 colours whenever $TMUX is set, unless
+# CLAUDE_CODE_TMUX_TRUECOLOR is set; its check treats ANY non-empty value as on, 0 included
+# (read from its binary 2026-10-19). Windows started by a command never read ~/.bashrc, so honour intent here:
+# unset, empty or 1/true/yes/on -> export 1 (truecolor); 0/false/no/off -> UNSET it, because a
+# caller who wrote 0 wants the 256-colour clamp and the variable being present would defeat that;
+# anything else is left as the caller set it.
+case "${CLAUDE_CODE_TMUX_TRUECOLOR-}" in
+  ""|1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) export CLAUDE_CODE_TMUX_TRUECOLOR=1 ;;
+  0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) unset CLAUDE_CODE_TMUX_TRUECOLOR ;;
+esac
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOVER="$SELF_DIR/../hover"
 # shellcheck source=nf-log.sh

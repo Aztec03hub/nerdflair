@@ -54,12 +54,14 @@ cp "$HOVER_SRC/claude-shim" "$NFB/claude"; cp "$HOVER_SRC/nf-log.sh" "$NFB/nf-lo
 printf '#!/bin/sh\nexit 0\n' > "$NFB/nf-tmux-heal"; chmod +x "$NFB/claude" "$NFB/nf-tmux-heal"
 
 # Run the shim on a pty (it only wraps when stdin, stdout and stderr are ttys).
-run_tty() { # PATH -> output of one `claude` start
-  python3 - "$1" "$NFB/claude" <<'PY'
+run_tty() { # PATH [CALLER_TRUECOLOR_VALUE] -> output of one `claude` start
+  python3 - "$1" "$NFB/claude" ${2+"$2"} <<'PY'
 import os, pty, sys
 path, shim = sys.argv[1], sys.argv[2]
 env = dict(os.environ, PATH=path, TMUX="/nonexistent/sock,1,0", TERM="xterm")
-env.pop("CLAUDE_CODE_TMUX_TRUECOLOR", None)          # the shim must supply it, not the caller
+env.pop("CLAUDE_CODE_TMUX_TRUECOLOR", None)          # default: the caller sets nothing
+if len(sys.argv) > 3:
+    env["CLAUDE_CODE_TMUX_TRUECOLOR"] = sys.argv[3]   # an explicit caller value (may be empty)
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe("bash", ["bash", shim, "--flag"], env)
@@ -95,6 +97,13 @@ printf '' > "$ROOT/hover-ok/mklayout.py"; printf '' > "$ROOT/hover-ok/panel.py";
 ln -sfn "$ROOT/hover-ok" "$HOME/.nerdflair/hover"
 shim_case "python3 missing" "shim: python3 not on PATH" "$NFB:$ROOT/real:$ROOT/bin-nopy"
 check "shim: claude starts with CLAUDE_CODE_TMUX_TRUECOLOR=1 (no 256-colour clamp inside tmux)" 1 "$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" | grep -c 'TRUECOLOR=1')"
+
+# F6: the caller's intent. Claude Code treats ANY non-empty value as on, so 0/false/no/off must reach it UNSET.
+for _c in "unset|unset|TRUECOLOR=1" "empty||TRUECOLOR=1" "1|1|TRUECOLOR=1" "true|true|TRUECOLOR=1" "0|0|TRUECOLOR=unset" "false|false|TRUECOLOR=unset" "x|x|TRUECOLOR=x"; do
+  IFS='|' read -r _n _v _want <<<"$_c"
+  if [[ "$_n" == unset ]]; then _o=$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy"); else _o=$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" "$_v"); fi
+  check "shim: caller CLAUDE_CODE_TMUX_TRUECOLOR $_n reaches claude as $_want" 1 "$(grep -c "^$_want" <<<"$_o")"
+done
 
 # H2: dangling hover link
 rm -f "$HOME/.nerdflair/hover"; ln -sfn "$ROOT/gone" "$HOME/.nerdflair/hover"
