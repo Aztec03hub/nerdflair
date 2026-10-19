@@ -64,10 +64,11 @@ CARDS = [
         "5h and 7d windows from the payload's rate_limits",
         "percentage used, then time until the window resets",
         "Anthropic's own server-side metering, not an estimate",
+        "dim = last known (limits-last, from any session) or a derived 0%",
     ]),
     ("block", "\uf094", "Billing block", (192, 132, 252), [
         "spend inside the CURRENT 5-hour rate-limit window",
-        "window is rate_limits.five_hour.resets_at less 5h",
+        "window is rate_limits.five_hour.resets_at (or the last-known record) less 5h",
         "says idle rather than guess when that window has lapsed",
     ]),
     ("mcp_health", r"\d+/\d+", "MCP health", (74, 222, 128), [

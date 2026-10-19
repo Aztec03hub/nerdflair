@@ -1505,9 +1505,12 @@ fn render_inner(input: &str) -> Result<String, String> {
                 if (1..=15).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()) { s.parse().ok() } else { None }
             };
             let cur = |h: &str, r: &str| -> RlWin {
-                Some((digits(h)?, digits(r).filter(|v| *v > 0)?))
+                Some((digits(h)?.min(100), digits(r).filter(|v| *v > 0)?))
             };
             let pay = [if has5 { cur(&h5, &f.rl_5h_reset) } else { None }, if has7 { cur(&h7, &f.rl_7d_reset) } else { None }];
+            // ponytail: read-merge-write is not locked; two sessions racing within one render
+            // can clobber one window with a value at most one window stale, healed by the next
+            // write after 30 s. Writes are atomic (temp + rename), so a reader never sees a torn file.
             let merged = [pay[0].or(rec[0]), pay[1].or(rec[1])];
             if (pay[0].is_some() || pay[1].is_some()) && (!p.is_file() || file_age(p) >= 30) {
                 if let Err(e) = cache_write(p, fmt_limits_last(&merged).as_bytes()) {
@@ -1516,11 +1519,13 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
         }
     }
-    let blk_idle = !has5 && (has7 || matches!(rec[0], Some((_, r)) if r <= now));
+    // The record's 5h window beats the derived 0% while its reset is still ahead.
+    let rec5_live = matches!(rec[0], Some((_, r)) if r > now);
+    let blk_idle = !has5 && !rec5_live && (has7 || matches!(rec[0], Some((_, r)) if r <= now));
     let blk_reset: String = if has5 {
         f.rl_5h_reset.clone()
     } else {
-        match rec[0] { Some((_, r)) if !has7 && r > now => r.to_string(), _ => String::new() }
+        match rec[0] { Some((_, r)) if r > now => r.to_string(), _ => String::new() }
     };
 
     // ── Billing block ────────────────────────────────────────────
@@ -1812,7 +1817,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     };
     let rl5 = if has5 {
         rl_part(&f.rl_5h_pct, &f.rl_5h_reset, "5h ")
-    } else if has7 {
+    } else if has7 && !rec5_live {
         format!("{}5h 0%{}", pal.dim, RESET)
     } else {
         dim_win("5h ", rec[0])
@@ -2711,14 +2716,18 @@ fn read_limits_last(p: &Path) -> [RlWin; 2] {
             return [None, None];
         }
     };
-    let toks: Vec<&str> = text.trim_end_matches('\n').split(' ').collect();
+    // First line only (the bash twin reads one line): a second line is ignored in both.
+    let toks: Vec<&str> = text.split('\n').next().unwrap_or("").split(' ').collect();
     let win = |t: &str| -> Option<Option<(i64, i64)>> {
         if t == "-" {
             return Some(None);
         }
         let (a, b) = t.split_once(':')?;
         if canon_num(a) && canon_num(b) && !a.is_empty() && !b.is_empty() {
-            Some(Some((a.parse().ok()?, b.parse().ok()?)))
+            // A reset more than ~8 days ahead (7d window plus slack) cannot be real: corrupt.
+            let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
+            if b > epoch_secs() + 691_200 { return None; }
+            Some(Some((a.min(100), b)))
         } else {
             None
         }

@@ -1987,7 +1987,8 @@ fi
 # the session's first response, each independently. A window in the payload is
 # shown as is; 5h missing while 7d is present means the 5h window lapsed
 # (nothing used), a dim 0%; both missing falls back to the account-wide record
-# (limits-last). Nothing is invented: no record means no segment, silently.
+# (limits-last), and the record's live 5h beats the derived 0%. Read-merge-write is unlocked: a race
+# between sessions costs at most one stale window, healed by the next write after 30 s. Nothing is invented: no record means no segment, silently.
 # Twin of the rate-limit resolution block in rust/src/main.rs.
 _rl_h5=${rl_5h_pct%.*}; _rl_h7=${rl_7d_pct%.*}
 _rl_has5=0; _rl_has7=0
@@ -1999,7 +2000,7 @@ _rl_digits() { [[ "$1" =~ ^[0-9]{1,15}$ ]]; }
 _RL_CUR=""
 _rl_cur() {   # pct reset -> _RL_CUR "p:r" when both are plain numbers and reset > 0
   _RL_CUR=""
-  _rl_digits "$1" && _rl_digits "$2" && (( 10#$2 > 0 )) && _RL_CUR="$((10#$1)):$((10#$2))"
+  _rl_digits "$1" && _rl_digits "$2" && (( 10#$2 > 0 )) && _RL_CUR="$(( 10#$1 > 100 ? 100 : 10#$1 )):$((10#$2))"
   return 0
 }
 _nf_cache_path "limits-last"; _rl_file="$_NF_CP"
@@ -2009,8 +2010,14 @@ if [[ -n "$_rl_file" && -e "$_rl_file" ]]; then
     _rl_t0=""; _rl_t1=""; _rl_t2=""; _rl_tx=""
     read -r _rl_t0 _rl_t1 _rl_t2 _rl_tx <<< "$_rl_line"
     if [[ "$_rl_t0" == v1 && -z "$_rl_tx" && -n "$_rl_t2" ]] && _rl_tok_ok "$_rl_t1" && _rl_tok_ok "$_rl_t2"; then
-      [[ "$_rl_t1" != - ]] && _rl_rec5="$_rl_t1"
-      [[ "$_rl_t2" != - ]] && _rl_rec7="$_rl_t2"
+      # A reset more than ~8 days ahead cannot be real: corrupt, as in Rust. Percent is clamped to 100.
+      if { [[ "$_rl_t1" == - ]] || (( ${_rl_t1#*:} <= EPOCHSECONDS + 691200 )); } \
+         && { [[ "$_rl_t2" == - ]] || (( ${_rl_t2#*:} <= EPOCHSECONDS + 691200 )); }; then
+        [[ "$_rl_t1" != - ]] && _rl_rec5="$(( ${_rl_t1%%:*} > 100 ? 100 : ${_rl_t1%%:*} )):${_rl_t1#*:}"
+        [[ "$_rl_t2" != - ]] && _rl_rec7="$(( ${_rl_t2%%:*} > 100 ? 100 : ${_rl_t2%%:*} )):${_rl_t2#*:}"
+      else
+        _nf_err limits-last "${_rl_file} is corrupt; last-known 5h/7d limits ignored"
+      fi
     else
       _nf_err limits-last "${_rl_file} is corrupt; last-known 5h/7d limits ignored"
     fi
@@ -2025,7 +2032,9 @@ if (( _rl_has5 || _rl_has7 )) && [[ -n "$_rl_file" ]]; then
   if [[ -n "${_rl_p5}${_rl_p7}" ]]; then
     _rl_write=1
     if [[ -f "$_rl_file" ]]; then
-      (( EPOCHSECONDS - $(stat -c %Y "$_rl_file" 2>/dev/null || stat -f %m "$_rl_file" 2>/dev/null || echo 0) < 30 )) && _rl_write=0
+      # A future mtime (clock stepped back) counts as old, as file_age does in Rust.
+      _rl_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rl_file" 2>/dev/null || stat -f %m "$_rl_file" 2>/dev/null || echo 0) ))
+      (( _rl_age >= 0 && _rl_age < 30 )) && _rl_write=0
     fi
     if (( _rl_write )); then
       _rl_m5="${_rl_p5:-$_rl_rec5}"; _rl_m7="${_rl_p7:-$_rl_rec7}"
@@ -2035,9 +2044,11 @@ if (( _rl_has5 || _rl_has7 )) && [[ -n "$_rl_file" ]]; then
   fi
 fi
 _rl_blk_idle=0; _rl_blk_reset=""
+_rl_rec5_live=0
+[[ -n "$_rl_rec5" ]] && (( ${_rl_rec5#*:} > EPOCHSECONDS )) && _rl_rec5_live=1
 if (( _rl_has5 )); then
   _rl_blk_reset="$rl_5h_reset"
-elif (( _rl_has7 )); then
+elif (( _rl_has7 && ! _rl_rec5_live )); then
   _rl_blk_idle=1
 elif [[ -n "$_rl_rec5" ]]; then
   if (( ${_rl_rec5#*:} <= EPOCHSECONDS )); then _rl_blk_idle=1; else _rl_blk_reset="${_rl_rec5#*:}"; fi
@@ -2301,7 +2312,7 @@ _rl_dim() {   # label rec -> _RL_D: dim last-known figure with countdown, or dim
   fi
 }
 if (( _rl_has5 )); then _rl5=$(_rl_part "$rl_5h_pct" "$rl_5h_reset" "5h ")
-elif (( _rl_has7 )); then _rl5="${DIM}5h 0%${RESET}"
+elif (( _rl_has7 && ! _rl_rec5_live )); then _rl5="${DIM}5h 0%${RESET}"
 else _rl_dim "5h " "$_rl_rec5"; _rl5="$_RL_D"; fi
 if (( _rl_has7 )); then _rl7=$(_rl_part "$rl_7d_pct" "$rl_7d_reset" "7d ")
 else _rl_dim "7d " "$_rl_rec7"; _rl7="$_RL_D"; fi

@@ -124,7 +124,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     color: '#c084fc',
     lines: [
       'spend inside the CURRENT 5-hour rate-limit window',
-      'window is rate_limits.five_hour.resets_at less 5h',
+      'window is rate_limits.five_hour.resets_at (or the last-known record) less 5h',
       'says idle rather than guess when that window has lapsed',
     ],
   },

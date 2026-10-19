@@ -328,4 +328,12 @@ emit "limits: both absent, record with a 5h window only"   "$(mut "$NOLIM")" "${
 emit "cost-less row with MCP configured: tmux, api time, block and repo cost stay (fresh session)"   "$(mut ".cost.total_cost_usd=0 | $NOLIM")" "CASE_STATE=$(st full vibrant auto random 1)" "CASE_COLUMNS=160" "CASE_MCP=many" \
   "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_REPOCOST=1" 'CASE_SEED_LIMITS=v1 42:@@NOW-3570@@ 71:@@NOW+200030@@'
 emit "cost-less row with MCP configured, payload limits present, api time only"   "$(mut '.cost.total_cost_usd=0')" "${E_FULL[@]}" "CASE_MCP=one"
+emit "limits: 7d present, 5h absent, record 5h still ahead: the record beats the derived 0%, block runs off its reset" \
+  "$(mut 'del(.rate_limits.five_hour)')" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:@@NOW+11430@@ 71:@@NOW+200030@@'
+emit "limits: record file has a second line (ignored in both renderers)" \
+  "$(mut "$NOLIM")" "${E_FULL[@]}" "CASE_SEED_LIMITS=$(printf 'v1 42:@@NOW+11430@@ 71:@@NOW+200030@@\nextra line')"
+emit "limits: record reset absurdly far ahead (over 8 days): corrupt, nothing shown" \
+  "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 42:999999999999 71:999999999999'
+emit "limits: record percentage over 100 is clamped to 100" \
+  "$(mut "$NOLIM")" "${E_FULL[@]}" 'CASE_SEED_LIMITS=v1 150:@@NOW+11430@@ 71:@@NOW+200030@@'
 echo "generated $N payloads in $OUT"

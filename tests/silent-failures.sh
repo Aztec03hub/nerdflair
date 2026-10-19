@@ -569,6 +569,28 @@ s_limits_payload() {
 chk_limits_written() {
   check "limits-last [$1]: written from a payload that carries limits" "v1 10:$(( NOW + 9000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last" 2>/dev/null)"
 }
+# Record handling beyond the log: throttle, future mtime, merge, second line, absurd reset.
+lim_pay() { # five_pct seven_pct (empty = window absent from the payload)
+  local rl=""
+  [[ -n "$1" ]] && rl="\"five_hour\":{\"used_percentage\":$1,\"resets_at\":$(( NOW + 9000 ))}"
+  [[ -n "$1" && -n "$2" ]] && rl+=","
+  [[ -n "$2" ]] && rl+="\"seven_day\":{\"used_percentage\":$2,\"resets_at\":$(( NOW + 200000 ))}"
+  PAYLOAD=$(payload lim ",\"rate_limits\":{$rl}")
+}
+OLDREC() { printf 'v1 5:%s 6:%s\n' $(( NOW + 8000 )) $(( NOW + 199000 )); }
+s_limits_future_mtime() { OLDREC > "$CASE_DIR/cache/limits-last"; touch -d '+1 day' "$CASE_DIR/cache/limits-last"; lim_pay 10 20; }
+chk_limits_rewritten() { check "limits-last [$1]: record rewritten (future mtime counts as old)" "v1 10:$(( NOW + 9000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last")"; }
+s_limits_throttle() { OLDREC > "$CASE_DIR/cache/limits-last"; lim_pay 10 20; }
+chk_limits_throttled() { check "limits-last [$1]: record younger than 30 s is not rewritten" "v1 5:$(( NOW + 8000 )) 6:$(( NOW + 199000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last")"; }
+s_limits_merge() { OLDREC > "$CASE_DIR/cache/limits-last"; touch -d '2 hours ago' "$CASE_DIR/cache/limits-last"; lim_pay "" 20; }
+chk_limits_merged() { check "limits-last [$1]: window absent from the payload is kept from the record" "v1 5:$(( NOW + 8000 )) 20:$(( NOW + 200000 ))" "$(head -n 1 "$CASE_DIR/cache/limits-last")"; }
+s_limits_twoline() { printf 'v1 5:%s 6:%s\nextra\n' $(( NOW + 8000 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
+s_limits_farreset() { printf 'v1 5:%s 6:%s\n' $(( NOW + 99999999 )) $(( NOW + 199000 )) > "$CASE_DIR/cache/limits-last"; }
+run_case limits-last-future-mtime  -                       0 s_limits_future_mtime chk_limits_rewritten
+run_case limits-last-throttle      -                       0 s_limits_throttle chk_limits_throttled
+run_case limits-last-merge         -                       0 s_limits_merge chk_limits_merged
+run_case limits-last-two-lines     -                       0 s_limits_twoline
+run_case limits-last-far-reset     limits-last             1 s_limits_farreset
 run_case limits-last-corrupt       limits-last             1 s_limits_corrupt
 run_case limits-last-healthy       -                       0 s_limits_healthy
 run_case limits-last-missing       -                       0 s_none
