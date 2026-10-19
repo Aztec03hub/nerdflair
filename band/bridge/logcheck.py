@@ -388,6 +388,30 @@ def t_nfpty():
         check("highlight: an unreadable shadow paints nothing", wrote == [] and h.cur is None, str(wrote))
     expect_one("highlight: shadow cannot answer is logged once", highlight_degrade, "the readout is not highlighted")
 
+    def highlight_no_shadow():
+        h = nfpty.Highlight(lambda s, keep=False: None, None)
+        h.sync((2, 3, 4))
+    expect_silent("highlight: NFPTY_SHADOW=0 (no shadow) adds no log line, startup already said so", highlight_no_shadow)
+
+    def highlight_refresh_fails():
+        class Flaky:
+            ok = True
+
+            def __init__(self):
+                self.up = True
+
+            def capture(self, *a):
+                return type("R", (), {"stdout": "abc"}) if self.up else None
+        sh = Flaky()
+        h = nfpty.Highlight(lambda s, keep=False: None, sh)
+        h.sync((2, 1, 2))
+        sh.up = False
+        h.last = 0.0
+        h.refresh()
+        h.last = 0.0
+        h.refresh()
+    expect_one("highlight: a failed refresh is logged once", highlight_refresh_fails, "was not repainted")
+
 
 def main():
     t_rate()

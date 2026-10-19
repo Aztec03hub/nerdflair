@@ -303,10 +303,12 @@ def cut(line, x, w, hl=""):
     """Escapes that paint the cells [x, x+w) (1-based) of one `capture-pane -e`
     line, keeping each cell's own colours and adding `hl` on top. Only the SGR
     state is tracked, so the cells are repainted exactly as the engine had them
-    (hl="" restores). Cells past the end of a trimmed line are painted blank."""
-    state, col, used, out = "", 1, 0, []
+    (hl="" restores). Cells past the end of a trimmed line are painted blank.
+    A double-width character that touches either edge is included whole, so
+    nothing is ever half-painted (the range then grows by up to a cell a side)."""
+    state, col, start, out = "", 1, x, []
     for m in _TOK.finditer(line):
-        if used >= w:
+        if col >= x + w:
             break
         sgr, other, ch = m.groups()
         if sgr:
@@ -315,16 +317,19 @@ def cut(line, x, w, hl=""):
                 out.append(sgr + hl)
         elif ch is not None:
             cw = mklayout.cells(ch)
-            if x <= col < x + w and used < w:
+            if col + cw > x:
                 if not out:
+                    start = col
                     out.append(RESET + state + hl)
                 out.append(ch)
-                used += cw
             col += cw
     if not out:
         out.append(RESET + state + hl)
-    out.append(" " * max(0, w - used))
-    return f"{ESC}[{{row}};{x}H" + "".join(out) + RESET
+        col = x
+    out.append(" " * max(0, x + w - col))
+    # ESC[s / ESC[u (in _paint) save the attributes as well as the cursor in tmux, where this
+    # runs; the RESET here relies on that, as Panel's paints do.
+    return f"{ESC}[{{row}};{start}H" + "".join(out) + RESET
 
 
 class Highlight:
@@ -336,15 +341,21 @@ class Highlight:
     whose card is up, or None: one readout at a time, and None (or any other
     key) puts the cells back from a fresh read, falling back to the copy taken
     when the highlight went on so it can never be left stuck.
+
+    Whether the key is still RIGHT (the readout may have moved, or a dialog
+    covered the line) is the caller's job: it re-reads the layout and passes the
+    answer in. This class only paints what it is told.
     """
 
     REFRESH = 0.1
+    BACKOFF = 1.0
 
     def __init__(self, write, shadow, cursor=lambda: ""):
         self.write, self.shadow, self.cursor = write, shadow, cursor
         self.cur = None
         self.plain = ""
         self.last = 0.0
+        self.retry_at = 0.0     # after a failed on(): no new attempt before this
 
     def _cells(self, key):
         row, x, w = key
@@ -358,12 +369,18 @@ class Highlight:
         self.write(f"{ESC}[s{ESC}[?25l{s}{self.cursor()}{ESC}[u", keep=keep)
 
     def on(self, key):
+        now = time.monotonic()
+        if now < self.retry_at:
+            return
         got = self._cells(key)
         if got is None:
-            note_rate("highlight-degrade", "highlight: the shadow screen could not answer, so the readout is not "
-                                           "highlighted (its card still works)")
+            self.retry_at = now + self.BACKOFF
+            # NFPTY_SHADOW=0 / a failed start is a choice already announced at startup.
+            if self.shadow is not None:
+                note_rate("highlight-degrade", "highlight: the shadow screen could not answer, so the readout is not "
+                                               "highlighted (its card still works)")
             return
-        self.cur, self.plain, self.last = key, got[1], time.monotonic()
+        self.cur, self.plain, self.last = key, got[1], now
         self._paint(got[0])
 
     def off(self):
@@ -388,15 +405,20 @@ class Highlight:
 
     def refresh(self):
         """The engine repainted: put the highlight back over what it drew.
-        ponytail: a tmux read per 0.1 s while a card is up; a dirty-cell check if that ever shows."""
+        ponytail: any engine output while a card is up costs a tmux read per REFRESH, and the
+        highlight is off between the engine's write and that repaint (up to REFRESH, a blink).
+        Both are bounded to card-open time; filter on the chunk touching the row if it shows."""
         now = time.monotonic()
         if self.cur is None or now - self.last < self.REFRESH:
             return
         got = self._cells(self.cur)
         self.last = now
-        if got is not None:
-            self.plain = got[1]
-            self._paint(got[0])
+        if got is None:
+            note_rate("highlight-refresh", "highlight: the shadow screen could not answer, so the highlight was not "
+                                           "repainted after the engine drew (it may be missing until the next read)")
+            return
+        self.plain = got[1]
+        self._paint(got[0])
 
     def forget(self):
         """Geometry changed: the engine repaints everything, so write nothing."""
@@ -751,11 +773,23 @@ def selfcheck():
     n = len(wr)
     h.sync((2, 3, 2))
     assert h.cur is None and len(wr) == n, "an unreadable shadow degrades: nothing painted, nothing stuck"
+    h.sync((2, 3, 2))
+    assert h.cur is None and len(wr) == n, "after a failed on(), no retry inside the backoff"
     sh.text = line
+    h.retry_at = 0.0
     h.sync((2, 3, 2)); h.sync((2, 8, 3))        # A -> B: A is restored, then B painted
     assert h.cur == (2, 8, 3) and HL not in wr[-2][0] and HL in wr[-1][0], wr[-2:]
     h.forget()
     assert h.cur is None
+    # Wide characters at the range edges are included whole, never half-painted.
+    wide = f"a{ESC}[31m\u4e2d\u6587{ESC}[0mz"          # a, two 2-cell chars (cols 2-3, 4-5), z at 6
+    assert cut(wide, 3, 2).startswith(f"{ESC}[{{row}};2H") and "\u4e2d\u6587" in cut(wide, 3, 2), \
+        "a wide char spilling into the range at its left edge is included whole"
+    assert "\u6587" in cut(wide, 2, 3) and cut(wide, 2, 3).count("\u4e2d") == 1 and "z" not in cut(wide, 2, 3), \
+        "a wide char starting on the last cell is included whole"
+    assert cut(wide, 6, 1).count("z") == 1 and "\u6587" not in cut(wide, 6, 1)
+    assert cut("", 4, 2, HL).endswith("  " + RESET), "empty line: blank cells with the look"
+    assert cut(line, 1, 1) .count("a") == 1, "range of one cell"
     print("nfpty ok")
 
 
@@ -1172,7 +1206,22 @@ def main():
                 guarded("panel.erase", panel.erase)
 
             def sync_hl():
+                if panel.shown and hl_dirty[0] and now - hl.last >= hl.REFRESH:
+                    # The engine drew while a card is up: is its readout still there, and where?
+                    # (a dialog over the line, or a figure that changed width, with the pointer still)
+                    covered = set(range(panel.rect[1], panel.rect[1] + panel.rect[3])) if panel.rect else set()
+                    layout.refresh(covered)
+                    cur_seg = next((s for s in layout.segs if s["id"] == panel.shown), None)
+                    if cur_seg is None:
+                        hide_at[0] = now          # gone: the card goes with it, through the normal erase
+                        shown_seg[0] = None
+                    else:
+                        shown_seg[0] = cur_seg
                 seg = shown_seg[0] if panel.shown else None
+                if seg and panel.rect and panel.rect[1] <= seg["row"] < panel.rect[1] + panel.rect[3]:
+                    note_once("highlight-card-over-row", "highlight: the card covers its own readout's row "
+                                                         "(terminal too small); not highlighting")
+                    seg = None
                 hl.sync((seg["row"], seg["x"], seg["w"]) if seg else None)
                 if hl_dirty[0] and hl.cur is not None and now - hl.last >= hl.REFRESH:
                     hl_dirty[0] = False
@@ -1189,7 +1238,14 @@ def main():
         # Whatever the exit path, leave the terminal usable: the engine resets
         # its own mouse modes on a clean exit, and on a crash nobody does.
         try:
-            hl.off()              # EIO/EPIPE (terminal gone) is handled below, with the reset
+            if status_box[0] is None:
+                hl.off()          # the engine is still up: put its cells back (an exited one may have cleared the screen)
+        except OSError as e:
+            if e.errno not in (errno.EIO, errno.EPIPE):
+                note_once("exit-highlight", f"could not take the highlight down on exit ({e})")
+        except Exception as e:
+            note_once("exit-highlight", f"could not take the highlight down on exit ({type(e).__name__}: {e})")
+        try:
             clean[0] = True
             flush_pending()
             out.write(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h")
