@@ -80,7 +80,7 @@ def main():
             time.sleep(0.5)
         else:
             sys.exit("window was never selected")
-        time.sleep(1.5)
+        time.sleep(3.0)
 
         def shot(name):
             p = subprocess.run(["winshot", "--exe", exe, "-o", os.path.join(out, name + ".png")],
@@ -91,13 +91,13 @@ def main():
         def hover(seg):
             col = seg["x"] + seg["w"] // 2
             tmux("send-keys", "-t", target, "-l", f"\033[<35;{col};{seg['row']}M")
-            time.sleep(1.0)
+            time.sleep(3.0)
 
         shot("1-baseline")
         hover(pick[0]); shot("2-hover-A")
         hover(pick[1]); shot("3-hover-B")
         tmux("send-keys", "-t", target, "-l", "\033[<35;3;3M")
-        time.sleep(1.0); shot("4-away")
+        time.sleep(3.0); shot("4-away")
     finally:
         tmux("kill-window", "-t", target)
         open(os.path.join(out, "done"), "w").write("done\n")
