@@ -157,15 +157,19 @@ let lastError = ''
 // Remote Control state. Claude Code used to show a green indicator for this
 // and no longer does, so the band carries its own.
 //
-// `$.session.surfaces()` is the source of truth: it lists every surface the
-// session draws on, `terminal` for the REPL plus any remote client in attach
-// order, so anything that is not `terminal` IS remote control. The attach and
-// detach events only timestamp the transitions; they are never the state
-// itself, because a reload would miss any that happened while we were gone.
+// The STATE comes from the bridge: the renderer reads CLAUDE_CODE_BRIDGE_SESSION_ID,
+// which Claude Code maintains in its own process (see the note above the chip, and
+// `--rc-sync`, which asks the same question for the main status line).
+// `$.session.surfaces()` is NOT the state: it answers "who is drawing right now".
+// It lists every surface the session draws on, `terminal` for the REPL plus any
+// remote client in attach order, so here it only supplies the LABEL (where it is
+// drawing). The attach and detach events only timestamp the transitions; they are
+// never the state itself, because a reload would miss any that happened while we
+// were gone.
 //
 // These are module variables, so a hot reload forgets them. That costs only
-// the two timestamps: the attached/not-attached state is re-read from
-// surfaces() on every render and is always correct. After a reload an active
+// the two timestamps: the state is re-read on every refresh and is always
+// correct, and the surfaces are re-read on every render. After a reload an active
 // session reads as "just attached"; the card says "since reload" then, via
 // rcSinceGuess, rather than presenting a guess as an observed time.
 let rcSinceGuess = false // rcSince was set by a render, not by an attach event
@@ -327,6 +331,7 @@ const FAIL_BACKOFF_MS = 5000
 const RC_SYNC_MS = 2000
 const RC_FAIL_MS = 5000
 const RC_TICK_MS = 5000
+const RC_ABORT_MS = 500
 let rcDebug = false // the last answer: draw the band row?
 // A sync that fails draws the band too: its red row is where the fault is explained, and hiding the
 // row would hide the one thing that says the record (and so the status line chip) is not being kept.
@@ -363,8 +368,12 @@ async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
       rcError = ''
       rcNextAt = now + RC_SYNC_MS
     } catch (err) {
-      // A superseded run is not a failure: the next render or tick asks again.
-      if (isAbort(err) && !isTimeout(String(err))) return
+      // A superseded run is not a failure and is not reported, but it backs off briefly: a burst of
+      // superseded renders must not respawn the binary on every one.
+      if (isAbort(err) && !isTimeout(String(err))) {
+        rcNextAt = now + RC_ABORT_MS
+        return
+      }
       rcError = note($, 'rc sync failed', err)
       rcFault = true
       rcNextAt = now + RC_FAIL_MS
@@ -408,13 +417,26 @@ export function resetStateForTests(): void {
 export const register: Register = on => {
   // The record must not depend on the band being drawn.
   on('session.start', async ($, e, next) => {
-    $.clock.every(RC_TICK_MS, () => {
-      rcTick($).catch(err => note($, 'rc sync tick', err))
-    })
+    // NERDFLAIR_RC_TIMER=0 turns this timer off. TEST ONLY: with it off, a record that still gets
+    // written while the band is hidden was written by ui.render, which is how a live run tells the
+    // two paths apart. Read with printenv, as HOME is; unset (exit 1) or anything else keeps the timer.
+    let timer = true
+    try {
+      const t = await $.process.run(['printenv', 'NERDFLAIR_RC_TIMER'], { timeoutMs: 2000 })
+      timer = !(t.exitCode === 0 && t.stdout.trim() === '0')
+    } catch (err) {
+      note($, 'rc timer switch', `printenv NERDFLAIR_RC_TIMER failed, timer left on: ${err}`)
+    }
+    if (timer) {
+      $.clock.every(RC_TICK_MS, () => {
+        rcTick($).catch(err => note($, 'rc sync tick', err))
+      })
+    }
     return next(e)
   })
-  // Timestamp the transitions. The state itself still comes from surfaces();
-  // these only make "attached 14m ago" and "left 8s ago" possible.
+  // Timestamp the transitions. The state comes from the bridge (the renderer's
+  // remote_control answer), not from these events or from surfaces(), which only
+  // gives the label; these only make "attached 14m ago" and "left 8s ago" possible.
   on('session.attach', async ($, e, next) => {
     if (e.surface !== 'terminal' && rcSince === 0) {
       rcSince = await $.clock.now()

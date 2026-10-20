@@ -33,8 +33,9 @@ run "" "$(payload 110000 30.5 2.10 10)" >/dev/null
 touch -d '2 hours ago' "$W/cache/limits-last" 2>/dev/null   # past the write throttle: a stray write would show
 # the plugin's Remote Control record for this session (--rc-sync is the only writer), aged past its 30 s throttle
 env -i PATH="$PATH" HOME="$W/home" NERDFLAIR_CACHE_DIR="$W/cache" NERDFLAIR_ERR_STAMP_DIR="$W/stamps" "$BIN" --rc-sync "$SID" web >/dev/null
-[[ -s "$W/cache/rc-${SID//[^a-zA-Z0-9]/_}" ]] || { echo "json-isolation: FAIL --rc-sync wrote no record"; exit 1; }
-touch -d '2 hours ago' "$W/cache/rc-${SID//[^a-zA-Z0-9]/_}"
+RCF="$W/cache/$("$BIN" --rc-name "$SID" </dev/null)"
+[[ -s "$RCF" ]] || { echo "json-isolation: FAIL --rc-sync wrote no record"; exit 1; }
+touch -d '2 hours ago' "$RCF"
 before=$(snap)
 grep -q "cache/rc-" <<<"$before" || { echo "json-isolation: FAIL the rc record is not among the files compared"; exit 1; }
 [[ -n "$before" ]] || { echo "json-isolation: FAIL real renders wrote no state to compare"; exit 1; }

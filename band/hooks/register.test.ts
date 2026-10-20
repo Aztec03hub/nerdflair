@@ -482,15 +482,35 @@ test('an answer without a debug line is a failure, not a silent hidden band', as
   expect(w.logs.some(l => l.includes('rc sync failed'))).toBe(true)
 })
 
-test('a superseded sync is retried by the next render, not reported', async ($, on) => {
+test('a superseded sync is retried after a short back-off, not reported, and not respawned by every render', async ($, on) => {
   let n = 0
-  const { w } = world(on, ok, { debug: false, sync: () => (++n === 1 ? { deny: 'HooksError: $.process.run(x) aborted' } : result(0, 'debug=0\n')) })
+  const { w, clock } = world(on, ok, { debug: false, sync: () => (++n <= 3 ? { deny: 'HooksError: $.process.run(x) aborted' } : result(0, 'debug=0\n')) })
 
   await drawOrEngine($)
   await drawOrEngine($)
+  await drawOrEngine($)
+  expect(n, 'three renders in the same instant: one spawn').toBe(1)
 
-  expect(n).toBe(2)
+  await clock.advance(600)
+  await drawOrEngine($)
+  expect(n, 'asked again once the back-off passed').toBe(2)
+  await clock.advance(600)
+  await drawOrEngine($)
+  await clock.advance(600)
+  await drawOrEngine($)
+  expect(n).toBe(4)
   expect(w.logs.filter(l => l.includes('rc sync'))).toEqual([])
+})
+
+test('NERDFLAIR_RC_TIMER=0 turns the session.start timer off (test-only switch), so ui.render alone can be observed', async ($, on) => {
+  const { w, clock } = world(on, argv => (argv[0] === 'printenv' && argv[1] === 'NERDFLAIR_RC_TIMER' ? result(0, '0\n') : ok(argv)), { debug: false })
+  await $.session.start({ cwd: '/work', surface: 'terminal' } as never).catch(() => undefined)
+
+  await clock.advance(20000)
+  expect(w.syncs, 'no timer, no render: nothing wrote the record').toEqual([])
+
+  await drawOrEngine($)
+  expect(w.syncs.length, 'ui.render still does').toBe(1)
 })
 
 test('the record is kept by a timer too, so it does not depend on ui.render firing for a hidden band', async ($, on) => {

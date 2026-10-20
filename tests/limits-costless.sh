@@ -19,7 +19,7 @@ render() { # impl record-or-empty payload  -> ANSI-stripped output on stdout
   # RC: the band plugin's Remote Control record for this payload's session, when the caller sets one
   if [[ -n "${RC:-}" ]]; then
     local sid; sid=$(jq -r .session_id <<<"$payload")
-    printf '%s\n' "$RC" > "$d/cache/rc-${sid//[^a-zA-Z0-9]/_}"
+    printf '%s\n' "$RC" > "$d/cache/$("$BIN" --rc-name "$sid" </dev/null)"
   fi
   cmd=("$BIN"); [[ $impl == bash ]] && cmd=(bash "$SH")
   printf '%s' "${payload//@DIR@/$d/work}" | env -i PATH="$PATH" HOME="$d/home" TMPDIR="$d" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
@@ -64,7 +64,9 @@ for impl in rust bash; do
     # the third variant adds a Remote Control readout: it must stay in the cost-less row too
     RC=""; if [[ "$rec" == *'|rc' ]]; then rec=${rec%|rc}; RC="v1 on $NOW web"; fi
   # ORDER: the cost-less row is the cost row minus the trailing cost, readout for readout.
-    norm() { sed 's/ \+/ /g; s/ *$//' <<<"$1"; }
+    # Countdowns are normalised: the two renders run a moment apart, and a countdown that sits on a minute
+    # boundary (2h30m, then 2h29m) is the clock, not the order of the row.
+    norm() { sed -E 's/ +/ /g; s/ *$//; s#/[0-9]+[dhm][0-9m]*#/<CD>#g' <<<"$1"; }
     # Under 2 minutes of session time there is no lifetime burn rate or ETA to differ on.
     # The cost-less row also carries the chime label (cost 0.00 only), which is not a readout of the cost row.
     costrow=$(DUR=100000 norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 1.25 "")" | rg -F context7 | head -n 1)")

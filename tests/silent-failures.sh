@@ -614,8 +614,9 @@ run_case limits-last-healthy       -                       0 s_limits_healthy
 # as amber "RC unknown" and logged once. A healthy or old "off" record is silent.
 rc_seed() { # line [age-seconds]
   local sid; sid=$(printf '%s' "$PAYLOAD" | jq -r .session_id)
-  printf '%s\n' "$1" > "$CASE_DIR/cache/rc-${sid//[^a-zA-Z0-9]/_}"
-  [[ -n "${2:-}" ]] && touch -d "$2 seconds ago" "$CASE_DIR/cache/rc-${sid//[^a-zA-Z0-9]/_}"
+  local f; f="$CASE_DIR/cache/$("$BIN" --rc-name "$sid" </dev/null)"
+  printf '%s\n' "$1" > "$f"
+  [[ -n "${2:-}" ]] && touch -d "$2 seconds ago" "$f"
   return 0
 }
 s_rc_corrupt() { rc_seed 'this is not a record'; }

@@ -364,4 +364,11 @@ emit "rc: on, no MCP configured (the left-hand layout carries it)" "$(mut '.')" 
 emit "rc: cost-less row (fresh session) equals the cost row minus cost" "$(mut ".cost.total_cost_usd=0 | $NOLIM")" "CASE_STATE=$(st full vibrant auto random 1)" "CASE_COLUMNS=160" "CASE_MCP=many" \
   "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_REPOCOST=1" "CASE_SEED_RC=$RCSEED"
 emit "rc: payload without a session_id: no readout" "$(mut 'del(.session_id)')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
+# session ids that are not plain: one file-name rule in both renderers
+LONGID=$(printf 'x%.0s' $(seq 300))
+emit "rc: 300-character session id: capped name plus checksum, found by both renderers" "$(mut ".session_id=\"$LONGID\"")" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
+emit "rc: non-ASCII session id (per byte, same in both locales' renderers)" "$(mut '.session_id="é日本-1"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
+emit "rc: session id a/b finds its own record" "$(mut '.session_id="a/b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
+emit "rc: session id a_b does not read the record of a/b (no collision): no readout" "$(mut '.session_id="a_b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_ID=a/b"
+emit "rc: session id a/b does not read the record of a_b: no readout" "$(mut '.session_id="a/b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_ID=a_b"
 echo "generated $N payloads in $OUT"

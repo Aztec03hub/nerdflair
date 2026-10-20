@@ -600,21 +600,22 @@ def _cards_fixtures(base):
             "detached": det, "noremote": mkrepo(os.path.join(base, "noremote"), dirty=True)}
 
 
-def _seed_rc(envfile, payload, cdir):
+def _seed_rc(envfile, payload, cdir, binary):
     """difftest's CASE_SEED_RC / CASE_SEED_RC_AGE for this payload (read from its .env, which is
     shell-quoted KEY='value'): write the rc-<session> record the renderer reads. Returns its path."""
     envs = {}
     with open(os.path.splitext(envfile)[0] + ".env") as fh:
         for ln in fh:
-            m = re.match(r"(CASE_SEED_RC(?:_AGE)?)='(.*)'$", ln.rstrip("\n"))
+            m = re.match(r"(CASE_SEED_RC(?:_AGE|_ID)?)='(.*)'$", ln.rstrip("\n"))
             if m:
                 envs[m.group(1)] = m.group(2).replace("'\\''", "'")
     if "CASE_SEED_RC" not in envs:
         return None
-    sid = json.loads(payload).get("session_id") or ""
+    sid = envs.get("CASE_SEED_RC_ID") or json.loads(payload).get("session_id") or ""
     if not sid:
         return None
-    path = os.path.join(cdir, "rc-" + re.sub("[^a-zA-Z0-9]", "_", sid))
+    name = subprocess.run([binary, "--rc-name", sid], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.strip()
+    path = os.path.join(cdir, name)
     with open(path, "w") as fh:
         fh.write(envs["CASE_SEED_RC"] + "\n")
     if envs.get("CASE_SEED_RC_AGE"):
@@ -630,7 +631,7 @@ def _cards_run(root, binary, env, fixtures, glob):
             # Same token shape as tests/difftest.sh (resolve_repo): [a-z0-9-]+
             payload = re.sub(r"@@REPO:([a-z0-9-]+)@@",
                              lambda m: fixtures.get(m.group(1), fixtures["dirty"]), fh.read())
-        rcfile = _seed_rc(f, payload, env["NERDFLAIR_CACHE_DIR"])
+        rcfile = _seed_rc(f, payload, env["NERDFLAIR_CACHE_DIR"], binary)
         try:
             out = subprocess.run([binary], input=payload, capture_output=True,
                                  encoding="utf-8", errors="replace", env=env).stdout

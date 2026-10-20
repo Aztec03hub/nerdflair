@@ -19,7 +19,7 @@ sync() { # [VAR=val ...] -- args...   (stdout in $OUT, exit status in $RC)
   while [[ "${1:-}" != -- ]]; do envs+=("$1"); shift; done; shift
   OUT=$(env -i PATH="$PATH" HOME="$W/home" NERDFLAIR_CACHE_DIR="$W/c" NERDFLAIR_ERR_STAMP_DIR="$W/stamps" ${envs[@]+"${envs[@]}"} "$BIN" --rc-sync "$@" 2>"$W/err"); RC=$?
 }
-F="$W/c/rc-sid_1"
+F="$W/c/rc-sid-1"
 fields() { awk -v a="$1" -v b="$2" -v c="$3" '{print $a" "$b" "$c}' "$F"; }
 
 sync -- sid-1 web; check "writes the record and exits 0" 0 "$RC"
@@ -48,7 +48,7 @@ check "an empty label leaves a line the renderers accept" "v1 off" "$(cut -d' ' 
 
 sync -- ''; check "no session id: exit 2" 2 "$RC"
 check "...and the reason is on stderr" "rc-sync: no session id" "$(cat "$W/err")"
-check "...and no stray file was written" 1 "$(ls "$W/c" | wc -l | tr -d ' ')"
+check "...and no stray record was written" 1 "$(ls "$W/c" | rg -c '^rc-')"
 
 # the flag: env, flag file, and the path override
 sync NERDFLAIR_BAND_DEBUG=1 -- sid-1; check "NERDFLAIR_BAND_DEBUG=1 turns the band on" "debug=1" "$OUT"
@@ -80,6 +80,34 @@ sync CLAUDE_CODE_BRIDGE_SESSION_ID=bridge-1 -- sid-1 web
 check "the status line shows what rc-sync wrote" 1 "$(render | rg -c '⬤ RC web')"
 sync -- sid-1
 check "...and follows it to off" 1 "$(render | rg -c '◯ RC off')"
+
+# pruning: rc-* records over 7 days old go, at most once a day, and only the writer does it
+C="$W/c"; rm -f "$C/nerdflair-rc-pruned"
+: > "$C/rc-old"; touch -d '8 days ago' "$C/rc-old"
+: > "$C/rc-recent"; touch -d '1 day ago' "$C/rc-recent"
+: > "$C/limits-last"; touch -d '30 days ago' "$C/limits-last"
+sync -- sid-1
+check "prune: a record over 7 days old is removed" 0 "$(ls "$C" | rg -c '^rc-old$' || echo 0)"
+check "prune: a record from yesterday is kept" 1 "$(ls "$C" | rg -c '^rc-recent$' || echo 0)"
+check "prune: a file that is not an rc record is left alone" 1 "$(ls "$C" | rg -c '^limits-last$' || echo 0)"
+check "prune: the live record is kept" 1 "$(ls "$C" | rg -c '^rc-sid-1$' || echo 0)"
+: > "$C/rc-old2"; touch -d '9 days ago' "$C/rc-old2"
+sync -- sid-1
+check "prune: at most once a day (the stamp is fresh)" 1 "$(ls "$C" | rg -c '^rc-old2$' || echo 0)"
+touch -d '2 days ago' "$C/nerdflair-rc-pruned"
+sync -- sid-1
+check "prune: runs again once the stamp is over a day old" 0 "$(ls "$C" | rg -c '^rc-old2$' || echo 0)"
+: > "$C/rc-old3"; touch -d '9 days ago' "$C/rc-old3"; touch -d '2 days ago' "$C/nerdflair-rc-pruned"
+render >/dev/null
+check "prune: a render never prunes" 1 "$(ls "$C" | rg -c '^rc-old3$' || echo 0)"
+
+# one file-name rule: no collisions, no traversal, a cap
+check "name: a plain id is kept" "rc-sid-1" "$("$BIN" --rc-name sid-1 </dev/null)"
+check "name: a/b and a_b get different files" 1 "$([[ "$("$BIN" --rc-name a/b </dev/null)" != "$("$BIN" --rc-name a_b </dev/null)" ]] && echo 1 || echo 0)"
+check "name: ../../evil stays a plain file name" 1 "$("$BIN" --rc-name ../../evil </dev/null | rg -c '^rc-[A-Za-z0-9_-]+$')"
+check "name: 300 characters are capped" 1 "$([[ $("$BIN" --rc-name "$(printf 'x%.0s' $(seq 300))" </dev/null | wc -c) -lt 100 ]] && echo 1 || echo 0)"
+sync -- "$(printf 'x%.0s' $(seq 300))" web
+check "name: a 300-character id can be written" 0 "$RC"
 
 if (( fail )); then echo "rc-sync: FAIL"; exit 1; fi
 echo "rc-sync: PASS"

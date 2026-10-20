@@ -54,20 +54,20 @@ How it stays out of the way:
 
 The Remote Control (RC) state is a readout on the main status line, next to tmux and MCP health: a green `⬤ RC web` while a bridge is attached (the label is where it is drawing, else `on`), a grey `◯ RC off`, an amber `? RC unknown`. It has a hover card and the same background highlight as every other readout, in the state's colour. The Rust renderer and the bash twin draw it byte for byte alike.
 
-Nothing in a renderer can ask Claude Code whether a bridge is attached, so the `nerdflair-band` plugin (`band/sync-local-plugin.sh` installs it) tells it. Every few seconds it runs `nerdflair-statusline --rc-sync <session id> <label>`, which writes one line into the private cache dir (0700, atomic, never through a symlink), as `rc-<session id>`:
+Nothing in a renderer can ask Claude Code whether a bridge is attached, so the `nerdflair-band` plugin (`band/sync-local-plugin.sh` installs it) tells it. Every few seconds it runs `nerdflair-statusline --rc-sync <session id> <label>`, which writes one line into the private cache dir (0700, atomic, never through a symlink), as `rc-<session id>` (the id with anything outside `A-Za-z0-9_-` turned into `_` byte by byte and cut to 64 characters; when that changed anything, `-<cksum of the raw id>` is appended so `a/b` and `a_b` never share a file. Both renderers and the writer use the same rule; `--rc-name <id>` prints it for tests):
 
 ```
 v1 on|off|unknown <since-epoch> <label>
 ```
 
-It writes only when the state or label changed, or the file is over 30 s old, and never when the plugin can't tell the session id. The renderer reads it and decides:
+It writes only when the state or label changed, or the file is over 30 s old, and never when the plugin can't tell the session id. Once a day the writer also deletes `rc-*` files over 7 days old (never a render, never `--json`). The renderer reads it and decides:
 
 - no file: the plugin isn't loaded, nothing is shown and nothing is invented
 - `on` and over 120 s old: the plugin stopped refreshing it, so amber unknown, logged once (`rc-stale`)
 - a corrupt file (wrong shape, unknown state, a label outside letters, digits, space and `+._-`, or over 24 characters): amber unknown, logged once (`rc`)
 - `--json` (the band's call) never writes or reads it
 
-The band row itself (the plugin's tree above the prompt) is now off by default. Touch `~/.claude/nerdflair/band-debug` or start Claude Code with `NERDFLAIR_BAND_DEBUG=1` to draw it for debugging; `NERDFLAIR_BAND_DEBUG_FILE` moves the flag file (the tests use it). With the flag the band behaves exactly as before. A failing sync draws the band even without the flag, so the fault shows. The plugin keeps the record from the render hook and from a `session.start` timer, so it doesn't depend on the engine drawing a band that has nothing to show. `tests/rc-sync.sh` and the `rc` cases in `tests/difftest.sh` and `tests/silent-failures.sh` cover it, and `mklayout.py`'s drift check holds the colours, glyphs and card lines of the plugin, `rust/src/rc.rs` and the hover card together.
+The band row itself (the plugin's tree above the prompt) is now off by default. Touch `~/.claude/nerdflair/band-debug` or start Claude Code with `NERDFLAIR_BAND_DEBUG=1` to draw it for debugging; `NERDFLAIR_BAND_DEBUG_FILE` moves the flag file (the tests use it). With the flag the band behaves exactly as before. A failing sync draws the band even without the flag, so the fault shows. The plugin keeps the record from the render hook and from a `session.start` timer, so it doesn't depend on the engine drawing a band that has nothing to show. `NERDFLAIR_RC_TIMER=0` turns that timer off (test-only, default on), so a live run can tell whether `ui.render` alone keeps the record. `tests/rc-sync.sh` and the `rc` cases in `tests/difftest.sh` and `tests/silent-failures.sh` cover it, and `mklayout.py`'s drift check holds the colours, glyphs and card lines of the plugin, `rust/src/rc.rs` and the hover card together.
 
 ### When something degrades, it says so
 

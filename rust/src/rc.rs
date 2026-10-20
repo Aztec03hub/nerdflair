@@ -69,8 +69,37 @@ fn parse(line: &str) -> Option<Rec> {
     Some(Rec { state, since: since.parse().ok()?, label: label.to_string() })
 }
 
+/// POSIX `cksum` of the bytes (the bash twin shells out to cksum for the same number).
+fn cksum(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    let mut feed = |b: u8| {
+        crc ^= (b as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+        }
+    };
+    data.iter().for_each(|b| feed(*b));
+    let mut n = data.len();
+    while n > 0 {
+        feed((n & 0xff) as u8);
+        n >>= 8;
+    }
+    !crc
+}
+
+/// The record's file name for a session id. ONE rule, shared with `_nf_rc_name` in statusline.sh:
+/// keep ASCII [A-Za-z0-9_-], every other BYTE becomes `_`, cap at 64; when anything was changed
+/// or cut, append `-<cksum of the raw id>` so `a/b` and `a_b` cannot share a file.
+pub fn rc_name(session: &str) -> String {
+    let mapped: String = session.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' { b as char } else { '_' }).collect();
+    if mapped == session && mapped.len() <= 64 {
+        return format!("rc-{}", mapped);
+    }
+    format!("rc-{}-{}", &mapped[..mapped.len().min(64)], cksum(session.as_bytes()))
+}
+
 fn path_for(session: &str) -> Option<std::path::PathBuf> {
-    cache_path(&format!("rc-{}", slugify(session)))
+    cache_path(&rc_name(session))
 }
 
 fn draw(state: St, label: &str) -> String {
@@ -107,6 +136,33 @@ pub fn segment(session: &str) -> String {
     draw(rec.state, &rec.label)
 }
 
+/// Records of sessions long gone: at most once a day (a stamp file beside them), drop `rc-*` files
+/// over 7 days old. Only the writer does this, never a render and never --json.
+fn prune_old(rec: &Path) {
+    let Some(dir) = rec.parent() else { return };
+    let stamp = dir.join("nerdflair-rc-pruned");
+    if stamp.is_file() && file_age(&stamp) < 86_400 {
+        return;
+    }
+    if let Err(e) = cache_write(&stamp, b"1") {
+        errlog::note_io("rc-prune", &format!("cannot write {}; old rc records not pruned", stamp.display()), &e);
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for ent in rd.flatten() {
+        let name = ent.file_name();
+        let p = ent.path();
+        if name.to_string_lossy().starts_with("rc-")
+            && std::fs::symlink_metadata(&p).map_or(false, |m| m.is_file())
+            && file_age(&p) > 7 * 86_400
+        {
+            if let Err(e) = std::fs::remove_file(&p) {
+                errlog::note_io("rc-prune", &format!("cannot remove {}", p.display()), &e);
+            }
+        }
+    }
+}
+
 fn debug_on() -> bool {
     if std::env::var("NERDFLAIR_BAND_DEBUG").map_or(false, |v| !v.is_empty() && v != "0") {
         return true;
@@ -122,6 +178,12 @@ fn debug_on() -> bool {
 /// OUR environment (inherited from Claude Code on this very spawn), writes the rc
 /// file when the state or label changed or it is over 30 s old, and prints
 /// `debug=1` or `debug=0` (whether the band row is to be drawn).
+/// `--rc-name <id>`: prints the record's file name. Test helper, so the tests seed files by the real rule.
+pub fn name(args: &[String]) -> i32 {
+    println!("{}", rc_name(args.first().map(String::as_str).unwrap_or("")));
+    0
+}
+
 pub fn sync(args: &[String]) -> i32 {
     let sid = args.first().map(String::as_str).unwrap_or("");
     if sid.is_empty() {
@@ -154,6 +216,7 @@ pub fn sync(args: &[String]) -> i32 {
             return 4;
         }
     }
+    prune_old(&p);
     println!("debug={}", if debug_on() { 1 } else { 0 });
     0
 }
@@ -171,6 +234,19 @@ mod tests {
         for bad in ["", "v2 on 5", "v1 maybe 5", "v1 on", "v1 on x", "v1 on 1234567890123456", "v1 on 5 we$b", "v1 on 5 abcdefghijklmnopqrstuvwxyz", "v1  on 5", "v1 on  5"] {
             assert!(parse(bad).is_none(), "{bad:?} must be corrupt");
         }
+    }
+
+    #[test]
+    fn cksum_is_posix_and_names_follow_one_rule() {
+        assert_eq!(cksum(b"abc"), 1219131554);
+        assert_eq!(cksum(b""), 4294967295);
+        assert_eq!(rc_name("705691a5-211f-4545-aa3f"), "rc-705691a5-211f-4545-aa3f");
+        assert_ne!(rc_name("a/b"), rc_name("a_b"));
+        assert_eq!(rc_name("a_b"), "rc-a_b");
+        assert!(rc_name("a/b").starts_with("rc-a_b-"));
+        assert!(rc_name(&"x".repeat(300)).len() < 100);
+        assert!(rc_name("\u{e9}").starts_with("rc-__-"), "per byte, not per char");
+        assert!(!rc_name("../../evil").contains('/') && !rc_name("../../evil").contains('.'));
     }
 
     #[test]

@@ -2292,9 +2292,19 @@ fi
 # rc-<session id>: `v1 on|off|unknown <since-epoch> <label>`. Nothing here can ask Claude Code, so
 # this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" over 120 s
 # old (the plugin rewrites it every 30 s), draws UNKNOWN in amber and logs once. Twin of rc.rs.
+# The record's file name for a session id: ONE rule, twin of rc::rc_name. Keep ASCII [A-Za-z0-9_-],
+# every other BYTE becomes _ (hence LC_ALL=C), cap at 64; when anything was changed or cut, append
+# -<POSIX cksum of the raw id>, so a/b and a_b cannot share a file. Only forks when it must.
+_nf_rc_name() {
+  local LC_ALL=C _m _crc
+  _m="${1//[^A-Za-z0-9_-]/_}"
+  if [[ "$_m" == "$1" && ${#_m} -le 64 ]]; then _NF_RCN="rc-$_m"; return 0; fi
+  read -r _crc _ < <(printf '%s' "$1" | cksum)
+  _NF_RCN="rc-${_m:0:64}-$_crc"
+}
 rc_segment=""
 if [[ -n "$session_id" ]]; then
-  _nf_cache_path "rc-${session_id//[^a-zA-Z0-9]/_}"; _rc_file="$_NF_CP"
+  _nf_rc_name "$session_id"; _nf_cache_path "$_NF_RCN"; _rc_file="$_NF_CP"
   if [[ -n "$_rc_file" && -e "$_rc_file" ]]; then
     _rc_st="unknown"; _rc_lab=""
     _rc_re='^v1 (on|off|unknown) ([0-9]{1,15})( ([A-Za-z0-9 +._-]{0,24}))?$'

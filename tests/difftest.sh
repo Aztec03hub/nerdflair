@@ -408,8 +408,9 @@ run_side() {
   if [[ -n "${CASE_SEED_RC:-}" ]]; then
     # The band plugin's Remote Control record for this payload's session (rc-<slug of session_id>).
     # CASE_SEED_RC_AGE backdates its mtime, for the stale rule.
-    local rsid rcf; rsid=$(jq -r '.session_id // empty' "$outdir/payload.json")
-    rcf="$CACHE_DIR/rc-${rsid//[^a-zA-Z0-9]/_}"
+    # CASE_SEED_RC_ID names a DIFFERENT session id to seed under (the collision cases).
+    local rsid rcf; rsid=${CASE_SEED_RC_ID:-$(jq -r '.session_id // empty' "$outdir/payload.json")}
+    rcf="$CACHE_DIR/$("$RUST_IMPL" --rc-name "$rsid" </dev/null)"
     printf '%s\n' "$CASE_SEED_RC" > "$rcf"
     [[ -n "${CASE_SEED_RC_AGE:-}" ]] && touch -d "@$(( EPOCHSECONDS - CASE_SEED_RC_AGE ))" "$rcf"
   fi
@@ -511,7 +512,7 @@ for id in "${CASES[@]}"; do
   # ── per-case environment directives ───────────────────────────────────
   CASE_STATE=""; CASE_COLUMNS=""; CASE_TMUX=""; CASE_MCP=""
   CASE_SEED_CCUSAGE=""; CASE_SEED_MCPHEALTH=""; CASE_SEED_TMUX=""
-  CASE_SEED_REPOCOST=""; CASE_SESSION_CHIME=""; CASE_EXTRA_ENV=""; CASE_SEED_LIMITS=""; CASE_SEED_RC=""; CASE_SEED_RC_AGE=""
+  CASE_SEED_REPOCOST=""; CASE_SESSION_CHIME=""; CASE_EXTRA_ENV=""; CASE_SEED_LIMITS=""; CASE_SEED_RC=""; CASE_SEED_RC_AGE=""; CASE_SEED_RC_ID=""
   # shellcheck disable=SC1090
   [[ -s "$PAYLOAD_DIR/$id.env" ]] && source "$PAYLOAD_DIR/$id.env"
 

@@ -40,6 +40,10 @@ fn main() {
         let args: Vec<String> = std::env::args().skip(2).collect();
         std::process::exit(rc::sync(&args));
     }
+    if std::env::args().nth(1).as_deref() == Some("--rc-name") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(rc::name(&args));
+    }
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
         errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
