@@ -11,6 +11,7 @@ mod errlog;
 mod fmtx;
 mod jqx;
 mod proc;
+mod rc;
 mod state;
 mod util;
 
@@ -33,6 +34,11 @@ fn main() {
     // renderer panic, so this env var does. Never set it outside that test.
     if std::env::var_os("NERDFLAIR_TEST_PANIC").is_some() {
         panic!("NERDFLAIR_TEST_PANIC is set (test-only panic)");
+    }
+    // The band plugin's call: write the Remote Control state file. No payload, no render.
+    if std::env::args().nth(1).as_deref() == Some("--rc-sync") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(rc::sync(&args));
     }
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
@@ -1762,6 +1768,9 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
     }
 
+    // ── Remote Control (written by the band plugin; --json leaves it to the band's own chip) ──
+    let rc_segment_main = if json_mode() { String::new() } else { rc::segment(&f.session_id) };
+
     // ── Rate limits ──────────────────────────────────────────────
     let rl_part = |pct_s: &str, reset: &str, label: &str| -> String {
         if pct_s.is_empty() {
@@ -1881,6 +1890,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         for seg in [
             &chime_segment,
             &tmux_segment,
+            &rc_segment_main,
             &mcphealth_segment,
             &limits_segment,
             &compact_segment,
@@ -1904,6 +1914,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         for extra in [
             &chime_segment,
             &tmux_segment,
+            &rc_segment_main,
             &mcphealth_segment,
             &limits_segment,
             &compact_segment,
@@ -2036,6 +2047,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         || !block_segment.is_empty()
         || !limits_segment.is_empty()
         || !mcphealth_segment.is_empty()
+        || !rc_segment_main.is_empty()
         || !compact_segment.is_empty()
         || !repocost_segment.is_empty()
     {
@@ -2058,6 +2070,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
         for extra in [
             &tmux_segment,
+            &rc_segment_main,
             &burn_segment,
             &block_segment,
             &repocost_segment,

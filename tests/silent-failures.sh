@@ -608,6 +608,35 @@ run_case limits-last-two-lines     -                       0 s_limits_twoline ch
 run_case limits-last-far-reset     limits-last             1 s_limits_farreset
 run_case limits-last-corrupt       limits-last             1 s_limits_corrupt
 run_case limits-last-healthy       -                       0 s_limits_healthy
+
+# Remote Control record (rc-<session>, written by the band plugin): no record = the plugin is not
+# loaded = nothing shown, silently. A corrupt record, or an "on" nobody refreshed for 120 s, is drawn
+# as amber "RC unknown" and logged once. A healthy or old "off" record is silent.
+rc_seed() { # line [age-seconds]
+  local sid; sid=$(printf '%s' "$PAYLOAD" | jq -r .session_id)
+  printf '%s\n' "$1" > "$CASE_DIR/cache/rc-${sid//[^a-zA-Z0-9]/_}"
+  [[ -n "${2:-}" ]] && touch -d "$2 seconds ago" "$CASE_DIR/cache/rc-${sid//[^a-zA-Z0-9]/_}"
+  return 0
+}
+s_rc_corrupt() { rc_seed 'this is not a record'; }
+s_rc_stale_on() { rc_seed "v1 on $NOW web" 600; }
+s_rc_healthy() { rc_seed "v1 on $NOW web" 5; }
+s_rc_old_off() { rc_seed "v1 off $NOW off" 600; }
+s_rc_missing() { :; }
+chk_rc_shows() { # impl; WANT_RC is the exact text the first render must contain, or "-" for none
+  local got=0; rg -qF -- "$WANT_RC" "$CASE_DIR/out.1" && got=1
+  if [[ "$WANT_RC" == "-" ]]; then rg -qF -- " RC " "$CASE_DIR/out.1" && got=1 || got=0; check "rc [$1]: no readout drawn" 0 "$got"
+  else check "rc [$1]: the status line shows '$WANT_RC'" 1 "$got"; fi
+}
+chk_rc_unknown() { WANT_RC="RC unknown" chk_rc_shows "$1"; }
+chk_rc_web() { WANT_RC="RC web" chk_rc_shows "$1"; }
+chk_rc_off() { WANT_RC="RC off" chk_rc_shows "$1"; }
+chk_rc_none() { WANT_RC="-" chk_rc_shows "$1"; }
+run_case rc-corrupt                rc                      1 s_rc_corrupt chk_rc_unknown
+run_case rc-stale-on               rc-stale                1 s_rc_stale_on chk_rc_unknown
+run_case rc-healthy                -                       0 s_rc_healthy chk_rc_web
+run_case rc-old-off                -                       0 s_rc_old_off chk_rc_off
+run_case rc-missing                -                       0 s_rc_missing chk_rc_none
 run_case limits-last-missing       -                       0 s_none
 run_case limits-last-from-payload  -                       0 s_limits_payload chk_limits_written
 run_case multi-cache-unreadable    multi-cache-read 1 s_multi_cache_locked chk_multi_cache_rm

@@ -16,6 +16,11 @@ render() { # impl record-or-empty payload  -> ANSI-stripped output on stdout
   mkdir -p "$d/home/.claude/nerdflair" "$d/work"; mkdir -m 700 "$d/cache"
   printf '{"numStartups":7,"mcpServers":{"context7":{"command":"x"}},"projects":{}}' > "$d/home/.claude.json"
   [[ -n "$rec" ]] && printf '%s\n' "$rec" > "$d/cache/limits-last"
+  # RC: the band plugin's Remote Control record for this payload's session, when the caller sets one
+  if [[ -n "${RC:-}" ]]; then
+    local sid; sid=$(jq -r .session_id <<<"$payload")
+    printf '%s\n' "$RC" > "$d/cache/rc-${sid//[^a-zA-Z0-9]/_}"
+  fi
   cmd=("$BIN"); [[ $impl == bash ]] && cmd=(bash "$SH")
   printf '%s' "${payload//@DIR@/$d/work}" | env -i PATH="$PATH" HOME="$d/home" TMPDIR="$d" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
     NERDFLAIR_CACHE_DIR="$d/cache" NERDFLAIR_ERR_STAMP_DIR="$d/st" NERDFLAIR_MCP_HEALTH=0 \
@@ -55,7 +60,9 @@ for impl in rust bash; do
   expect "both absent, no record: nothing" $impl "$(render $impl "" "$(base 1.25 "")")" "!5h" "!7d"
   expect "cost 0.00 with MCP configured: api time and block stay" $impl \
     "$(render $impl "v1 42:$PAST 71:$PAST" "$(base 0 "")")" "context7" " 4m" "idle" "5h 0%"
-  for rec in "v1 42:$PAST 71:$PAST" "v1 42:$FUT5 71:$FUT7"; do
+  for rec in "v1 42:$PAST 71:$PAST" "v1 42:$FUT5 71:$FUT7" "v1 42:$FUT5 71:$FUT7|rc"; do
+    # the third variant adds a Remote Control readout: it must stay in the cost-less row too
+    RC=""; if [[ "$rec" == *'|rc' ]]; then rec=${rec%|rc}; RC="v1 on $NOW web"; fi
   # ORDER: the cost-less row is the cost row minus the trailing cost, readout for readout.
     norm() { sed 's/ \+/ /g; s/ *$//' <<<"$1"; }
     # Under 2 minutes of session time there is no lifetime burn rate or ETA to differ on.
@@ -67,8 +74,10 @@ for impl in rust bash; do
     [[ "$nocost" == "$want" ]] && printf '  PASS  cost-less row equals the cost row minus the cost [%s]\n' $impl \
       || { printf '  FAIL  cost-less row differs from the cost row [%s]\n        cost row minus cost: %s\n        cost-less row:       %s\n' $impl "$want" "$nocost"; fail=1; }
     expect "cost-less row keeps limits" $impl "$nocost" "5h " "7d "
+    [[ -n "$RC" ]] && expect "cost-less row keeps the Remote Control readout" $impl "$nocost" "RC web"
     [[ "$nocost" =~ 5h\ [0-9]+%.*\ 4m ]] && printf '  PASS  row order [%s]\n' $impl || { printf '  FAIL  row order [%s]: %s\n' $impl "$nocost"; fail=1; }
   done
 done
+RC=""
 (( fail )) && { echo "limits-costless: FAIL"; exit 1; }
 echo "limits-costless: PASS"

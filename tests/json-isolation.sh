@@ -31,12 +31,18 @@ snap() { ( cd "$W" && find cache ledger.tsv -type f 2>/dev/null | sort | xargs s
 run "" "$(payload 100000 30.5 2.00 10)" >/dev/null
 run "" "$(payload 110000 30.5 2.10 10)" >/dev/null
 touch -d '2 hours ago' "$W/cache/limits-last" 2>/dev/null   # past the write throttle: a stray write would show
+# the plugin's Remote Control record for this session (--rc-sync is the only writer), aged past its 30 s throttle
+env -i PATH="$PATH" HOME="$W/home" NERDFLAIR_CACHE_DIR="$W/cache" NERDFLAIR_ERR_STAMP_DIR="$W/stamps" "$BIN" --rc-sync "$SID" web >/dev/null
+[[ -s "$W/cache/rc-${SID//[^a-zA-Z0-9]/_}" ]] || { echo "json-isolation: FAIL --rc-sync wrote no record"; exit 1; }
+touch -d '2 hours ago' "$W/cache/rc-${SID//[^a-zA-Z0-9]/_}"
 before=$(snap)
+grep -q "cache/rc-" <<<"$before" || { echo "json-isolation: FAIL the rc record is not among the files compared"; exit 1; }
 [[ -n "$before" ]] || { echo "json-isolation: FAIL real renders wrote no state to compare"; exit 1; }
-run --json "$(payload 1 30 9.99 77)" | head -c 40 >/dev/null
+jout=$(run --json "$(payload 1 30 9.99 77)")
 after=$(snap)
+if grep -q '"id":"rc"' <<<"$jout"; then echo "  FAIL  --json emitted an rc segment (the band draws its own chip)"; echo "json-isolation: FAIL"; exit 1; fi
 if [[ "$before" == "$after" ]]; then
-  echo "  PASS  --json leaves the sample, stamp, ledger and limits-last files byte-identical"
+  echo "  PASS  --json leaves the sample, stamp, ledger, limits-last and rc record files byte-identical"
   echo "json-isolation: PASS"
 else
   echo "  FAIL  --json changed state the real line owns:"

@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import unicodedata
 
 import nflog
@@ -86,10 +87,8 @@ CARDS = [
     ("model", "|(Opus|Sonnet|Haiku)", "Model", (196, 181, 253), [
         "model.display_name, else model.id",
     ]),
-    ("remote_control", r"^\W*rc\b", "Remote Control", (74, 222, 128), [
-        "whether another surface is attached to this session",
-        "green while attached, amber just after it left, grey when off",
-    ]),
+    # The body and colour are per STATE (see RC_STATES); this row only recognises the readout.
+    ("rc", r"^\W*RC\b", "Remote Control", (74, 222, 128), []),
     ("tmux", "", "tmux session", (56, 189, 248), [
         "the tmux session this pane lives in, from $TMUX",
     ]),
@@ -129,6 +128,23 @@ CARDS = [
     ]),
 ]
 
+# The Remote Control readout is one id with three looks. The card text and colour are per state, and
+# the shared lines are register.tsx's own wording (rc_drift holds them together, and the colours
+# against the renderer's rc.rs). state -> (glyph, accent rgb, shared lines, extra lines)
+RC_STATES = {
+    "on": ("\u2b24", (74, 222, 128), [
+        "a Remote Control bridge is attached to this session",
+        "anything typed there runs here, in this working directory",
+    ], ["the label is where it is drawing, else just on"]),
+    "off": ("\u25ef", (75, 85, 99), [
+        "no remote client attached; terminal only",
+    ], ["grey is a real answer: the plugin says off"]),
+    "unknown": ("?", (251, 191, 36), [
+        "the renderer did not say whether Remote Control is on",
+    ], ["the record is missing its refresh (over 120 s old while on) or corrupt; see the error log"]),
+}
+RC_COMMON = ["written by the band plugin each few seconds, read by this line"]
+
 GENERIC = ("Readout", (156, 163, 175),
            ["this readout has no card of its own yet",
             "its value is shown above"])
@@ -137,9 +153,17 @@ GENERIC = ("Readout", (156, 163, 175),
 MIN_W = 2
 
 
+def rc_state(text):
+    """on / off / unknown, from the glyph the renderer drew."""
+    return next((k for k, v in RC_STATES.items() if text.lstrip().startswith(v[0])), "unknown")
+
+
 def classify(text):
     for _id, pat, title, rgb, body in CARDS:
         if re.search(pat, text):
+            if _id == "rc":
+                _g, rgb, shared, extra = RC_STATES[rc_state(text)]
+                body = shared + extra + RC_COMMON
             return _id, title, rgb, body
     title, rgb, body = GENERIC
     return None, title, rgb, body
@@ -292,6 +316,35 @@ def selfcheck():
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "..", "hooks", "register.tsx"), encoding="utf-8") as f:
         tsx = f.read()
+    root = os.path.join(here, "..", "..")
+    rc_drift(root)
+    # The Remote Control readout: one id, the colour of the state its glyph names.
+    for txt, st, rgb in (("\u2b24 RC web", "on", (74, 222, 128)), ("\u25ef RC off", "off", (75, 85, 99)), ("? RC unknown", "unknown", (251, 191, 36))):
+        got = classify(txt)
+        assert got[0] == "rc" and rc_state(txt) == st and got[2] == rgb and got[3], (txt, got)
+    # ...and the drift guard sees a changed colour in either copy, or a reworded card line.
+    import shutil
+    import tempfile
+    for rel, old_s, new_s in (("band/hooks/register.tsx", "#4b5563", "#4b5564"), ("rust/src/rc.rs", "75;85;99", "75;85;98"),
+                              ("band/hooks/register.tsx", "no remote client attached; terminal only", "no remote client is attached")):
+        tmp = tempfile.mkdtemp(prefix="nf-rcdrift-")
+        try:
+            for f in ("band/hooks/register.tsx", "rust/src/rc.rs"):
+                os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
+                shutil.copy(os.path.join(root, f), os.path.join(tmp, f))
+            with open(os.path.join(tmp, rel), encoding="utf-8") as fh:
+                body = fh.read()
+            assert old_s in body, (rel, old_s)
+            with open(os.path.join(tmp, rel), "w", encoding="utf-8") as fh:
+                fh.write(body.replace(old_s, new_s))
+            try:
+                rc_drift(tmp)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"rc_drift must see {old_s!r} -> {new_s!r} in {rel}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     text_drift(os.path.join(here, "..", ".."))     # the card TEXTS of limits and block match register.tsx (colours: band_drift)
     assert band_drift(tsx) == [], band_drift(tsx)
     assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
@@ -416,6 +469,29 @@ def text_drift(root):
         assert lines == mk[4], f"card {cid}: lines drifted between register.tsx and mklayout.py:\n  tsx: {lines}\n  py:  {mk[4]}"
 
 
+def rc_drift(root):
+    """The Remote Control look exists three times: register.tsx (the band chip), rc.rs (the status
+    line) and RC_STATES here (the hover card and highlight). Colours, glyphs and shared card lines
+    must agree, or the highlight is a different colour than the readout it sits on."""
+    def read(*p):
+        with open(os.path.join(root, *p), encoding="utf-8") as fh:
+            return fh.read()
+    tsx, rs = read("band", "hooks", "register.tsx"), read("rust", "src", "rc.rs")
+    hexes = {k: re.search(r"const RC_%s = '(#[0-9a-fA-F]{6})'" % k, tsx) for k in ("GREEN", "AMBER", "OFF")}
+    for k, m in hexes.items():
+        assert m, f"drift guard: no RC_{k} constant in register.tsx"
+    for state, key in (("on", "GREEN"), ("off", "OFF"), ("unknown", "AMBER")):
+        glyph, rgb, shared, _extra = RC_STATES[state]
+        want = "#%02x%02x%02x" % rgb
+        assert hexes[key].group(1).lower() == want, f"rc {state}: register.tsx {hexes[key].group(1)} vs mklayout.py {want}"
+        m = re.search(r'const %s: &str = "\\x1b\[38;2;(\d+);(\d+);(\d+)m"' % key, rs)
+        assert m and tuple(map(int, m.groups())) == rgb, f"rc {state}: rc.rs colour {m and m.groups()} vs mklayout.py {rgb}"
+        assert f"glyph: '{glyph}'" in tsx, f"rc {state}: glyph {glyph!r} not in register.tsx"
+        assert glyph in rs or "\\u{%x}" % ord(glyph) in rs, f"rc {state}: glyph {glyph!r} not in rc.rs"
+        for line in shared:
+            assert line in tsx, f"rc {state}: card line drifted from register.tsx: {line!r}"
+
+
 def cards_check():
     """Every readout the REAL renderer draws must land on a card of its own.
 
@@ -430,6 +506,7 @@ def cards_check():
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
     text_drift(root)
+    rc_drift(root)
     # The tmux readout comes from a per-pane cache, else from a live tmux; seed
     # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
@@ -475,9 +552,10 @@ def _cards_check_body(root, binary, pane, cdir):
         shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
-    want = {c[0] for c in CARDS} - {"remote_control", "ahead"}
-    # remote_control is drawn by the band, and ahead shares a piece with dirty.
+    want = {c[0] for c in CARDS} - {"ahead"}
+    # ahead shares a piece with dirty. rc is reached through the seeded rc-<session> files, in all three looks.
     assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
+    assert {"rc:on", "rc:off", "rc:unknown"} <= seen, f"rc looks no payload reaches: {sorted({'rc:on', 'rc:off', 'rc:unknown'} - seen)}"
     print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
 
 
@@ -522,6 +600,29 @@ def _cards_fixtures(base):
             "detached": det, "noremote": mkrepo(os.path.join(base, "noremote"), dirty=True)}
 
 
+def _seed_rc(envfile, payload, cdir):
+    """difftest's CASE_SEED_RC / CASE_SEED_RC_AGE for this payload (read from its .env, which is
+    shell-quoted KEY='value'): write the rc-<session> record the renderer reads. Returns its path."""
+    envs = {}
+    with open(os.path.splitext(envfile)[0] + ".env") as fh:
+        for ln in fh:
+            m = re.match(r"(CASE_SEED_RC(?:_AGE)?)='(.*)'$", ln.rstrip("\n"))
+            if m:
+                envs[m.group(1)] = m.group(2).replace("'\\''", "'")
+    if "CASE_SEED_RC" not in envs:
+        return None
+    sid = json.loads(payload).get("session_id") or ""
+    if not sid:
+        return None
+    path = os.path.join(cdir, "rc-" + re.sub("[^a-zA-Z0-9]", "_", sid))
+    with open(path, "w") as fh:
+        fh.write(envs["CASE_SEED_RC"] + "\n")
+    if envs.get("CASE_SEED_RC_AGE"):
+        t = time.time() - int(envs["CASE_SEED_RC_AGE"])
+        os.utime(path, (t, t))
+    return path
+
+
 def _cards_run(root, binary, env, fixtures, glob):
     seen, misses, rows = set(), {}, 0
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
@@ -529,8 +630,13 @@ def _cards_run(root, binary, env, fixtures, glob):
             # Same token shape as tests/difftest.sh (resolve_repo): [a-z0-9-]+
             payload = re.sub(r"@@REPO:([a-z0-9-]+)@@",
                              lambda m: fixtures.get(m.group(1), fixtures["dirty"]), fh.read())
-        out = subprocess.run([binary], input=payload, capture_output=True,
-                             encoding="utf-8", errors="replace", env=env).stdout
+        rcfile = _seed_rc(f, payload, env["NERDFLAIR_CACHE_DIR"])
+        try:
+            out = subprocess.run([binary], input=payload, capture_output=True,
+                                 encoding="utf-8", errors="replace", env=env).stdout
+        finally:
+            if rcfile:
+                os.unlink(rcfile)
         for line in ANSI.sub("", out).split("\n"):
             if CONTEXT_ROW.search(line):
                 seen.add("context")
@@ -540,6 +646,8 @@ def _cards_run(root, binary, env, fixtures, glob):
             for _c, _w, text in pieces(line):
                 sid = classify(text)[0]
                 seen.add(sid)
+                if sid == "rc":
+                    seen.add("rc:" + rc_state(text))
                 if sid is None:
                     misses[text] = misses.get(text, 0) + 1
     return seen, misses, rows

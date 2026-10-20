@@ -2287,6 +2287,42 @@ if [[ -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
   [[ -n "$_tmux_name" ]] && tmux_segment="${DIM}\uea85 ${_tmux_name}${RESET}"
 fi
 
+# ── Remote Control ───────────────────────────────────────────────
+# Written by the band plugin (`nerdflair-statusline --rc-sync`) into the private cache dir as
+# rc-<session id>: `v1 on|off|unknown <since-epoch> <label>`. Nothing here can ask Claude Code, so
+# this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" over 120 s
+# old (the plugin rewrites it every 30 s), draws UNKNOWN in amber and logs once. Twin of rc.rs.
+rc_segment=""
+if [[ -n "$session_id" ]]; then
+  _nf_cache_path "rc-${session_id//[^a-zA-Z0-9]/_}"; _rc_file="$_NF_CP"
+  if [[ -n "$_rc_file" && -e "$_rc_file" ]]; then
+    _rc_st="unknown"; _rc_lab=""
+    _rc_re='^v1 (on|off|unknown) ([0-9]{1,15})( ([A-Za-z0-9 +._-]{0,24}))?$'
+    _rc_line=""
+    if { IFS= read -r _rc_line || [[ -n "$_rc_line" ]]; } 2>/dev/null < "$_rc_file"; then
+      if [[ "$_rc_line" =~ $_rc_re ]]; then
+        _rc_st="${BASH_REMATCH[1]}"; _rc_lab="${BASH_REMATCH[4]}"
+        if [[ "$_rc_st" == on ]]; then
+          _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_file" 2>/dev/null || stat -f %m "$_rc_file" 2>/dev/null || echo 0) ))
+          if (( _rc_age < 0 || _rc_age > 120 )); then
+            _nf_err rc-stale "${_rc_file} is over 120 s old while on; the band plugin is not refreshing it, remote control state unknown"
+            _rc_st="unknown"
+          fi
+        fi
+      else
+        _nf_err rc "${_rc_file} is corrupt; remote control state unknown"
+      fi
+    else
+      _nf_err rc "cannot read ${_rc_file}; remote control state unknown"
+    fi
+    case "$_rc_st" in
+      on)  rc_segment="\033[38;2;74;222;128m\u2b24 RC ${_rc_lab:-on}${RESET}" ;;
+      off) rc_segment="\033[38;2;75;85;99m\u25ef RC ${_rc_lab:-off}${RESET}" ;;
+      *)   rc_segment="\033[38;2;251;191;36m? RC unknown${RESET}" ;;
+    esac
+  fi
+fi
+
 # ── Plan rate limits (5h / 7d) ───────────────────────────────────
 # Straight from the Claude Code payload -- no subprocess, no network. Absent on
 # plans without rate limits, and until the first API response of the session.
@@ -2371,6 +2407,9 @@ if [[ -n "$cost_segment" ]]; then
   if [[ -n "$tmux_segment" ]]; then
     row3_right+="${tmux_segment}${BULLET}"
   fi
+  if [[ -n "$rc_segment" ]]; then
+    row3_right+="${rc_segment}${BULLET}"
+  fi
   if [[ -n "$mcphealth_segment" ]]; then
     row3_right+="${mcphealth_segment}${BULLET}"
   fi
@@ -2400,7 +2439,7 @@ else
   # No cost yet (fresh session): the same list as above minus the cost itself.
   # Only what has no data is dropped.
   _pre=""
-  for _extra in "$_chime_segment" "$tmux_segment" "$mcphealth_segment" "$limits_segment" "$compact_segment" \
+  for _extra in "$_chime_segment" "$tmux_segment" "$rc_segment" "$mcphealth_segment" "$limits_segment" "$compact_segment" \
                 "$speed_segment" "$time_segment" "$burn_segment" "$block_segment" "$repocost_segment"; do
     [[ -z "$_extra" ]] && continue
     [[ -n "$_pre" ]] && _pre+="$BULLET"
@@ -2445,7 +2484,7 @@ if [[ -n "$_mcp_to_use" ]]; then
   row3_left+="${_mcp_to_use}"
 elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "$speed_segment" \
      || -n "$burn_segment" || -n "$block_segment" || -n "$limits_segment" \
-     || -n "$mcphealth_segment" || -n "$compact_segment" || -n "$repocost_segment" ]]; then
+     || -n "$mcphealth_segment" || -n "$rc_segment" || -n "$compact_segment" || -n "$repocost_segment" ]]; then
   # No MCP servers — show cost/time/speed/chime on the left instead of right
   if [[ -n "$cost_segment" ]]; then
     row3_left+="$cost_segment"
@@ -2455,7 +2494,7 @@ elif [[ -n "$time_segment" || -n "$cost_segment" || -n "$_chime_segment" || -n "
     row3_left+="$time_segment"
     [[ -n "$speed_segment" ]] && row3_left+="${BULLET}${speed_segment}"
   fi
-  for _extra in "$tmux_segment" "$burn_segment" "$block_segment" "$repocost_segment" "$limits_segment" "$mcphealth_segment" "$compact_segment"; do
+  for _extra in "$tmux_segment" "$rc_segment" "$burn_segment" "$block_segment" "$repocost_segment" "$limits_segment" "$mcphealth_segment" "$compact_segment"; do
     [[ -z "$_extra" ]] && continue
     [[ "$row3_left" != "\033[0m" ]] && row3_left+="${BULLET}"
     row3_left+="$_extra"

@@ -1,0 +1,1 @@
+rc: on with a surface label: green dot, RC web, between tmux and mcp health

@@ -346,4 +346,22 @@ for z in 0120 0144 0101 0189; do
   emit "limits: zero-padded payload percentage \"$z\" is over 100 on its decimal value: drawn as 100, alert colour" \
     "$(mut ".rate_limits.five_hour.used_percentage=\"$z\"")" "${E_FULL[@]}"
 done
+# ═══ 17. Remote Control readout (rc-<session>, written by the band plugin) ═
+RCSEED='v1 on 1700000000 web'
+emit "rc: on with a surface label: green dot, RC web, between tmux and mcp health" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_MCPHEALTH=3:0:0" "CASE_SEED_RC=$RCSEED"
+emit "rc: on with no label: RC on" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 on 1700000000"
+emit "rc: off: grey ring, RC off" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off"
+emit "rc: unknown written by the plugin: amber, RC unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 unknown 1700000000"
+emit "rc: no record at all (plugin not loaded): no readout, nothing invented" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one"
+emit "rc: on but 140 s old (plugin stopped refreshing): amber unknown, logged once" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_AGE=140"
+emit "rc: on and 100 s old (inside the 120 s bound): still green" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_AGE=100"
+emit "rc: off and 600 s old: still grey off (only an old 'on' is distrusted)" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off" "CASE_SEED_RC_AGE=600"
+emit "rc: corrupt record: amber unknown, logged once" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=this is not a record"
+emit "rc: label with a character outside the allowed set: corrupt, amber unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" 'CASE_SEED_RC=v1 on 1700000000 we$b'
+emit "rc: unknown state word: corrupt, amber unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 maybe 1700000000"
+emit "rc: second line in the record is ignored" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$(printf 'v1 on 1700000000 web\nextra line')"
+emit "rc: on, no MCP configured (the left-hand layout carries it)" "$(mut '.')" "${E_FULL[@]}" "CASE_SEED_RC=$RCSEED"
+emit "rc: cost-less row (fresh session) equals the cost row minus cost" "$(mut ".cost.total_cost_usd=0 | $NOLIM")" "CASE_STATE=$(st full vibrant auto random 1)" "CASE_COLUMNS=160" "CASE_MCP=many" \
+  "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_REPOCOST=1" "CASE_SEED_RC=$RCSEED"
+emit "rc: payload without a session_id: no readout" "$(mut 'del(.session_id)')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
 echo "generated $N payloads in $OUT"

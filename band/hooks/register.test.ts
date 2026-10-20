@@ -27,18 +27,23 @@ const GOOD = JSON.stringify({
 type Run = (argv: readonly string[], stdin: string | undefined) => unknown
 
 /** The world beneath the band: a renderer that answers as `renderer` says, and a record of what it logged and toasted. */
-function world(on: any, renderer: Run, opts: { usage?: object; now?: number } = {}) {
+function world(
+  on: any,
+  renderer: Run,
+  // debug: what `--rc-sync` answers (the band row wanted?); sync: replaces that answer; sid/surfaces: the session's
+  opts: { usage?: object; now?: number; debug?: boolean; sync?: Run; sid?: string; surfaces?: string[] } = {},
+) {
   resetStateForTests()
-  const w = { logs: [] as string[], toasts: [] as string[], stdins: [] as string[], popups: [] as string[][] }
+  const w = { logs: [] as string[], toasts: [] as string[], stdins: [] as string[], popups: [] as string[][], syncs: [] as string[][] }
   const clock = mock.clock(on, { now: opts.now ?? 1_000_000 })
   register(on, {} as never)
   on('session.usage', async () => ({
     value: opts.usage ?? { startedAt: 0, context: { window: 200000, tokens: 1000, percent: 1 }, rateLimits: [], cost: { usd: 1 } },
   }))
   on('session.cwd', async () => ({ value: '/work' }))
-  on('session.id', async () => ({ value: 'sid-1' }))
+  on('session.id', async () => ({ value: opts.sid ?? 'sid-1' }))
   on('session.model', async () => ({ value: 'opus' }))
-  on('session.surfaces', async () => ({ value: ['terminal'] }))
+  on('session.surfaces', async () => ({ value: opts.surfaces ?? ['terminal'] }))
   on('ui.log', async (_$: any, e: any) => {
     w.logs.push(e.text)
     return { value: undefined }
@@ -48,6 +53,10 @@ function world(on: any, renderer: Run, opts: { usage?: object; now?: number } = 
     return { value: undefined }
   })
   on('process.run', async (_$: any, e: any) => {
+    if (e.argv[1] === '--rc-sync') {
+      w.syncs.push([...e.argv])
+      return opts.sync ? opts.sync(e.argv, undefined) : result(0, `debug=${opts.debug === false ? 0 : 1}\n`)
+    }
     if (e.argv[0] === 'bash') {
       w.popups.push([...e.argv])
     } else if (e.argv[0] !== 'printenv') {
@@ -381,4 +390,116 @@ test('a real failure between aborts resets the streak, so non-consecutive aborts
   await drawOrEngine($) // abort number 5 overall, but 1 since the failure
 
   expect(w.logs.some(l => l.includes('refresh aborted'))).toBe(false)
+})
+
+// ── Remote Control record for the main status line, and the band hidden by default ──
+
+const BIN_PATH = '/home/t/.local/bin/nerdflair-statusline'
+
+test('the band row is not drawn without the debug flag, but the renderer is asked to write the rc record', async ($, on) => {
+  const { w } = world(on, ok, { debug: false })
+
+  const a = await drawOrEngine($)
+
+  expect(a, 'hidden: the engine draws its own row').toBe('ENGINE-DEFAULT-ROW')
+  expect(w.syncs, 'one sync, the session id and an empty surface label').toEqual([[BIN_PATH, '--rc-sync', 'sid-1', '']])
+  expect(w.stdins, 'no --json refresh is spent on a row nobody sees').toEqual([])
+  expect(w.logs).toEqual([])
+})
+
+test('with the flag the band is drawn exactly as before, and the sync still ran', async ($, on) => {
+  const { w } = world(on, ok, { debug: true })
+
+  const a = await drawOrEngine($)
+
+  expect(a).toContain('myrepo main')
+  expect(a).toContain('RC off')
+  expect(w.syncs.length).toBe(1)
+})
+
+test('the sync is throttled to one per 2 s across renders, and asks again after', async ($, on) => {
+  const { w, clock } = world(on, ok, { debug: false })
+
+  await drawOrEngine($)
+  await drawOrEngine($)
+  await drawOrEngine($)
+  expect(w.syncs.length, 'three renders in the same instant: one spawn').toBe(1)
+
+  await clock.advance(2500)
+  await drawOrEngine($)
+  expect(w.syncs.length).toBe(2)
+})
+
+test('the surface label is the remote surfaces joined, never the terminal', async ($, on) => {
+  const { w } = world(on, ok, { debug: false, surfaces: ['terminal', 'web', 'mobile'] })
+
+  await drawOrEngine($)
+
+  expect(w.syncs[0]?.slice(2)).toEqual(['sid-1', 'web+mobile'])
+})
+
+test('turning the flag on takes effect at the next sync', async ($, on) => {
+  let debug = 0
+  const { clock } = world(on, ok, { sync: () => result(0, `debug=${debug}\n`) })
+
+  expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  debug = 1
+  await clock.advance(2500)
+  expect(await drawOrEngine($)).toContain('myrepo main')
+})
+
+test('no session id: nothing is written and the fault is shown in the band, once in the log', async ($, on) => {
+  const { w } = world(on, ok, { sid: '', debug: false })
+
+  const a = await drawOrEngine($)
+  await drawOrEngine($)
+
+  expect(w.syncs, 'never a record under a guessed name').toEqual([])
+  expect(a).toContain('session id unknown')
+  expect(w.logs.filter(l => l.includes('session id unknown')).length).toBe(1)
+})
+
+test('a failing sync is reported with the binary\'s words, backed off for 5 s, and draws the band', async ($, on) => {
+  const { w, clock } = world(on, ok, { sync: () => result(4, '', 'rc-sync: cannot write /c/rc-sid_1: Permission denied') })
+
+  const a = await drawOrEngine($)
+  await drawOrEngine($)
+
+  expect(a).toContain('rc sync failed')
+  expect(a).toContain('Permission denied')
+  expect(w.syncs.length, 'backed off').toBe(1)
+  expect(w.logs.filter(l => l.includes('rc sync failed')).length).toBe(1)
+
+  await clock.advance(5500)
+  await drawOrEngine($)
+  expect(w.syncs.length).toBe(2)
+})
+
+test('an answer without a debug line is a failure, not a silent hidden band', async ($, on) => {
+  const { w } = world(on, ok, { sync: () => result(0, 'something else\n') })
+
+  expect(await drawOrEngine($)).toContain('rc sync failed')
+  expect(w.logs.some(l => l.includes('rc sync failed'))).toBe(true)
+})
+
+test('a superseded sync is retried by the next render, not reported', async ($, on) => {
+  let n = 0
+  const { w } = world(on, ok, { debug: false, sync: () => (++n === 1 ? { deny: 'HooksError: $.process.run(x) aborted' } : result(0, 'debug=0\n')) })
+
+  await drawOrEngine($)
+  await drawOrEngine($)
+
+  expect(n).toBe(2)
+  expect(w.logs.filter(l => l.includes('rc sync'))).toEqual([])
+})
+
+test('the record is kept by a timer too, so it does not depend on ui.render firing for a hidden band', async ($, on) => {
+  const { w, clock } = world(on, ok, { debug: false })
+  // nothing sits beneath the plugin's session.start hook, so its next(e) rejects; the timer is set before that
+  await $.session.start({ cwd: '/work', surface: 'terminal' } as never).catch(() => undefined)
+  expect(w.syncs.length, 'nothing yet: no render has happened').toBe(0)
+  await clock.advance(5100)
+
+  expect(w.syncs.length).toBeGreaterThanOrEqual(1)
+  expect(w.syncs[0]?.slice(1, 3)).toEqual(['--rc-sync', 'sid-1'])
 })

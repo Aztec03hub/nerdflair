@@ -313,6 +313,74 @@ let inflight: Promise<Seg[] | 'aborted' | null> | null = null
 let lastFailAt = 0
 const FAIL_BACKOFF_MS = 5000
 
+// ── Remote Control record for the MAIN status line ──────────────────────────
+// The status line (Rust and bash renderers) has no way to ask Claude Code whether a bridge is
+// attached, so this plugin tells it: `nerdflair-statusline --rc-sync <session id> <label>` writes
+// `rc-<session>` into the private cache dir (0700, atomic, never through a symlink), on a change
+// and at most every 30 s otherwise. That code lives in the binary beside the cache helpers it
+// reuses; this side decides WHEN. The same call answers `debug=1|0`: whether the band row is drawn
+// (the flag file ~/.claude/nerdflair/band-debug, or NERDFLAIR_BAND_DEBUG=1). Off by default: the
+// band was the interim home of this chip and is kept for debugging.
+//
+// It runs from the render hook AND from a session.start timer, so the record is kept even if the
+// engine does not call ui.render for a band that draws nothing.
+const RC_SYNC_MS = 2000
+const RC_FAIL_MS = 5000
+const RC_TICK_MS = 5000
+let rcDebug = false // the last answer: draw the band row?
+// A sync that fails draws the band too: its red row is where the fault is explained, and hiding the
+// row would hide the one thing that says the record (and so the status line chip) is not being kept.
+let rcFault = false
+let rcError = '' // why, for the band row; cleared by the next good sync
+let rcNextAt = 0
+let rcInflight: Promise<void> | null = null
+
+// Returns whether the band row is to be drawn.
+async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
+  if (!HOME) return true // no renderer path: the band is where that is reported
+  if (now < rcNextAt) return rcDebug || rcFault
+  await (rcInflight ??= (async () => {
+    try {
+      const sid = await $.session.id()
+      if (!sid) {
+        // No session id, no file: a record under a guessed name would be read by another session.
+        rcError = note($, 'rc sync', 'session id unknown: the remote control record is not written')
+        rcFault = true
+        rcNextAt = now + RC_FAIL_MS
+        return
+      }
+      const label = (await $.session.surfaces()).filter(x => x !== 'terminal').map(plain).join('+')
+      const r = await $.process.run([BIN(), '--rc-sync', sid, label], { timeoutMs: 3000 })
+      const m = /^debug=([01])$/m.exec(r.stdout)
+      if (r.exitCode !== 0 || !m) {
+        rcError = note($, 'rc sync failed', `exit ${r.exitCode}: ${(r.stderr || r.stdout || '(no output)').trim().slice(0, 160)}`)
+        rcFault = true
+        rcNextAt = now + RC_FAIL_MS
+        return
+      }
+      rcDebug = m[1] === '1'
+      rcFault = false
+      rcError = ''
+      rcNextAt = now + RC_SYNC_MS
+    } catch (err) {
+      // A superseded run is not a failure: the next render or tick asks again.
+      if (isAbort(err) && !isTimeout(String(err))) return
+      rcError = note($, 'rc sync failed', err)
+      rcFault = true
+      rcNextAt = now + RC_FAIL_MS
+    }
+  })().finally(() => {
+    rcInflight = null
+  }))
+  return rcDebug || rcFault
+}
+
+async function rcTick($: RenderArgs[0]): Promise<boolean> {
+  const now = await $.clock.now()
+  await lookupHome($, now)
+  return rcSync($, now)
+}
+
 // Test seam: module state outlives a hook registration, so cases in one test
 // file would see each other's cache and errors. The engine never calls this.
 export function resetStateForTests(): void {
@@ -330,9 +398,21 @@ export function resetStateForTests(): void {
   rcLeftAt = 0
   rcSeen = []
   rcSinceGuess = false
+  rcDebug = false
+  rcFault = false
+  rcError = ''
+  rcNextAt = 0
+  rcInflight = null
 }
 
 export const register: Register = on => {
+  // The record must not depend on the band being drawn.
+  on('session.start', async ($, e, next) => {
+    $.clock.every(RC_TICK_MS, () => {
+      rcTick($).catch(err => note($, 'rc sync tick', err))
+    })
+    return next(e)
+  })
   // Timestamp the transitions. The state itself still comes from surfaces();
   // these only make "attached 14m ago" and "left 8s ago" possible.
   on('session.attach', async ($, e, next) => {
@@ -359,6 +439,8 @@ export const register: Register = on => {
   // the screen nor fail without a trace.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     try {
+      // Keep the Remote Control record fresh, and learn whether the band row is wanted at all.
+      if (!(await rcTick($))) return next(e)
       // null = nothing to draw yet (the first refresh was superseded or is still running):
       // the engine draws its own empty row, not a false "plugin bug" line.
       const tree = await band($, e)
@@ -371,8 +453,8 @@ export const register: Register = on => {
 
 }
 
-async function band($: RenderArgs[0], e: RenderArgs[1]) {
-  const now = await $.clock.now()
+// The HOME lookup, shared by the band and the Remote Control sync (both need the renderer's path).
+async function lookupHome($: RenderArgs[0], now: number): Promise<void> {
   if (!HOME && !homeLookup && now - homeTriedAt > 30000) {
     homeTriedAt = now
     // No home, no renderer path. Say so in the band (red, with the reason)
@@ -404,6 +486,11 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   // A render that arrives while the lookup runs waits for it, rather than finding
   // HOME empty and drawing a false "no recorded reason" error.
   if (homeLookup) await homeLookup
+}
+
+async function band($: RenderArgs[0], e: RenderArgs[1]) {
+  const now = await $.clock.now()
+  // HOME is looked up by lookupHome(), which the render hook runs before this.
   if (HOME && (!cache || now - cache.at > TTL_MS) && now - lastFailAt > FAIL_BACKOFF_MS) {
     // One refresh at a time: renders arrive faster than the renderer returns,
     // and each would otherwise spawn its own.
@@ -619,19 +706,19 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
   if (!cache) {
     // No figures to show. Say why in the band. An empty reason cannot happen
     // (every failed refresh sets one), so if it does, that is itself reported.
-    if (!lastError) {
+    if (!lastError && !rcError) {
       if (inflight || refreshAbortStreak > 0 || homeAbortStreak > 0) return null // superseded or in flight, not a failure
       report($, 'band', 'no figures and no recorded reason (plugin bug)')
     }
     return (
       <Box>
-        <Text color="#f87171">nerdflair-band: {plain(lastError)}</Text>
+        <Text color="#f87171">nerdflair-band: {plain(lastError || rcError)}</Text>
       </Box>
     )
   }
   // Old figures after a failed refresh are drawn, but marked: the age and the
   // reason, in red at the end of the row, so they are not read as live.
-  const staleText = lastError ? `stale ${ago(now - cache.at)}: ${plain(lastError).slice(0, 60)}` : ''
+  const staleText = lastError ? `stale ${ago(now - cache.at)}: ${plain(lastError).slice(0, 60)}` : rcError ? plain(rcError).slice(0, 100) : ''
 
   // The Remote Control pill: always present, three states, hover panel.
   // Always present is the point. An indicator that only appears when remote
