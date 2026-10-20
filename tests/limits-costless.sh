@@ -66,7 +66,7 @@ for impl in rust bash; do
   # ORDER: the cost-less row is the cost row minus the trailing cost, readout for readout.
     # Countdowns are normalised: the two renders run a moment apart, and a countdown that sits on a minute
     # boundary (2h30m, then 2h29m) is the clock, not the order of the row.
-    norm() { sed -E 's/ +/ /g; s/ *$//; s#/[0-9]+[dhm][0-9m]*#/<CD>#g' <<<"$1"; }
+    norm() { sed -E 's/ +/ /g; s/ *$//; s#/[0-9]+[dhm]([0-9]+[hm])*#/<CD>#g' <<<"$1"; }
     # Under 2 minutes of session time there is no lifetime burn rate or ETA to differ on.
     # The cost-less row also carries the chime label (cost 0.00 only), which is not a readout of the cost row.
     costrow=$(DUR=100000 norm "$(DUR=100000 render $impl "$rec" "$(DUR=100000 base 1.25 "")" | rg -F context7 | head -n 1)")

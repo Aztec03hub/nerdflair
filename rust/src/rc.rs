@@ -89,16 +89,18 @@ fn cksum(data: &[u8]) -> u32 {
 
 /// The record's file name for a session id. ONE rule, shared with `_nf_rc_name` in statusline.sh:
 /// keep ASCII [A-Za-z0-9_-], every other BYTE becomes `_`, cap at 64; when anything was changed
-/// or cut, append `-<cksum of the raw id>` so `a/b` and `a_b` cannot share a file.
-pub fn rc_name(session: &str) -> String {
-    let mapped: String = session.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' { b as char } else { '_' }).collect();
-    if mapped == session && mapped.len() <= 64 {
+/// or cut, append `~<cksum of the raw id>` so `a/b` and `a_b` cannot share a file. `~` is outside
+/// the clean alphabet, so no clean id can ever be spelled like a modified one. Takes BYTES: an id
+/// that is not UTF-8 is still an id.
+pub fn rc_name(session: &[u8]) -> String {
+    let mapped: String = session.iter().map(|&b| if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' { b as char } else { '_' }).collect();
+    if mapped.as_bytes() == session && mapped.len() <= 64 {
         return format!("rc-{}", mapped);
     }
-    format!("rc-{}-{}", &mapped[..mapped.len().min(64)], cksum(session.as_bytes()))
+    format!("rc-{}~{}", &mapped[..mapped.len().min(64)], cksum(session))
 }
 
-fn path_for(session: &str) -> Option<std::path::PathBuf> {
+fn path_for(session: &[u8]) -> Option<std::path::PathBuf> {
     cache_path(&rc_name(session))
 }
 
@@ -113,6 +115,7 @@ fn draw(state: St, label: &str) -> String {
 
 /// The segment for this session, or "" when there is nothing to say.
 pub fn segment(session: &str) -> String {
+    let session = session.as_bytes();
     if session.is_empty() {
         return String::new();
     }
@@ -154,7 +157,7 @@ fn prune_old(rec: &Path) {
         let p = ent.path();
         if name.to_string_lossy().starts_with("rc-")
             && std::fs::symlink_metadata(&p).map_or(false, |m| m.is_file())
-            && file_age(&p) > 7 * 86_400
+            && (7 * 86_400..i64::MAX / 8).contains(&file_age(&p)) // a future mtime reads as "infinitely old": not a reason to delete
         {
             if let Err(e) = std::fs::remove_file(&p) {
                 errlog::note_io("rc-prune", &format!("cannot remove {}", p.display()), &e);
@@ -179,13 +182,15 @@ fn debug_on() -> bool {
 /// file when the state or label changed or it is over 30 s old, and prints
 /// `debug=1` or `debug=0` (whether the band row is to be drawn).
 /// `--rc-name <id>`: prints the record's file name. Test helper, so the tests seed files by the real rule.
-pub fn name(args: &[String]) -> i32 {
-    println!("{}", rc_name(args.first().map(String::as_str).unwrap_or("")));
+pub fn name(args: &[std::ffi::OsString]) -> i32 {
+    use std::os::unix::ffi::OsStrExt;
+    println!("{}", rc_name(args.first().map_or(&[][..], |a| a.as_bytes())));
     0
 }
 
-pub fn sync(args: &[String]) -> i32 {
-    let sid = args.first().map(String::as_str).unwrap_or("");
+pub fn sync(args: &[std::ffi::OsString]) -> i32 {
+    use std::os::unix::ffi::OsStrExt;
+    let sid = args.first().map_or(&[][..], |a| a.as_bytes());
     if sid.is_empty() {
         eprintln!("rc-sync: no session id");
         return 2;
@@ -197,10 +202,9 @@ pub fn sync(args: &[String]) -> i32 {
     let state = if std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID").map_or(false, |v| !v.is_empty()) { St::On } else { St::Off };
     let label: String = args
         .get(1)
-        .map(String::as_str)
-        .unwrap_or("")
-        .chars()
-        .map(|c| if c.is_ascii() && label_ok(&c.to_string()) { c } else { '_' })
+        .map_or(&[][..], |a| a.as_bytes())
+        .iter()
+        .map(|&b| if b.is_ascii() && label_ok(&(b as char).to_string()) { b as char } else { '_' })
         .take(24)
         .collect::<String>()
         .trim()
@@ -240,13 +244,15 @@ mod tests {
     fn cksum_is_posix_and_names_follow_one_rule() {
         assert_eq!(cksum(b"abc"), 1219131554);
         assert_eq!(cksum(b""), 4294967295);
-        assert_eq!(rc_name("705691a5-211f-4545-aa3f"), "rc-705691a5-211f-4545-aa3f");
-        assert_ne!(rc_name("a/b"), rc_name("a_b"));
-        assert_eq!(rc_name("a_b"), "rc-a_b");
-        assert!(rc_name("a/b").starts_with("rc-a_b-"));
-        assert!(rc_name(&"x".repeat(300)).len() < 100);
-        assert!(rc_name("\u{e9}").starts_with("rc-__-"), "per byte, not per char");
-        assert!(!rc_name("../../evil").contains('/') && !rc_name("../../evil").contains('.'));
+        assert_eq!(rc_name(b"705691a5-211f-4545-aa3f"), "rc-705691a5-211f-4545-aa3f");
+        assert_ne!(rc_name(b"a/b"), rc_name(b"a_b"));
+        assert_eq!(rc_name(b"a_b"), "rc-a_b");
+        assert!(rc_name(b"a/b").starts_with("rc-a_b~"));
+        assert_ne!(rc_name(b"a_b-3840401949"), rc_name(b"a/b"), "a clean id shaped like a modified name is another file");
+        assert!(rc_name("x".repeat(300).as_bytes()).len() < 100);
+        assert!(rc_name("\u{e9}".as_bytes()).starts_with("rc-__~"), "per byte, not per char");
+        assert!(rc_name(b"\xff\xfe").starts_with("rc-__~"), "not UTF-8 is still an id");
+        assert!(!rc_name(b"../../evil").contains('/') && !rc_name(b"../../evil").contains('.'));
     }
 
     #[test]

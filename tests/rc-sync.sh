@@ -101,10 +101,24 @@ check "prune: runs again once the stamp is over a day old" 0 "$(ls "$C" | rg -c 
 render >/dev/null
 check "prune: a render never prunes" 1 "$(ls "$C" | rg -c '^rc-old3$' || echo 0)"
 
+# a future mtime is not "old": a clock stepped back must not get a live record pruned
+: > "$C/rc-future"; touch -d '+3 days' "$C/rc-future"; touch -d '2 days ago' "$C/nerdflair-rc-pruned"
+sync -- sid-1
+check "prune: a record with a future mtime is kept" 1 "$(ls "$C" | rg -c '^rc-future$' || echo 0)"
+
+# an id that is not UTF-8 is still an id (no abort), and the bash twin names it the same
+bad=$(printf 'a\xff\xfeb')
+check "name: a non-UTF-8 id does not abort" 0 "$("$BIN" --rc-name "$bad" >/dev/null 2>&1 </dev/null; echo $?)"
+eval "$(sed -n '/^_nf_rc_name()/,/^}/p' "$REPO/scripts/statusline.sh")"
+_nf_rc_name "$bad"
+check "name: ...and bash agrees with Rust on it" "$_NF_RCN" "$("$BIN" --rc-name "$bad" </dev/null)"
+sync -- "$bad" web; check "name: --rc-sync takes it too" 0 "$RC"
+check "name: a clean id shaped like a modified name is another file" 1 "$([[ "$("$BIN" --rc-name a_b-3840401949 </dev/null)" != "$("$BIN" --rc-name a/b </dev/null)" ]] && echo 1 || echo 0)"
+
 # one file-name rule: no collisions, no traversal, a cap
 check "name: a plain id is kept" "rc-sid-1" "$("$BIN" --rc-name sid-1 </dev/null)"
 check "name: a/b and a_b get different files" 1 "$([[ "$("$BIN" --rc-name a/b </dev/null)" != "$("$BIN" --rc-name a_b </dev/null)" ]] && echo 1 || echo 0)"
-check "name: ../../evil stays a plain file name" 1 "$("$BIN" --rc-name ../../evil </dev/null | rg -c '^rc-[A-Za-z0-9_-]+$')"
+check "name: ../../evil stays a plain file name" 1 "$("$BIN" --rc-name ../../evil </dev/null | rg -c '^rc-[A-Za-z0-9_~-]+$')"
 check "name: 300 characters are capped" 1 "$([[ $("$BIN" --rc-name "$(printf 'x%.0s' $(seq 300))" </dev/null | wc -c) -lt 100 ]] && echo 1 || echo 0)"
 sync -- "$(printf 'x%.0s' $(seq 300))" web
 check "name: a 300-character id can be written" 0 "$RC"

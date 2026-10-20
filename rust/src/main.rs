@@ -36,12 +36,12 @@ fn main() {
         panic!("NERDFLAIR_TEST_PANIC is set (test-only panic)");
     }
     // The band plugin's call: write the Remote Control state file. No payload, no render.
-    if std::env::args().nth(1).as_deref() == Some("--rc-sync") {
-        let args: Vec<String> = std::env::args().skip(2).collect();
+    if std::env::args_os().nth(1).map_or(false, |a| a == "--rc-sync") {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
         std::process::exit(rc::sync(&args));
     }
-    if std::env::args().nth(1).as_deref() == Some("--rc-name") {
-        let args: Vec<String> = std::env::args().skip(2).collect();
+    if std::env::args_os().nth(1).map_or(false, |a| a == "--rc-name") {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
         std::process::exit(rc::name(&args));
     }
     let mut buf = Vec::new();

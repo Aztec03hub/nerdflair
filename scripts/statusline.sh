@@ -2294,13 +2294,14 @@ fi
 # old (the plugin rewrites it every 30 s), draws UNKNOWN in amber and logs once. Twin of rc.rs.
 # The record's file name for a session id: ONE rule, twin of rc::rc_name. Keep ASCII [A-Za-z0-9_-],
 # every other BYTE becomes _ (hence LC_ALL=C), cap at 64; when anything was changed or cut, append
-# -<POSIX cksum of the raw id>, so a/b and a_b cannot share a file. Only forks when it must.
+# ~<POSIX cksum of the raw id>, so a/b and a_b cannot share a file (~ is outside the clean alphabet, so a
+# clean id can never be spelled like a modified one). Only forks when it must.
 _nf_rc_name() {
   local LC_ALL=C _m _crc
   _m="${1//[^A-Za-z0-9_-]/_}"
   if [[ "$_m" == "$1" && ${#_m} -le 64 ]]; then _NF_RCN="rc-$_m"; return 0; fi
   read -r _crc _ < <(printf '%s' "$1" | cksum)
-  _NF_RCN="rc-${_m:0:64}-$_crc"
+  _NF_RCN="rc-${_m:0:64}~$_crc"
 }
 rc_segment=""
 if [[ -n "$session_id" ]]; then
