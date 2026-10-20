@@ -144,7 +144,16 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     color: '#86efac',
     lines: ["cost.total_cost_usd: Claude Code's own figure for this session"],
   },
-  chime: { title: 'Chime', color: '#d8b4fe', lines: ['the chime style and volume in use'] },
+  chime: {
+    title: 'Chime',
+    color: '#d8b4fe',
+    lines: [
+      'the chime style this session drew (random picks one per session)',
+      'a % follows when the volume is under 100; volume 0 hides the readout',
+      'plays on the events in chime_events (default Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop)',
+      'change it with /nerdflair chime-style, chime-volume, chime-events or chime-session',
+    ],
+  },
 }
 
 type Seg = { id: string; text: string }

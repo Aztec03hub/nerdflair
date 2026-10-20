@@ -49,6 +49,14 @@ NERD = re.compile(r"[-\U000f0000-\U000ffffd]")
 # anchoring was why four of these fell through to the generic card. Where a
 # glyph is the most reliable marker it is matched directly, by codepoint.
 CARDS = [
+    # Drawn only for the random style before any cost; "<volume icon>  <style>[ NN%]". First so a
+    # style name that looks like another readout (a word like "low") cannot be taken for it.
+    ("chime", "\uf028", "Chime", (216, 180, 254), [
+        "the chime style this session drew (random picks one per session)",
+        "a % follows when the volume is under 100; volume 0 hides the readout",
+        "plays on the events in chime_events (default Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop)",
+        "change it with /nerdflair chime-style, chime-volume, chime-events or chime-session",
+    ]),
     ("folder", "\U000f024b|\uf1bb", "Folder", (125, 211, 252), [
         "workspace.project_dir, else current_dir",
     ]),
@@ -345,10 +353,13 @@ def selfcheck():
                 raise AssertionError(f"rc_drift must see {old_s!r} -> {new_s!r} in {rel}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-    text_drift(os.path.join(here, "..", ".."))     # the card TEXTS of limits and block match register.tsx (colours: band_drift)
+    text_drift(os.path.join(here, "..", ".."))     # the card TEXTS of limits, block and chime match register.tsx (colours: band_drift)
     assert band_drift(tsx) == [], band_drift(tsx)
     assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
     assert classify("\uf094 $1.20")[0] == "block", "the billing block has a card"
+    # The chime readout, in each look the renderer draws, wins over look-alikes (a style named like an effort level).
+    for txt in ("\uf028  random", "\uf028  Vibraphone 50%", "\uf028  low", "\uf028  max 5%"):
+        assert classify(txt)[0] == "chime", txt
     # The guard itself: it reads either quote style and key order, and fails loud on a short parse.
     ours_folder = "#%02x%02x%02x" % tuple(next(c[3] for c in CARDS if c[0] == "folder"))
     mini = lambda body: "const CARDS = {\n" + body + "\n}\n"  # noqa: E731
@@ -454,11 +465,11 @@ def build_ex(target, skip=(), shadow=None):
 
 
 def text_drift(root):
-    """The limits and block cards exist twice, here and in band/hooks/register.tsx. Their texts
+    """The limits, block and chime cards exist twice, here and in band/hooks/register.tsx. Their texts
     must match, or the hover card in the plugin says something else than the bridge card."""
     with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
         tsx = fh.read()
-    for cid in ("limits", "block"):
+    for cid in ("limits", "block", "chime"):
         m = re.search(r"^  %s: \{(.*?)^  \},?$" % cid, tsx, re.S | re.M)
         assert m, f"register.tsx has no CARDS entry for {cid}"
         body = m.group(1)
@@ -522,12 +533,20 @@ def cards_check():
         # readout is drawn and no real `claude mcp list` probe is spawned.
         with open(os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"), "w") as fh:
             fh.write("3\x1f1\x1f0\x1fa\x1eb")
-        _cards_check_body(root, binary, pane, cdir)
+        # The chime readout depends on state.json: drawn for the random style (at any volume),
+        # never for a fixed style. Run each look, so no result hangs on whoever's settings these were.
+        union = set()
+        for style, vol in (("random", "1"), ("random", "0.5"), ("Vibraphone", "1")):
+            seen = _cards_check_body(root, binary, pane, cdir, style, vol)
+            assert ("chime" in seen) == (style == "random"), f"chime readout vs style {style!r}: seen={sorted(seen)}"
+            union |= seen
+        assert "chime" in union
+        print(f"cards ok: every readout has a card; chime reached with random (100% and 50%), absent with a fixed style")
     finally:
         shutil.rmtree(cdir, ignore_errors=True)
 
 
-def _cards_check_body(root, binary, pane, cdir):
+def _cards_check_body(root, binary, pane, cdir, style, vol):
     import glob
     import shutil
     import tempfile
@@ -535,13 +554,12 @@ def _cards_check_body(root, binary, pane, cdir):
     # extra "random" readout that has no card) and writes its error log and ledger there.
     home = os.path.join(cdir, "home")
     os.makedirs(os.path.join(home, ".claude", "nerdflair"), exist_ok=True)
-    # TODO N13: the "random" chime readout still needs a hover card (then run this twice, once with it).
-    # Pinned chime settings: a style of "random" draws a volume-icon readout (before any cost)
-    # that has no card yet, so the result would depend on whoever's state.json this ran against.
+    # Chime settings are pinned by the CALLER (style and volume), never read from the user's state.json.
     with open(os.path.join(home, ".claude", "nerdflair", "state.json"), "w") as fh:
-        fh.write('{"mode":"full","width":"auto","flair":true,"terminal_bell":"on","chime_sound":"Glass",'
-                 '"chime_volume":"1","chime_style":"Vibraphone","chime_events":"Notification,PermissionRequest,Stop",'
-                 '"color":"vibrant","last_session":"","chime_recent_styles":[]}')
+        json.dump({"mode": "full", "width": "auto", "flair": True, "terminal_bell": "on", "chime_sound": "Glass",
+                   "chime_volume": vol, "chime_style": style,
+                   "chime_events": "Notification,PermissionRequest,Stop",
+                   "color": "vibrant", "last_session": "", "chime_recent_styles": []}, fh)
     env = dict(os.environ, HOME=home, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
     base = tempfile.mkdtemp(prefix="nf-cards-")
@@ -552,11 +570,12 @@ def _cards_check_body(root, binary, pane, cdir):
         shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
-    want = {c[0] for c in CARDS} - {"ahead"}
+    want = {c[0] for c in CARDS} - {"ahead"} - ({"chime"} if style != "random" else set())
     # ahead shares a piece with dirty. rc is reached through the seeded rc-<session> files, in all three looks.
     assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
     assert {"rc:on", "rc:off", "rc:unknown"} <= seen, f"rc looks no payload reaches: {sorted({'rc:on', 'rc:off', 'rc:unknown'} - seen)}"
-    print(f"cards ok: {rows} rows, {len(seen)} readouts, all with cards")
+    print(f"cards ok ({style} @ {vol}): {rows} rows, {len(seen)} readouts, all with cards")
+    return seen
 
 
 def _cards_fixtures(base):

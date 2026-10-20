@@ -90,7 +90,9 @@ def draw():
      "dupshift": lambda: status("XXXXXX", tail=DUP),
      "rc_on": lambda: status("", tail=" \033[0m· \033[38;2;74;222;128m\u2b24 RC web\033[0m · q one"),
      "rc_off": lambda: status("", tail=" \033[0m· \033[38;2;75;85;99m\u25ef RC off\033[0m · q one"),
-     "rc_unknown": lambda: status("", tail=" \033[0m· \033[38;2;251;191;36m? RC unknown\033[0m · q one"), "dupone": lambda: status("", tail=" \033[0m· q one")}.get(m, lambda: status(""))()
+     "rc_unknown": lambda: status("", tail=" \033[0m· \033[38;2;251;191;36m? RC unknown\033[0m · q one"), "dupone": lambda: status("", tail=" \033[0m· q one"),
+     "chime": lambda: status("", tail=" \033[0m· \033[38;2;145;130;155m\uf028  random\033[0m · q one"),
+     "chime_pct": lambda: status("", tail=" \033[0m· \033[38;2;145;130;155m\uf028  random 50%\033[0m · q one")}.get(m, lambda: status(""))()
     sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
     return m
 signal.signal(signal.SIGWINCH, lambda *_: draw())
@@ -372,6 +374,32 @@ def rc_readout():
             check(f"{mode}: the Remote Control card is open", bool(re.search(r"╭─ Remote Control ─", r.tmux("capture-pane", "-p", "-t", "hl"))))
             check(f"{mode}: its {w} cells are filled 48;{want} (the state's colour, not the card's one fixed accent)",
                   all(lit(during, i, want) and during[i][0] == base[i][0] for i in inside), str([during[i] for i in sorted(inside)][:2]))
+            check(f"{mode}: no other cell changed", all(during[i] == base[i] for i in range(len(base)) if i not in inside))
+            r.hover(3, 3, 0.8)
+            check(f"{mode}: restored cell for cell after leaving", r.row() == base)
+    finally:
+        r.close()
+
+
+def chime_readout():
+    print("chime readout (volume icon + style): its own card, in the band's chime accent")
+    r = Run("chime")
+    try:
+        for mode in ("chime", "chime_pct"):
+            r.mode(mode)
+            time.sleep(1.0)
+            base = r.row()
+            segs = [p for p in pieces_of(base) if "random" in p[2]]
+            check(f"{mode}: the readout is found on the line", len(segs) == 1, str(segs))
+            if len(segs) != 1:
+                continue
+            col, w, text = segs[0]
+            r.hover(col + w // 2)
+            during = r.row()
+            inside = set(range(col - 1, col - 1 + w))
+            check(f"{mode}: the Chime card is open (not the generic Readout one)", bool(re.search(r"╭─ Chime ─", r.tmux("capture-pane", "-p", "-t", "hl"))))
+            check(f"{mode}: its {w} cells are filled 48;2;216;180;254, text kept",
+                  all(lit(during, i, "2;216;180;254") and during[i][0] == base[i][0] for i in inside), str([during[i] for i in sorted(inside)][:2]))
             check(f"{mode}: no other cell changed", all(during[i] == base[i] for i in range(len(base)) if i not in inside))
             r.hover(3, 3, 0.8)
             check(f"{mode}: restored cell for cell after leaving", r.row() == base)
@@ -665,7 +693,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, rc_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
