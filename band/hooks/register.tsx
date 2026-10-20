@@ -148,7 +148,8 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     title: 'Chime',
     color: '#d8b4fe',
     lines: [
-      'the chime style this session drew (random picks one per session)',
+      'the chime style in use (random picks one per session; before this session draws, the latest draw shows)',
+      'shown only for the random style, and only while cost is 0.00: gone once cost is above it',
       'a % follows when the volume is under 100; volume 0 hides the readout',
       'plays on the events in chime_events (default Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop)',
       'change it with /nerdflair chime-style, chime-volume, chime-events or chime-session',

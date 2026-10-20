@@ -51,8 +51,9 @@ NERD = re.compile(r"[-\U000f0000-\U000ffffd]")
 CARDS = [
     # Drawn only for the random style before any cost; "<volume icon>  <style>[ NN%]". First so a
     # style name that looks like another readout (a word like "low") cannot be taken for it.
-    ("chime", "\uf028", "Chime", (216, 180, 254), [
-        "the chime style this session drew (random picks one per session)",
+    ("chime", "^\uf028  ", "Chime", (216, 180, 254), [
+        "the chime style in use (random picks one per session; before this session draws, the latest draw shows)",
+        "shown only for the random style, and only while cost is 0.00: gone once cost is above it",
         "a % follows when the volume is under 100; volume 0 hides the readout",
         "plays on the events in chime_events (default Notification, PermissionRequest, PreCompact, SessionEnd, SessionStart, Stop)",
         "change it with /nerdflair chime-style, chime-volume, chime-events or chime-session",
@@ -360,6 +361,8 @@ def selfcheck():
     # The chime readout, in each look the renderer draws, wins over look-alikes (a style named like an effort level).
     for txt in ("\uf028  random", "\uf028  Vibraphone 50%", "\uf028  low", "\uf028  max 5%"):
         assert classify(txt)[0] == "chime", txt
+    # U+F028 inside another readout (a folder or branch name) must not take the Chime card.
+    assert classify("\U000f024b dir\uf028x")[0] == "folder" and classify("x\uf028  y")[0] != "chime"
     # The guard itself: it reads either quote style and key order, and fails loud on a short parse.
     ours_folder = "#%02x%02x%02x" % tuple(next(c[3] for c in CARDS if c[0] == "folder"))
     mini = lambda body: "const CARDS = {\n" + body + "\n}\n"  # noqa: E731
