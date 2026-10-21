@@ -56,6 +56,8 @@ The Remote Control (RC) state is a readout on the main status line, next to tmux
 
 Nothing in a renderer can ask Claude Code whether a bridge is attached, so the `nerdflair-band` plugin (`band/sync-local-plugin.sh` installs it) tells it. Every few seconds it runs `nerdflair-statusline --rc-sync <session id> <label>`, which writes one line into the private cache dir (0700, atomic, never through a symlink), as `rc-<session id>` (the id with anything outside `A-Za-z0-9_-` turned into `_` byte by byte and cut to 64 characters; when that changed anything, `~<cksum of the raw id>` is appended so `a/b` and `a_b` never share a file (and no clean id can look like a changed one, since `~` is outside the clean set). Both renderers and the writer use the same rule; `--rc-name <id>` prints it for tests):
 
+The plugin is a COPY of `band/`, so it does not follow the repo: after any change to `band/hooks`, `popup.sh` or `tsconfig.json`, run `band/sync-local-plugin.sh`, then `/reload-plugins` (or restart sessions; a loaded plugin keeps its old code). The published copy carries the version `0.1.0-<8 hex of its content>` so Claude Code's update actually fetches it (a fixed version made `claude plugin update` a silent no-op). `band/sync-local-plugin.sh --check` says whether the published copy is current, and `scripts/build-rust.sh` runs it after installing the binary.
+
 ```
 v1 on|off|unknown <since-epoch> <label>
 ```
