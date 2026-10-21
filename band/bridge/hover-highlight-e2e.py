@@ -164,6 +164,17 @@ class Run:
     def rowat(self, n):
         return cells(self.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", str(n - 1), "-E", str(n - 1)).split("\n")[0])
 
+    def rowat_like(self, n, base):
+        """The row again, re-captured (bounded) until it is as long as `base`: a capture taken while the
+        engine repaints can come back short."""
+        row = self.rowat(n)
+        for _ in range(10):
+            if len(row) == len(base):
+                break
+            time.sleep(0.1)
+            row = self.rowat(n)
+        return row
+
     def screen_has_lit(self):
         return LITSEQ in self.tmux("capture-pane", "-e", "-p", "-t", "hl").replace(";", ";").replace("\x1b[48;2;31;41;55m", LITSEQ)
 
@@ -468,16 +479,42 @@ def real_spans():
                     check(f"{label}: {text!r} is drawn where the renderer's row says (cols {col}..{col + w - 1})", False, repr(drawn))
                     continue
                 r.hover(col + w // 2, r0 + i, 0.5)
-                during = r.rowat(r0 + i)
+                during = r.rowat_like(r0 + i, base)
                 lit_at = lit_idx(during)
                 want = list(range(col - 1, col - 1 + w))
                 check(f"{label}: {text!r} lit cells {col}..{col + w - 1} (the whole readout)", lit_at == want,
                       f"lit {lit_at[:1]}..{lit_at[-1:]} want {want[0]}..{want[-1]}")
-                check(f"{label}: {text!r} no other cell changed", all(during[j] == base[j] for j in range(len(base)) if j not in want))
+                check(f"{label}: {text!r} no other cell changed", len(during) == len(base) and all(a == b for j, (a, b) in enumerate(zip(during, base)) if j not in want),
+                      f"row is {len(during)} cells, was {len(base)}")
                 r.hover(3, 3, 0.6)
-                check(f"{label}: {text!r} restored cell for cell", r.rowat(r0 + i) == base)
+                check(f"{label}: {text!r} restored cell for cell", r.rowat_like(r0 + i, base) == base)
         # (a card wider than the 120-column pane is logged as clipped: that is the card, not the highlight)
         check("no highlight degradation logged", "highlight" not in r.log(), r.log())
+    finally:
+        r.close()
+
+
+def wide_span():
+    print("a CJK + emoji + combining-mark readout: lit text is exactly the readout (a width miscount lights too much or too little)")
+    # Cells, counted by hand: icon 1, space 1, two CJK 4, emoji 2, space 1, e + combining acute 1 = 10;
+    # then " · " 3, so the branch readout starts at column 14 (icon 1, space 1, "main" 4 = 6 cells).
+    first, second = "\U000f024b \u6f22\u5b57\U0001f600 e\u0301", "\U000f062c main"
+    row = "  "[:0] + first + " \u00b7 " + second + "   \U000f0238 $1.00/h"
+    r = Run("wide2", rows=50, row=40)
+    try:
+        with open(r.flag + ".rows", "w") as f:
+            f.write(row)
+        r.mode("real0")
+        time.sleep(1.0)
+        raw = r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]
+        base = cells(raw)
+        for text, col, w in ((first, 1, 10), (second, 14, 6)):
+            r.hover(col + w // 2, 40)
+            during = cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0])
+            got = "".join(during[i][0] for i in lit_idx(during))
+            check(f"{text!r}: lit text is exactly the readout", got == text, repr(got))
+            r.hover(3, 3, 0.6)
+            check(f"{text!r}: restored cell for cell", cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]) == base)
     finally:
         r.close()
 
@@ -768,7 +805,7 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, real_spans, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
+    for t in (basic, real_spans, wide_span, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         if not sys.argv[1:] or t.__name__ in sys.argv[1:]:       # a scenario name runs just that one
             t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")

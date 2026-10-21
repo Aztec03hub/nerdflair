@@ -28,9 +28,11 @@ import unicodedata
 import nflog
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-# The renderer justifies the left and right halves of a row with AT LEAST two spaces (justified_row),
-# so two spaces split readouts too. The one readout with two spaces inside it is the chime (volume
-# icon U+F028, two spaces, style), hence the lookbehind.
+# The renderer justifies the left and right halves of a row with 2 to 3 spaces at the narrowest
+# (row3-gap and the branch row's row3-gap cap the justification gap at 3; a merge of the two is
+# coming), so a gap of 2 or 3 spaces splits readouts. Two spaces INSIDE a readout are read by its
+# leading glyph and not split: the chime (volume icon U+F028, then the style: the lookbehind) and a
+# folder named with a double space (see _in_folder).
 GAP = re.compile(r"\s{3,}|(?<!\uf028)\s{2}(?!\s)")
 SEP = " · "
 
@@ -214,7 +216,7 @@ def pieces(line):
     applying it to the real row is how off-by-several errors happen.
     """
     out = []
-    for start, text in _split_keep(line, GAP):
+    for start, text in _split_keep(line, GAP, _in_folder):
         off = 0
         for part in text.split(SEP):
             t = part.strip()
@@ -225,11 +227,26 @@ def pieces(line):
     return out
 
 
-def _split_keep(s, pat):
-    """Split on a pattern, keeping each piece's offset in the original."""
+def _in_folder(s, m):
+    """True for a two-space match inside a readout that starts with the folder glyph ("<icon> my  proj"):
+    the folder is the one readout whose name the user types, and it is always followed by a bullet or a
+    wide gap, so its own two spaces are not a join."""
+    if m.end() - m.start() != 2:
+        return False
+    seg = re.split(r"\s{3,}| %s " % re.escape(SEP.strip()), s[:m.start()])[-1].lstrip()
+    return seg[:1] in FOLDER_GLYPHS
+
+
+FOLDER_GLYPHS = ("\U000f024b", "\uf1bb")
+
+
+def _split_keep(s, pat, skip=lambda s, m: False):
+    """Split on a pattern, keeping each piece's offset in the original. `skip(s, m)` keeps a match as text."""
     out = []
     at = 0
     for m in pat.finditer(s):
+        if skip(s, m):
+            continue
         if m.start() > at:
             out.append((at, s[at:m.start()]))
         at = m.end()
@@ -318,6 +335,12 @@ def selfcheck():
     assert (c1, w1, t1) == (1, 8, "\u6f22\u5b57 dir") and t2 == "branch-x", pieces(wide)
     assert c2 == cells("\u6f22\u5b57 dir \u00b7 ") + 1 == 12 and wide.index("branch-x") + 1 == 10, (c2,)
     assert cells("e\u0301") == 1 and cells("\U000f024b") == 1 and cells("ab") == 2
+    # Wide glyphs: CJK and emoji take two cells, a combining mark none. A miscount of 1 each fails here
+    # (and in the e2e's wide row, where tmux draws them).
+    assert cells("\u6f22\u5b57") == 4 and cells("\U0001f600") == 2 and cells("e\u0301x") == 2 and cells("\u2615\ufe0f") == 2
+    # A folder named with two spaces stays one readout; the same two spaces anywhere else are a join.
+    assert [t for _c, _w, t in pieces("\U000f024b my  proj \u00b7 \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
+    assert [t for _c, _w, t in pieces("\uf1bb a  b" + " " * 9 + "\uf044 1 [+1]")] == ["\uf1bb a  b", "\uf044 1 [+1]"]
 
     # The justification gap must SPLIT, and a lone separator must not produce
     # an empty readout.
