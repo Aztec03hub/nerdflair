@@ -28,7 +28,10 @@ import unicodedata
 import nflog
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-GAP = re.compile(r"\s{3,}")
+# The renderer justifies the left and right halves of a row with AT LEAST two spaces (justified_row),
+# so two spaces split readouts too. The one readout with two spaces inside it is the chime (volume
+# icon U+F028, two spaces, style), hence the lookbehind.
+GAP = re.compile(r"\s{3,}|(?<!\uf028)\s{2}(?!\s)")
 SEP = " · "
 
 # Which bottom rows are ours. A bullet separator alone is not enough: Claude
@@ -61,7 +64,7 @@ CARDS = [
     ("folder", "\U000f024b|\uf1bb", "Folder", (125, 211, 252), [
         "workspace.project_dir, else current_dir",
     ]),
-    ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.-]+$", "Branch", (125, 211, 252), [
+    ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.…-]+$", "Branch", (125, 211, 252), [
         "branch from `git rev-parse --abbrev-ref HEAD`, cached 5s",
         "a worktree branch in the payload wins over git",
     ]),
@@ -116,7 +119,7 @@ CARDS = [
     ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
     ]),
-    ("context", r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
+    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
         "read from the payload, else the newest usage line in the transcript",
         "compaction triggers near the top; the ETA reads off the same series",
@@ -190,6 +193,17 @@ def cells(s):
             continue
         n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
     return n
+
+
+def row_pieces(clean):
+    """The readouts of one rendered row (ANSI stripped), or [] if the row is not ours. A row of ours has
+    a Nerd Font glyph; with a bullet separator every piece counts, without one (a row holding a single
+    readout, say tmux alone on the right) only a piece that is a known readout does, so a decorative
+    row of icons is not offered as a readout."""
+    if not NERD.search(clean):
+        return []
+    ps = pieces(clean)
+    return ps if SEP in clean else [p for p in ps if classify(p[2])[0] is not None]
 
 
 def pieces(line):
@@ -312,6 +326,22 @@ def selfcheck():
     # Single characters are icons and separators, not readouts.
     assert pieces("a · b") == []
 
+    # The whole span of a readout, not a tail of it: the gauge label used to match from its second digit
+    # ("200k/1M 20%" lit as "0k/1M 20%"). Control: the old pattern's answer.
+    for label in ("200k/1M 20%", "74k/200k 37%", "1.5M/2M 75%", "5/200k 0%", "200k/200k 100%"):
+        bar = "" + " " * 20 + label + " " * 30 + ""
+        hit = CONTEXT_ROW.search(bar)
+        assert hit and hit.group(0) == label, (label, hit and hit.group(0))
+        assert bar_label(bar) == (22, cells(label), label), bar_label(bar)
+    assert re.search(r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "200k/1M 20%").group(0) == "0k/1M 20%"
+    # The halves of a row are justified with at least TWO spaces: two readouts, not one. The chime's own
+    # two spaces (volume icon, style) stay inside its readout.
+    tight = " 2 MCP   main · 5h 2%"
+    assert [t for _c, _w, t in pieces(tight)] == [" 2 MCP", " main", "5h 2%"], pieces(tight)
+    assert [t for _c, _w, t in pieces("  random · x yy")] == ["  random", "x yy"]
+    # A row holding one readout and no bullet is still a row of ours; a row of bare icons is not.
+    assert [t for _c, _w, t in row_pieces("      main")] == [" main"], row_pieces("      main")
+    assert row_pieces(" \U000f0bf7 \U000f0c1e") == [] and row_pieces("2 agents") == []
     # Ours, versus Claude Code's own hint line, which also has bullets.
     assert NERD.search(line)
     assert not NERD.search("⏵⏵ auto mode on (shift+tab) · 2 agents")
@@ -448,9 +478,7 @@ def build_ex(target, skip=(), shadow=None):
                          "w": cells(m.group(0)), "title": title,
                          "body": body, "rgb": list(rgb)})
             continue
-        if SEP not in clean or not NERD.search(clean):
-            continue
-        for col, w, text in pieces(clean):
+        for col, w, text in row_pieces(clean):
             sid, title, rgb, body = classify(text)
             segs.append({
                 "id": sid or f"row{row}-col{col}",
@@ -506,6 +534,52 @@ def rc_drift(root):
             assert line in tsx, f"rc {state}: card line drifted from register.tsx: {line!r}"
 
 
+def true_spans(line, texts):
+    """Where each readout really is, from the RENDERER's own segment texts (`--json`), not from the
+    row's separators: every " · " part of each segment, located in the plain row. (col, width, text)."""
+    out, used = [], set()
+    for t in texts:
+        for part in t.split(SEP):
+            part = part.strip()
+            i = line.find(part) if cells(part) >= MIN_W else -1
+            if i >= 0 and i not in used:
+                used.add(i)
+                out.append((cells(line[:i]) + 1, cells(part), part))
+    return sorted(out)
+
+
+def bar_label(line):
+    """The context readout of a gauge row: the one run of text sitting inside the bar, between the
+    bar's cap glyphs and spaces. (col, width, text), or None when the row has no such label."""
+    runs = list(re.finditer(r"[^\s\ue0b4\ue0b6]+(?: [^\s\ue0b4\ue0b6]+)*", line))
+    if len(runs) != 1 or "/" not in runs[0].group(0) or "%" not in runs[0].group(0):
+        return None
+    return cells(line[:runs[0].start()]) + 1, cells(runs[0].group(0)), runs[0].group(0)
+
+
+def span_mismatches(out, segments):
+    """Rows of one rendered status line (`out`, ANSI stripped) where the span hover would light
+    differs from the true span of a readout: [(row text, what hover derives, what is true)].
+    The gauge row's label and every other row are both held to cell-for-cell equality."""
+    bad = []
+    texts = [x["text"] for x in segments]
+    for line in out.split("\n"):
+        label = bar_label(line)
+        if label or (CONTEXT_ROW.search(line) and SEP not in line):
+            m = CONTEXT_ROW.search(line)
+            got = (cells(line[:m.start()]) + 1, cells(m.group(0)), m.group(0)) if m else None
+            if got != label:
+                bad.append((line.strip(), got, label))
+            continue
+        want, got = true_spans(line, texts), sorted(row_pieces(line))
+        # --json omits the throughput readout (no transcript) and the RC chip (the band draws that
+        # one), so a piece may exist that has no true span; it must not overlap one that has.
+        extra = [g for g in got if g not in want and any(g[0] < w[0] + w[1] and w[0] < g[0] + g[1] for w in want)]
+        if extra or [w for w in want if w not in got]:
+            bad.append((line.strip(), extra or got, [w for w in want if w not in got] or want))
+    return bad
+
+
 def cards_check():
     """Every readout the REAL renderer draws must land on a card of its own.
 
@@ -521,26 +595,18 @@ def cards_check():
     binary = os.path.join(root, "rust", "target", "release", "nerdflair-statusline")
     text_drift(root)
     rc_drift(root)
-    # The tmux readout comes from a per-pane cache, else from a live tmux; seed
-    # the cache for a pane of our own so this never depends on what ran before.
     pane = "%nfcards"
     # A private (0700) cache dir of our own, handed to the renderer: never the user's real one.
     import shutil
     import tempfile
     cdir = tempfile.mkdtemp(prefix="nf-cards-cache-")
-    tcache = os.path.join(cdir, f"nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}")
     try:
-        with open(tcache, "w") as fh:
-            fh.write("cards")
-        # Seed a FRESH mcp health cache too (it used to be the user's live /tmp one), so the
-        # readout is drawn and no real `claude mcp list` probe is spawned.
-        with open(os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"), "w") as fh:
-            fh.write("3\x1f1\x1f0\x1fa\x1eb")
         # The chime readout depends on state.json: drawn for the random style (at any volume),
         # never for a fixed style. Run each look, so no result hangs on whoever's settings these were.
         union = set()
         for style, vol in (("random", "1"), ("random", "0.5"), ("Vibraphone", "1")):
-            seen = _cards_check_body(root, binary, pane, cdir, style, vol)
+            seen = _cards_check_body(root, binary, pane, cdir, style, vol,
+                                     ("250", "120", "80", "60") if vol == "1" else ("250",))
             assert ("chime" in seen) == (style == "random"), f"chime readout vs style {style!r}: seen={sorted(seen)}"
             union |= seen
         assert "chime" in union
@@ -549,10 +615,17 @@ def cards_check():
         shutil.rmtree(cdir, ignore_errors=True)
 
 
-def _cards_check_body(root, binary, pane, cdir, style, vol):
-    import glob
-    import shutil
-    import tempfile
+def corpus_env(cdir, pane, style, vol, cols="250"):
+    """The renderer's environment for the corpus: a temp HOME and cache dir under `cdir`, chime style and
+    volume pinned, `cols` wide. Never the user's own."""
+    # The tmux readout comes from a per-pane cache, else from a live tmux; seed the cache for a pane of
+    # our own so this never depends on what ran before.
+    with open(os.path.join(cdir, f"nerdflair-tmux-{os.getuid()}-{re.sub('[^a-zA-Z0-9]', '_', pane)}"), "w") as fh:
+        fh.write("cards")
+    # Seed a FRESH mcp health cache too (it used to be the user's live /tmp one), so the readout is
+    # drawn and no real `claude mcp list` probe is spawned.
+    with open(os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"), "w") as fh:
+        fh.write("3\x1f1\x1f0\x1fa\x1eb")
     # A temp HOME: the renderer reads ~/.claude/nerdflair/state.json (chime settings draw an
     # extra "random" readout that has no card) and writes its error log and ledger there.
     home = os.path.join(cdir, "home")
@@ -563,16 +636,31 @@ def _cards_check_body(root, binary, pane, cdir, style, vol):
                    "chime_volume": vol, "chime_style": style,
                    "chime_events": "Notification,PermissionRequest,Stop",
                    "color": "vibrant", "last_session": "", "chime_recent_styles": []}, fh)
-    env = dict(os.environ, HOME=home, COLUMNS="250", TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
-               NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
+    return dict(os.environ, HOME=home, COLUMNS=cols, TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
+                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
+
+
+def _cards_check_body(root, binary, pane, cdir, style, vol, widths=("250",)):
+    import glob
+    import shutil
+    import tempfile
     base = tempfile.mkdtemp(prefix="nf-cards-")
     try:
         fixtures = _cards_fixtures(base)
-        seen, misses, rows = _cards_run(root, binary, env, fixtures, glob)
+        seen, misses, rows, spans = set(), {}, 0, {}
+        for cols in widths:
+            # Every width draws the same readouts differently (the halves of a row are justified to it).
+            s_, m_, r_, sp_ = _cards_run(root, binary, corpus_env(cdir, pane, style, vol, cols), fixtures, glob)
+            seen |= s_ if cols == widths[0] else set()
+            rows += r_
+            misses.update(m_)
+            spans.update({(cols,) + k: v for k, v in sp_.items()})
     finally:
         shutil.rmtree(base, ignore_errors=True)
     assert rows, "the renderer printed no status rows; is it built?"
     assert not misses, f"readouts with no card: {misses}"
+    assert not spans, ("hover would light a different span than the readout's own: "
+                       + "; ".join(f"{k[1]}@{k[0]}: derived {v[1]} true {v[2]}" for k, v in list(spans.items())[:5]))
     want = {c[0] for c in CARDS} - {"ahead"} - ({"chime"} if style != "random" else set())
     # ahead shares a piece with dirty. rc is reached through the seeded rc-<session> files, in all three looks.
     assert want <= seen, f"cards no real readout reaches: {sorted(want - seen)}"
@@ -646,34 +734,54 @@ def _seed_rc(envfile, payload, cdir, binary):
     return path
 
 
-def _cards_run(root, binary, env, fixtures, glob):
-    seen, misses, rows = set(), {}, 0
+def corpus(root, binary, env, fixtures, glob):
+    """The REAL renderer over every payload: (file name, rendered text, its `--json` segments)."""
     for f in sorted(glob.glob(os.path.join(root, "tests", "payloads", "*.json"))):
         with open(f) as fh:
             # Same token shape as tests/difftest.sh (resolve_repo): [a-z0-9-]+
             payload = re.sub(r"@@REPO:([a-z0-9-]+)@@",
                              lambda m: fixtures.get(m.group(1), fixtures["dirty"]), fh.read())
+        # @@NOW+N@@ / @@NOW-N@@ as difftest resolves them, so reset times (and the limits readout that
+        # carries them) are drawn.
+        payload = re.sub(r"@@NOW([+-])(\d+)@@",
+                         lambda m: str(int(time.time()) + (1 if m.group(1) == "+" else -1) * int(m.group(2))), payload)
         rcfile = _seed_rc(f, payload, env["NERDFLAIR_CACHE_DIR"], binary)
         try:
             out = subprocess.run([binary], input=payload, capture_output=True,
                                  encoding="utf-8", errors="replace", env=env).stdout
+            jout = subprocess.run([binary, "--json"], input=payload, capture_output=True,
+                                  encoding="utf-8", errors="replace", env=env).stdout
         finally:
             if rcfile:
                 os.unlink(rcfile)
-        for line in ANSI.sub("", out).split("\n"):
+        try:
+            segments = json.loads(jout)["segments"]
+        except ValueError:
+            segments = []
+        yield os.path.basename(f), out, segments
+
+
+def _cards_run(root, binary, env, fixtures, glob):
+    seen, misses, rows, spans = set(), {}, 0, {}
+    for name, out, segments in corpus(root, binary, env, fixtures, glob):
+        plain = ANSI.sub("", out)
+        for b in span_mismatches(plain, segments):
+            spans[(name, b[0][:60])] = b
+        for line in plain.split("\n"):
             if CONTEXT_ROW.search(line):
                 seen.add("context")
-            if SEP not in line or not NERD.search(line):
+            ps = row_pieces(line)
+            if not ps:
                 continue
             rows += 1
-            for _c, _w, text in pieces(line):
+            for _c, _w, text in ps:
                 sid = classify(text)[0]
                 seen.add(sid)
                 if sid == "rc":
                     seen.add("rc:" + rc_state(text))
                 if sid is None:
                     misses[text] = misses.get(text, 0) + 1
-    return seen, misses, rows
+    return seen, misses, rows, spans
 
 
 def main():

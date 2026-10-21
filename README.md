@@ -48,7 +48,7 @@ How it stays out of the way:
 - Where a card sits is read from the screen on each hover, so it follows the status line when a figure changes width.
 - If tmux's socket has been deleted (the server keeps running but every `tmux` command fails), `nf-tmux-heal` recreates it by signalling the running server. It never starts or kills one.
 - `nf-tmux-watch` (a small user service the installer starts) notices the moment a tmux socket is deleted, logs every process that was running to `~/.local/state/nerdflair/tmux-watch.log`, and repairs it within a second. Five restarts in ten minutes and systemd stops trying, so it cannot loop.
-- `mklayout.py --cards-check` runs the real renderer over the test payloads and fails if any readout has no card. It runs three times against a temp HOME (random style at 100% and 50% volume, then a fixed style), so the chime readout (volume icon plus style, with its own Chime hover card, kept word for word in step with the band's) is reached without depending on anyone's settings.
+- `mklayout.py --cards-check` runs the real renderer over the test payloads and fails if any readout has no card. It also fails if the span hover would light (derived from the rendered row) differs from the readout's own span (from the renderer's `--json` segment texts, and the gauge row's lone label), at 250, 120, 80 and 60 columns. It runs three times against a temp HOME (random style at 100% and 50% volume, then a fixed style), so the chime readout (volume icon plus style, with its own Chime hover card, kept word for word in step with the band's) is reached without depending on anyone's settings.
 
 ### Remote Control on the status line
 
