@@ -25,12 +25,15 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${NERDFLAIR_PLUGIN_DEST:-$HOME/.claude/local-marketplace/plugins/nerdflair-band}"
+DEST="${DEST%/}"   # a trailing slash on a symlink would defeat the -L test below
+if [[ -z "$DEST" || "$DEST" == "/" ]]; then echo "sync: refusing an empty or root destination" >&2; exit 2; fi
+INSTALLED_JSON="${NERDFLAIR_INSTALLED_PLUGINS:-$HOME/.claude/plugins/installed_plugins.json}"
 
 # The content that ships, in a fixed order, hashed. types/ is engine-generated
 # and not part of the identity.
 content_stamp() {
   cat "$HERE/.claude-plugin/plugin.json" "$HERE/hooks/hooks.json" "$HERE/hooks/register.tsx" "$HERE/popup.sh" "$HERE/tsconfig.json" \
-    | python3 -c 'import sys,hashlib,json,re
+    | python3 -c 'import sys,hashlib
 raw=sys.stdin.buffer.read()
 print(hashlib.sha256(raw).hexdigest()[:8])'
 }
@@ -39,11 +42,27 @@ VERSION="0.1.0-$STAMP"
 
 if [[ "${1:-}" == "--stamp" ]]; then echo "$VERSION"; exit 0; fi
 if [[ "${1:-}" == "--check" ]]; then
-  have=""
-  [[ -r "$DEST/.claude-plugin/plugin.json" ]] && have="$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1])).get("version",""))' "$DEST/.claude-plugin/plugin.json")"
-  if [[ "$have" == "$VERSION" ]]; then echo "nerdflair-band: published copy is current ($VERSION)"; exit 0; fi
-  echo "nerdflair-band: published copy is STALE (has '${have:-none}', this checkout is $VERSION). Run band/sync-local-plugin.sh, then /reload-plugins or restart sessions." >&2
-  exit 1
+  # Two copies can be stale: the published one (marketplace) and the one Claude Code actually loads
+  # (installed_plugins.json, the cache). The 2026-10 bug was the second, so both are compared.
+  ver_of() { python3 -c 'import sys,json
+try: print(json.load(open(sys.argv[1])).get("version",""))
+except Exception: print("")' "$1" 2>/dev/null; }
+  inst_ver() { python3 -c 'import sys,json
+try:
+    d = json.load(open(sys.argv[1])); d = d.get("plugins", d)
+    print((d.get("nerdflair-band@local") or [{}])[0].get("version", ""))
+except Exception: print("")' "$1" 2>/dev/null; }
+  have="$(ver_of "$DEST/.claude-plugin/plugin.json")"
+  loaded="$(inst_ver "$INSTALLED_JSON")"
+  rc=0
+  if [[ "$have" != "$VERSION" ]]; then
+    echo "nerdflair-band: published copy is STALE (has '${have:-none}', this checkout is $VERSION). Run band/sync-local-plugin.sh, then /reload-plugins or restart sessions." >&2; rc=1
+  fi
+  if [[ "$loaded" != "$VERSION" ]]; then
+    echo "nerdflair-band: the INSTALLED plugin is STALE (Claude Code has '${loaded:-none}', this checkout is $VERSION). Run band/sync-local-plugin.sh, then /reload-plugins or restart sessions." >&2; rc=1
+  fi
+  (( rc == 0 )) && echo "nerdflair-band: published and installed copies are current ($VERSION)"
+  exit "$rc"
 fi
 
 if [[ -L "$DEST" ]]; then
@@ -55,7 +74,12 @@ import sys, json
 src, dst, version = sys.argv[1:4]
 d = json.load(open(src))
 d["version"] = version
-json.dump(d, open(dst, "w"), indent=2)
+import os
+tmp = dst + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, dst)
 PY
 # Replace the types directory whole: cp -r over it would leave behind files
 # that were deleted in the repo.

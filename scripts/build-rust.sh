@@ -10,4 +10,4 @@ install -m 0755 rust/target/release/nerdflair-statusline "$HOME/.local/bin/nerdf
 echo "installed -> $HOME/.local/bin/nerdflair-statusline"
 "$HOME/.local/bin/nerdflair-statusline" --version 2>/dev/null || true
 # The band plugin is a COPY of band/ and goes stale silently; say so here, where a code change gets deployed.
-bash "$(dirname "${BASH_SOURCE[0]}")/../band/sync-local-plugin.sh" --check || echo "build-rust: the installed band plugin is out of date (see above); run band/sync-local-plugin.sh" >&2
+bash "$(dirname "${BASH_SOURCE[0]}")/../band/sync-local-plugin.sh" --check || true   # --check already says what is stale; a stale plugin never fails the build
