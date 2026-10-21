@@ -318,9 +318,11 @@ def cut(line, x, w, hl=""):
     nothing is ever half-painted (the range then grows by up to a cell a side)."""
     state, col, start, out = "", 1, x, []
     for m in _TOK.finditer(line):
-        if col >= x + w:
-            break
         sgr, other, ch = m.groups()
+        # A combining mark right after the last cell belongs to it: stopping before it would repaint
+        # (and on restore, drop) the accent.
+        if col >= x + w and not (ch is not None and col > x and out and mklayout.cells(ch) == 0):
+            break
         if sgr:
             state = "" if sgr in (f"{ESC}[m", RESET) else state + sgr
             if out:

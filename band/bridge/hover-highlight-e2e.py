@@ -24,6 +24,8 @@ sys.path.insert(0, HERE)
 import mklayout  # noqa: E402
 
 ROW = 48
+ROOT = os.path.join(HERE, "..", "..")
+BINARY = os.path.join(ROOT, "rust", "target", "release", "nerdflair-statusline")
 INK = "2;31;41;55"         # dark bold text on the lit cells: 38;<this>
 OLDBG = "2;31;41;55"       # the first attempt's fill: same colour as the terminal's background, invisible
 LITSEQ = "38;" + INK
@@ -83,6 +85,12 @@ def draw():
         return m
     if m == "wide":
         status("", tail=" \033[0m· \u4e2d\u6587\u5b57 ab")
+        sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
+        return m
+    if m.startswith("real"):           # the REAL renderer's rows, verbatim, from flag + ".rows" (the mode name is only a nonce)
+        sys.stdout.write("\033[2J")
+        for i, l in enumerate(open(flag + ".rows").read().split("\n")):
+            sys.stdout.write("\033[%d;1H" % (R + i) + l + "\033[0m")
         sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
         return m
     DUP = " \033[0m· q one · q one"
@@ -152,6 +160,20 @@ class Run:
 
     def row(self):
         return cells(self.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", str(self.rown - 1), "-E", str(self.rown - 1)).split("\n")[0])
+
+    def rowat(self, n):
+        return cells(self.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", str(n - 1), "-E", str(n - 1)).split("\n")[0])
+
+    def rowat_like(self, n, base):
+        """The row again, re-captured (bounded) until it is as long as `base`: a capture taken while the
+        engine repaints can come back short."""
+        row = self.rowat(n)
+        for _ in range(10):
+            if len(row) == len(base):
+                break
+            time.sleep(0.1)
+            row = self.rowat(n)
+        return row
 
     def screen_has_lit(self):
         return LITSEQ in self.tmux("capture-pane", "-e", "-p", "-t", "hl").replace(";", ";").replace("\x1b[48;2;31;41;55m", LITSEQ)
@@ -403,6 +425,96 @@ def chime_readout():
             check(f"{mode}: no other cell changed", all(during[i] == base[i] for i in range(len(base)) if i not in inside))
             r.hover(3, 3, 0.8)
             check(f"{mode}: restored cell for cell after leaving", r.row() == base)
+    finally:
+        r.close()
+
+
+def real_pick():
+    """A few payloads whose REAL renderer rows between them draw every readout, the gauge label, and (at
+    80 columns) the halves of a row only two spaces apart. [(label, ansi rows, [(row index, col, width, text)])];
+    the spans are the TRUE ones, from the renderer's own segment texts and the gauge's lone label."""
+    import shutil
+    cdir, base = tempfile.mkdtemp(prefix="nf-hl-real-"), tempfile.mkdtemp(prefix="nf-hl-real-fx-")
+    picked, seen = [], set()
+    try:
+        fx = mklayout._cards_fixtures(base)
+        for cols in ("120", "80"):
+            env = mklayout.corpus_env(cdir, "%nfreal", "random", "1", cols)
+            for name, out, segs in mklayout.corpus(ROOT, BINARY, env, fx, glob):
+                plain = mklayout.ANSI.sub("", out).split("\n")
+                spans = []
+                for i, line in enumerate(plain):
+                    label = mklayout.bar_label(line)
+                    spans += [(i,) + sp for sp in ([label] if label else mklayout.true_spans(line, [x["text"] for x in segs]))
+                              if sp[0] + sp[1] - 1 <= 120]      # the pane is 120 wide: a wider row would wrap
+                keys = {mklayout.classify(t)[0] for _i, _c, _w, t in spans}
+                keys |= {("pad2", cols)} if any(re.search(r"[^\s\uf028]  \S", ln) for ln in plain if "\ue0b6" not in ln) else set()
+                if keys - seen:
+                    seen |= keys
+                    picked.append((f"{name}@{cols}", out.rstrip("\n"), spans))
+    finally:
+        shutil.rmtree(cdir, ignore_errors=True)
+        shutil.rmtree(base, ignore_errors=True)
+    return picked
+
+
+def real_spans():
+    print("real renderer rows: every readout lit over its WHOLE span (icon first, icon last, gauge label), put back cell for cell")
+    picked = real_pick()
+    check("the picked payloads draw an icon-first readout, an icon-last one, the gauge label and a two-space join",
+          len(picked) >= 3, str([p[0] for p in picked]))
+    r0 = 40
+    r = Run("real", rows=50, row=r0)
+    try:
+        for k, (label, out, spans) in enumerate(picked):
+            with open(r.flag + ".rows", "w") as f:
+                f.write(out)
+            r.mode(f"real{k}")
+            time.sleep(1.0)
+            bases = {i: r.rowat(r0 + i) for i, *_ in spans}
+            for i, col, w, text in spans:
+                base = bases[i]
+                drawn = "".join(c for c, _ in base)[col - 1:col - 1 + w]
+                if drawn != text:
+                    check(f"{label}: {text!r} is drawn where the renderer's row says (cols {col}..{col + w - 1})", False, repr(drawn))
+                    continue
+                r.hover(col + w // 2, r0 + i, 0.5)
+                during = r.rowat_like(r0 + i, base)
+                lit_at = lit_idx(during)
+                want = list(range(col - 1, col - 1 + w))
+                check(f"{label}: {text!r} lit cells {col}..{col + w - 1} (the whole readout)", lit_at == want,
+                      f"lit {lit_at[:1]}..{lit_at[-1:]} want {want[0]}..{want[-1]}")
+                check(f"{label}: {text!r} no other cell changed", len(during) == len(base) and all(a == b for j, (a, b) in enumerate(zip(during, base)) if j not in want),
+                      f"row is {len(during)} cells, was {len(base)}")
+                r.hover(3, 3, 0.6)
+                check(f"{label}: {text!r} restored cell for cell", r.rowat_like(r0 + i, base) == base)
+        # (a card wider than the 120-column pane is logged as clipped: that is the card, not the highlight)
+        check("no highlight degradation logged", "highlight" not in r.log(), r.log())
+    finally:
+        r.close()
+
+
+def wide_span():
+    print("a CJK + emoji + combining-mark readout: lit text is exactly the readout (a width miscount lights too much or too little)")
+    # Cells, counted by hand: icon 1, space 1, two CJK 4, emoji 2, space 1, e + combining acute 1 = 10;
+    # then " · " 3, so the branch readout starts at column 14 (icon 1, space 1, "main" 4 = 6 cells).
+    first, second = "\U000f024b \u6f22\u5b57\U0001f600 e\u0301", "\U000f062c main"
+    row = "  "[:0] + first + " \u00b7 " + second + "   \U000f0238 $1.00/h"
+    r = Run("wide2", rows=50, row=40)
+    try:
+        with open(r.flag + ".rows", "w") as f:
+            f.write(row)
+        r.mode("real0")
+        time.sleep(1.0)
+        raw = r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]
+        base = cells(raw)
+        for text, col, w in ((first, 1, 10), (second, 14, 6)):
+            r.hover(col + w // 2, 40)
+            during = cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0])
+            got = "".join(during[i][0] for i in lit_idx(during))
+            check(f"{text!r}: lit text is exactly the readout", got == text, repr(got))
+            r.hover(3, 3, 0.6)
+            check(f"{text!r}: restored cell for cell", cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]) == base)
     finally:
         r.close()
 
@@ -693,8 +805,9 @@ def no_shadow():
 
 
 def main():
-    for t in (basic, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
-        t()
+    for t in (basic, real_spans, wide_span, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
+        if not sys.argv[1:] or t.__name__ in sys.argv[1:]:       # a scenario name runs just that one
+            t()
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
 
