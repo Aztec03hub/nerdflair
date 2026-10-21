@@ -371,4 +371,11 @@ emit "rc: non-ASCII session id (per byte, same in both locales' renderers)" "$(m
 emit "rc: session id a/b finds its own record" "$(mut '.session_id="a/b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED"
 emit "rc: session id a_b does not read the record of a/b (no collision): no readout" "$(mut '.session_id="a_b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_ID=a/b"
 emit "rc: session id a/b does not read the record of a_b: no readout" "$(mut '.session_id="a/b"')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_ID=a_b"
+# ═══ row 3 gap cap (max 3 spaces between the MCP readout and the rest) ═══
+for w in 60 80 110 150 200; do
+  for m in none many; do
+    emit "row3 gap: COLUMNS=$w MCP=$m" "$(mut '.')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w" "CASE_MCP=$m" "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator"
+    emit "row3 gap: COLUMNS=$w MCP=$m with the RC chip" "$(mut '.')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w" "CASE_MCP=$m" "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_RC=$RCSEED"
+  done
+done
 echo "generated $N payloads in $OUT"

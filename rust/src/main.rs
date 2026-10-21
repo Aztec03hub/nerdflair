@@ -338,10 +338,14 @@ fn basename(p: &str) -> String {
 }
 
 // ── row helpers ──────────────────────────────────────────────────
-fn justified_row(max_w: i64, left: &str, right: &str) -> String {
+fn justified_row(max_w: i64, max_gap: i64, left: &str, right: &str) -> String {
     let left_len = vis_len(left) as i64;
     let right_len = vis_len(right) as i64;
     let mut pad_len = max_w - left_len - right_len;
+    // max_gap > 0 caps leftover slack between two non-empty groups (row 3).
+    if max_gap > 0 && left_len > 0 && right_len > 0 && pad_len > max_gap {
+        pad_len = max_gap;
+    }
     if pad_len < 2 {
         pad_len = 2;
     }
@@ -1312,7 +1316,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     }
 
     if sl_mode != "minimal" {
-        out.push_str(&justified_row(row_width, &row1_left, &row1_right));
+        out.push_str(&justified_row(row_width, 0, &row1_left, &row1_right));
     }
 
     // ccusage is gone. Burn rate and billing block come from our own ledger
@@ -2132,7 +2136,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             row1_left.push_str(&sep_bullet);
             row1_left.push_str(&dirty_segment);
         }
-        out.push_str(&justified_row(row_width, &row1_left, RESET));
+        out.push_str(&justified_row(row_width, 0, &row1_left, RESET));
     }
 
     // ── Progress bar ─────────────────────────────────────────────
@@ -2188,7 +2192,7 @@ fn render_inner(input: &str) -> Result<String, String> {
 
     if sl_mode == "full" {
         out.push('\n');
-        out.push_str(&justified_row(row_width, &row3_left, &row3_right));
+        out.push_str(&justified_row(row_width, 3, &row3_left, &row3_right));
     }
     Ok(out)
 }

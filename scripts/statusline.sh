@@ -1016,12 +1016,15 @@ _join_parts() {
 # Usage: _justified_row max_width left_parts_str sep right_parts_str
 _justified_row() {
   local max_w=$1
-  shift
+  local max_gap=$2
+  shift 2
   local left_str="$1"
   local right_str="$2"
   local left_len=$(_vis_len "$left_str")
   local right_len=$(_vis_len "$right_str")
   local pad_len=$(( max_w - left_len - right_len ))
+  # max_gap > 0 caps leftover slack between two non-empty groups (row 3).
+  (( max_gap > 0 && left_len > 0 && right_len > 0 && pad_len > max_gap )) && pad_len=$max_gap
   (( pad_len < 2 )) && pad_len=2
   local pad=""
   for (( p=0; p<pad_len; p++ )); do pad+=" "; done
@@ -1347,7 +1350,7 @@ fi
 # Row 1: folder/branch/model + dirty (non-minimal modes render now;
 # minimal deferred until after TIER arrays are defined for the pill)
 if [[ "$_SL_MODE" != "minimal" ]]; then
-  _justified_row "$ROW_WIDTH" "$row1_left" "$row1_right"
+  _justified_row "$ROW_WIDTH" 0 "$row1_left" "$row1_right"
 fi
 
 # ccusage is gone. Burn rate and billing block come from our own ledger below;
@@ -2714,7 +2717,7 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
   if [[ -n "$dirty_segment" ]]; then
     row1_left+="${BULLET}${dirty_segment}"
   fi
-  _justified_row "$ROW_WIDTH" "$row1_left" "\033[0m"
+  _justified_row "$ROW_WIDTH" 0 "$row1_left" "\033[0m"
 fi
 
 # ── _compute_gradient_cache: pre-compute per-cell ANSI colors ────
@@ -3090,5 +3093,5 @@ fi
 # Row 3: mcp | time + cost (full mode only)
 if [[ "$_SL_MODE" == "full" ]]; then
   printf '\n'
-  _justified_row "$ROW_WIDTH" "$row3_left" "$row3_right"
+  _justified_row "$ROW_WIDTH" 3 "$row3_left" "$row3_right"
 fi
