@@ -1,18 +1,26 @@
 // Embeds a fingerprint of the sources this binary was built from, so
 // `nerdflair-statusline --version` (and `nerdflair doctor`) can tell a stale
 // installed copy from this checkout's build. scripts/doctor.sh computes the same
-// hash the same way: src/*.rs in byte order, then Cargo.toml, then Cargo.lock,
+// hash the same way: every src/**/*.rs by sorted relative path, then Cargo.toml, then Cargo.lock,
 // concatenated and fed to sha256sum, first 8 hex.
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("build.rs: read {}: {}", dir.display(), e)) {
+        let p = e.expect("build.rs: read dir entry").path();
+        if p.is_dir() {
+            walk(&p, out);
+        } else if p.extension().map_or(false, |x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
 fn main() {
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("src")
-        .expect("build.rs: read src/")
-        .map(|e| e.expect("build.rs: read src/ entry").path())
-        .filter(|p| p.extension().map_or(false, |x| x == "rs"))
-        .collect();
-    files.sort();
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src"), &mut files);
+    files.sort(); // relative paths, byte order: the same order as doctor.sh (find | sort under LC_ALL=C)
     files.push("Cargo.toml".into());
     files.push("Cargo.lock".into());
     let mut raw = Vec::new();

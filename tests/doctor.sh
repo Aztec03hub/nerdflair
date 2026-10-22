@@ -46,9 +46,9 @@ case "\$2" in show-environment) exit 0 ;; is-active) cat "$S/unit.\$3" 2>/dev/nu
 EOF
   chmod +x "$S/tmux" "$S/systemctl"
 }
-doc() { # run doctor in the fake HOME; sets out and rc
+doc() { # run doctor in the fake HOME; sets out and rc (NFPTY / NF_STATE_DIR / NFPTY_ERRLOG pass through when set)
   rc=0
-  out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" \
+  out="$(env -i HOME="$H" ${NFPTY:+NFPTY=$NFPTY} ${NF_STATE_DIR:+NF_STATE_DIR=$NF_STATE_DIR} ${NFPTY_ERRLOG:+NFPTY_ERRLOG=$NFPTY_ERRLOG} PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" \
     NERDFLAIR_PLUGIN_DEST="$H/plug" NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" ${TMUX_PID:+TMUX_PID=$TMUX_PID} \
     bash "$REPO/scripts/nerdflair.sh" doctor "$@" 2>&1)" || rc=$?
 }
@@ -81,13 +81,22 @@ doc; expect "statusLine elsewhere: BROKEN" 1 '^BROKEN  statusline .*something el
 fresh; printf '{"statusLine":{"type":"command","command":"bash /x/scripts/statusline.sh"}}\n' > "$H/.claude/settings.json"
 doc; expect "statusLine on the bash renderer: warn" 0 '^warn    statusline '
 fresh; mv "$H/.claude/settings.json" "$H/.claude/settings.json".gone; doc; expect "settings.json missing: BROKEN" 1 '^BROKEN  statusline .*missing'
+fresh; printf '{"statusLine": ' > "$H/.claude/settings.json"; doc; expect "settings.json invalid JSON: BROKEN" 1 '^BROKEN  statusline .*not valid JSON'
+fresh; printf '{"other":1}\n' > "$H/.claude/settings.json"; doc; expect "no statusLine command: BROKEN" 1 '^BROKEN  statusline .*no statusLine command'
+fresh; printf '{"statusLine":{"type":"command","command":"KEY=sk-SECRET123 /opt/other"}}\n' > "$H/.claude/settings.json"
+doc; expect "statusLine elsewhere prints the first word only" 1 'something else: KEY=sk-SECRET123$'
+printf '%s' "$out" | command grep -q '/opt/other' && bad "statusLine command printed past the first word" || ok "statusLine command is bounded to its first word"
+fresh; mv "$H/.claude/settings.json" "$H/.claude/settings.json".gone; doc
+expect "missing settings.json: fix points at /nerdflair install" 1 'fix: /nerdflair install'
 
+fresh; rm -r "$H/plug" "$H/installed.json"; doc; expect "plugin never installed: warn, not BROKEN" 0 '^warn    plugin .*not installed'
 fresh; printf '{"version":"0.1.0"}\n' > "$H/plug/.claude-plugin/plugin.json"
 doc; expect "published plugin stale: BROKEN" 1 '^BROKEN  plugin .*published copy is STALE'
 fresh; printf '{"plugins":{"nerdflair-band@local":[{"version":"0.1.0-deadbeef"}]}}\n' > "$H/installed.json"
 doc; expect "installed plugin stale (the 2026-10-21 bug): BROKEN" 1 '^BROKEN  plugin .*INSTALLED plugin is STALE'
 
 fresh; echo '# edited' >> "$H/.nerdflair/bin/nf-tmux-heal"; doc; expect "hover file stale: BROKEN" 1 '^BROKEN  hover .*nf-tmux-heal stale'
+fresh; mv "$H/.nerdflair" "$H/.nerdflair.gone"; doc; expect "hover not installed: warn only" 0 '^warn    hover .*not installed'
 fresh; mv "$H/.nerdflair/hover" "$H/.nerdflair/hover".gone; doc; expect "hover bridge link missing: BROKEN" 1 '^BROKEN  hover .*hover link'
 fresh; mkdir "$S/early"; printf '#!/bin/sh\n' > "$S/early/claude"; chmod +x "$S/early/claude"
 out="$(env -i HOME="$H" PATH="$S/early:$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
@@ -98,12 +107,16 @@ fresh; touch "$S/tmux.down"; doc; expect "no tmux server: warn" 0 '^warn    tmux
 fresh; mv "$H/tmux.sock" "$H/tmux.sock".gone; doc; expect "tmux socket gone: BROKEN" 1 '^BROKEN  tmux .*lost its socket'
 fresh; mv "$S/env.CLAUDE_CODE_TMUX_TRUECOLOR" "$S/env.CLAUDE_CODE_TMUX_TRUECOLOR".gone; doc; expect "no truecolor in tmux env: warn" 0 '^warn    tmux-truecolor'
 fresh; mv "$S/env.BASH_ENV" "$S/env.BASH_ENV".gone; doc; expect "no BASH_ENV in tmux env: warn" 0 '^warn    tmux-bash-env .*not in'
+fresh; rm "$H/bashenv"; doc; expect "BASH_ENV file missing: warn" 0 '^warn    tmux-bash-env .*does not exist'
 fresh; printf 'true\n' > "$H/bashenv"; doc; expect "BASH_ENV without umask 022: warn" 0 "^warn    tmux-bash-env .*no 'umask 022'"
 fresh; (umask 077; exec sleep 300) & bgpid=$!
 TMUX_PID=$bgpid; doc; TMUX_PID=""; kill "$bgpid"; wait "$bgpid" 2>/dev/null || true; bgpid=""
 expect "tmux server umask 0077: warn, restart named" 0 '^warn    tmux-umask .*0077'
 expect "  ...fix names a tmux restart" 0 'fix: restart tmux'
 
+fresh; printf '%s' 'a-long-secret-value-0123456789' > "$S/env.CLAUDE_CODE_TMUX_TRUECOLOR"; doc
+printf '%s' "$out" | command grep -q 'long-secret' && bad "truecolor value printed" || ok "truecolor value is never printed, only set/unset"
+fresh; rmdir "$H/cache"; : > "$H/cache"; doc; expect "cache path is a file: BROKEN" 1 '^BROKEN  cache .*not a directory'
 fresh; chmod 755 "$H/cache"; doc; expect "cache dir 0755: BROKEN" 1 '^BROKEN  cache .*mode 755'
 fresh; mv "$H/cache" "$H/cache.gone"; mkdir -m 700 "$H/realcache"; ln -s "$H/realcache" "$H/cache"; doc; expect "cache dir a symlink: BROKEN" 1 '^BROKEN  cache .*symlink'
 
@@ -117,27 +130,56 @@ doc; expect "launcher.log errors in 24 h: warn with key and count" 0 '^warn    l
 printf '%s' "$out" | command grep -qE 'SECRETLINE|old' && bad "log lines were printed whole or an old line counted" || ok "only key, count and time are printed; a 2020 line is ignored"
 printf '%s 123 panic: thread main panicked at x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$H/.claude/nerdflair-errors.log"
 doc; expect "panic in the error log: BROKEN" 1 '^BROKEN  nerdflair-errors.log +PANIC; panic x1'
+fresh; mkdir "$H/st"; printf '%s pty: dup fd\n' "$now" > "$H/st/nfpty-error.log"
+NF_STATE_DIR="$H/st" doc; expect "NF_STATE_DIR is honoured for the logs" 0 '^warn    nfpty-error.log +pty x1'
+fresh; printf '%s pty: boom\n' "$now" > "$H/elsewhere.log"
+NFPTY_ERRLOG="$H/elsewhere.log" doc; expect "NFPTY_ERRLOG is honoured" 0 '^warn    elsewhere.log +pty x1'
 
-fresh; NFPTY=1; doc; unset NFPTY
+fresh; NFPTY=1 doc; expect "NFPTY exported: wrapper info row" 0 '^info    wrapper .*under the hover wrapper'
+fresh; doc; expect "no NFPTY: wrapper info row" 0 '^info    wrapper .*not under'
 printf 'v1 on 1700000000 cli\n' > "$H/cache/rc-abc"; doc
 expect "rc record newer than 5 min is listed with its state" 0 '^info    rc-records +1 newer than 5 min: rc-abc=on'
+
+echo "src hash:"
+fresh; printf '#!/bin/sh\necho "nerdflair-statusline 0.1.0 src:00000000"\n' > "$H/.local/bin/nerdflair-statusline"   # forces the "this checkout is src:X" line
+C="$(mktemp -d -p "$T")"; cp -r "$REPO/scripts" "$REPO/band" "$C/"; mkdir "$C/rust"; cp -r "$REPO/rust/src" "$REPO/rust/Cargo.toml" "$REPO/rust/Cargo.lock" "$C/rust/"
+stamp() { env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
+  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$C/scripts/doctor.sh" 2>&1 | sed -n 's/.*this checkout is src:\([0-9a-f]*\).*/\1/p' || true; }
+a="$(stamp)"; mkdir "$C/rust/src/zz"; echo 'pub fn z() {}' > "$C/rust/src/zz/mod.rs"; b="$(stamp)"
+[[ -n "$a" && -n "$b" && "$a" != "$b" ]] && ok "a new src/ subdirectory file changes the stamp ($a -> $b)" || bad "stamp unchanged by a new src file ($a, $b)"
+rc=0; sub="$(rg -n 'for e in std::fs::read_dir|fn walk' "$REPO/rust/build.rs" | wc -l)"; (( sub >= 1 )) && ok "build.rs walks src/ recursively" || bad "build.rs does not walk"
+
+echo "deploy.sh arguments:"
+dep() { rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
+  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" "$@" 2>&1)" || rc=$?; }
+fresh; dep --dryrun; expect "unknown argument: usage, exit 2, nothing run" 2 'usage: deploy.sh'
+dep --dry-run --bogus; expect "unknown argument after --dry-run: exit 2" 2 'unknown argument'
+if [[ "$(git -C "$REPO" rev-parse --git-dir)" != "$(git -C "$REPO" rev-parse --git-common-dir)" ]]; then
+  dep --dry-run; expect "from a worktree: refuses without --from-worktree" 2 'is a git worktree'
+else ok "main checkout: worktree refusal not applicable here"; fi
+fresh; rm -r "$H/plug" "$H/installed.json"; dep --dry-run --from-worktree
+printf '%s' "$out" | command grep -q 'sync-local-plugin' && bad "deploy would install a never-installed plugin" || ok "deploy skips a never-installed plugin"
+fresh; mv "$H/.nerdflair" "$H/.nerdflair.gone"; dep --dry-run --from-worktree
+printf '%s' "$out" | command grep -q 'hover/install.sh' && bad "deploy would opt into hover" || ok "deploy never opts into hover"
+mkdir "$T/nojq"; rc=0; out="$(env -i HOME="$H" PATH="$T/nojq" /usr/bin/bash "$REPO/scripts/deploy.sh" --dry-run --from-worktree 2>&1)" || rc=$?
+expect "no doctor report: deploy errors, never 'nothing to do'" 2 'doctor produced no report'
 
 echo "deploy.sh --dry-run:"
 fresh; printf '#!/bin/sh\necho "nerdflair-statusline 0.1.0 src:00000000"\n' > "$H/.local/bin/nerdflair-statusline"
 printf '{"version":"0.1.0"}\n' > "$H/plug/.claude-plugin/plugin.json"
 before="$(cd "$H" && find . -printf '%p %s %T@\n' | sort | sha256sum)"
 rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
-  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run 2>&1)" || rc=$?
+  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run --from-worktree 2>&1)" || rc=$?
 expect "plans build-rust.sh for a stale renderer" 0 'scripts/build-rust.sh$'
 expect "plans sync-local-plugin.sh for a stale plugin" 0 'band/sync-local-plugin.sh$'
 printf '%s' "$out" | command grep -q 'hover/install.sh' && bad "planned hover install with current hover files" || ok "skips the hover install when its files match"
 expect "names /reload-plugins as a follow-up" 0 '/reload-plugins'
 [[ "$(cd "$H" && find . -printf '%p %s %T@\n' | sort | sha256sum)" == "$before" ]] && ok "--dry-run changed nothing" || bad "--dry-run changed the fake HOME"
 fresh; rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
-  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run 2>&1)" || rc=$?
+  NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run --from-worktree 2>&1)" || rc=$?
 expect "nothing to do when everything matches" 0 'nothing to do'
 fresh; echo '# edited' >> "$H/.nerdflair/bin/claude"; rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" \
-  NERDFLAIR_PLUGIN_DEST="$H/plug" NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run 2>&1)" || rc=$?
+  NERDFLAIR_PLUGIN_DEST="$H/plug" NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run --from-worktree 2>&1)" || rc=$?
 expect "plans hover/install.sh for a stale shim, and new shells" 0 'open new shells'
 
 (( fail == 0 )) && echo "doctor: all passed" || { echo "doctor: FAILURES"; exit 1; }

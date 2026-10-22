@@ -16,12 +16,14 @@ command -v jq >/dev/null || { echo "doctor: BROKEN: jq is not installed (nerdfla
 BIN="$HOME/.local/bin/nerdflair-statusline"
 SETTINGS="$HOME/.claude/settings.json"
 NF="$HOME/.nerdflair"
-STATE="$HOME/.local/state/nerdflair"
+STATE="${NF_STATE_DIR:-$HOME/.local/state/nerdflair}"
+PTYLOG="${NFPTY_ERRLOG:-$STATE/nfpty-error.log}"
 rows=()   # status<TAB>check<TAB>detail<TAB>fix
 row() { rows+=("$1"$'\t'"$2"$'\t'"${3//$'\t'/ }"$'\t'"${4:-}"); }
 
 # 1. the installed renderer is this checkout's build
-src_hash() { (cd "$REPO/rust" && cat src/*.rs Cargo.toml Cargo.lock | sha256sum | cut -c1-8); }
+# same order as rust/build.rs: every src/**/*.rs by sorted relative path, then Cargo.toml, Cargo.lock
+src_hash() { (cd "$REPO/rust" && { find src -type f -name '*.rs' | sort | xargs cat; cat Cargo.toml Cargo.lock; } | sha256sum | cut -c1-8); }
 want="$(src_hash)"
 if [[ ! -x "$BIN" ]]; then
   row BROKEN renderer "$BIN is missing" "bash $REPO/scripts/build-rust.sh"
@@ -44,7 +46,7 @@ fi
 # 2. settings.json statusLine points at that binary (ONLY .statusLine is read: the file may hold secrets)
 fixsl="tmp=\$(mktemp) && jq --arg c '$BIN' '.statusLine={type:\"command\",command:\$c}' '$SETTINGS' > \"\$tmp\" && mv \"\$tmp\" '$SETTINGS'"
 if [[ ! -f "$SETTINGS" ]]; then
-  row BROKEN statusline "$SETTINGS is missing" "$fixsl"
+  row BROKEN statusline "$SETTINGS is missing" "/nerdflair install   # inside Claude Code; it creates settings.json with the statusLine"
 elif ! cmd="$(jq -r '.statusLine.command // empty' "$SETTINGS" 2>/dev/null)"; then
   row BROKEN statusline "$SETTINGS is not valid JSON" "jq . '$SETTINGS' >/dev/null  # shows where it breaks; fix by hand"
 else
@@ -52,13 +54,16 @@ else
   if [[ -z "$cmd" ]]; then row BROKEN statusline "no statusLine command" "$fixsl"
   elif [[ "$c" == *"$BIN"* ]]; then row ok statusline "runs $BIN"
   elif [[ "$c" == *statusline.sh* ]]; then row warn statusline "runs the bash renderer, not $BIN" "$fixsl"
-  else row BROKEN statusline "statusLine runs something else: ${cmd:0:80}" "$fixsl"
+  else row BROKEN statusline "statusLine runs something else: ${cmd%% *}" "$fixsl"
   fi
 fi
 
 # 3. band plugin: published copy and the one Claude Code loads
 if out="$(bash "$REPO/band/sync-local-plugin.sh" --check 2>&1)"; then
   row ok plugin "${out#nerdflair-band: }"
+elif [[ "$out" == *"has 'none'"*"has 'none'"* ]]; then
+  # never installed: a warn, like hover. deploy refreshes, it never opts you in.
+  row warn plugin "band plugin not installed (no published copy, not in installed_plugins.json)" "bash $REPO/band/sync-local-plugin.sh   # opt-in; it runs claude plugin install"
 else
   row BROKEN plugin "$(printf '%s' "$out" | sed -n 's/^nerdflair-band: //; s/ Run band.*//; p' | paste -sd '|' - | sed 's/|/; /g')" \
     "bash $REPO/band/sync-local-plugin.sh   # then /reload-plugins in every session"
@@ -86,6 +91,8 @@ else
   pos=""
   IFS=: read -ra dirs <<<"$PATH"
   for d in "${dirs[@]}"; do
+    [[ -z "$d" ]] && continue
+    d="${d%/}"
     if [[ "$d" == "$NF/bin" ]]; then pos=first; break; fi
     if [[ -x "$d/claude" ]]; then pos="$d/claude"; break; fi
   done
@@ -104,7 +111,7 @@ else
   if [[ -S "$sock" ]]; then row ok tmux "server pid $pid, socket $sock"
   else row BROKEN tmux "server pid $pid has lost its socket $sock" "bash $REPO/band/hover/nf-tmux-heal"; fi
   tc="$(tmux show-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 2>/dev/null)"
-  if [[ "$tc" == CLAUDE_CODE_TMUX_TRUECOLOR=?* ]]; then row ok tmux-truecolor "$tc"
+  if [[ "$tc" == CLAUDE_CODE_TMUX_TRUECOLOR=?* ]]; then row ok tmux-truecolor "CLAUDE_CODE_TMUX_TRUECOLOR set"
   else row warn tmux-truecolor "CLAUDE_CODE_TMUX_TRUECOLOR not in tmux's global env" "tmux set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1"; fi
   be="$(tmux show-environment -g BASH_ENV 2>/dev/null)"; be="${be#BASH_ENV=}"
   if [[ -z "$be" || "$be" == -BASH_ENV ]]; then
@@ -148,7 +155,7 @@ fi
 # 8. logs, last 24 h: key/reason name, count, newest time; never whole lines. One python, tail reads.
 # (a failing scan is a row of its own, never an empty "nothing to report")
 logs="$(python3 - "$HOME/.claude/nerdflair-errors.log" \
-  "$STATE/nfpty-error.log" "$STATE/launcher.log" "$STATE/tmux-watch.log" 2>&1 <<'PY'
+  "$PTYLOG" "$STATE/launcher.log" "$STATE/tmux-watch.log" 2>&1 <<'PY'
 import sys, os, re, time, datetime as dt
 now = time.time()
 for path in sys.argv[1:]:
@@ -196,7 +203,7 @@ recs=()
 if [[ -d "$cache" && ! -L "$cache" ]]; then
   while IFS= read -r -d '' f; do
     read -r _ s _ < "$f" 2>/dev/null || s="?"
-    b="${f##*/}"; recs+=("${b:0:24}=${s:-?}")
+    b="${f##*/}"; recs+=("${b:0:24}=${s:0:8}")
   done < <(find "$cache" -maxdepth 1 -name 'rc-*' -type f -mmin -5 -print0 2>/dev/null)
 fi
 row info rc-records "${#recs[@]} newer than 5 min${recs:+: $(IFS=' '; echo "${recs[*]}")}"
