@@ -38,5 +38,13 @@ o=$(NF_GUARD_VERBOSE=1 out '2026-10-22T01:00:00Z 777 other-session: secret/path-
 [[ "$o" == *'secret/path-abc'* ]] && check "NF_GUARD_VERBOSE=1 shows the full line" ok ok || check "NF_GUARD_VERBOSE=1 shows the full line" ok "$o"
 seed; o=$(out '2026-10-22T01:00:01Z 999 panic: secret/path-abc')
 [[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic:'* && "$o" != *secret* ]] && check "FAIL output hides the text too" ok ok || check "FAIL output hides the text too" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z 777 tmp-write:/home/x/secret-name: y')
+[[ "$o" == *' 777 tmp-write:'* && "$o" != *secret-name* ]] && check "a tag's runtime data (tmp-write:<path>) is hidden" ok ok || check "a tag's runtime data (tmp-write:<path>) is hidden" ok "$o"
+o=$(NF_GUARD_VERBOSE=1 out '2026-10-22T01:00:00Z 777 tmp-write:/home/x/secret-name: y')
+[[ "$o" == *secret-name* ]] && check "NF_GUARD_VERBOSE=1 keeps the full tag" ok ok || check "NF_GUARD_VERBOSE=1 keeps the full tag" ok "$o"
+seed; o=$(out 'secret-no-space-line')
+[[ "$o" == *'(unparsed line)'* && "$o" != *secret* ]] && check "a line with no space is not printed" ok ok || check "a line with no space is not printed" ok "$o"
+seed; o=$(out "2026-10-22T01:00:00Z 777 other-session: $(printf 'x%.0s' {1..250}) panic")
+[[ "$o" == *'>> 2026-10-22T01:00:00Z 777 other-session:'* ]] && check "a match past column 200 is still marked >>" ok ok || check "a match past column 200 is still marked >>" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
 exit $fail
