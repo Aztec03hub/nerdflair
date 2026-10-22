@@ -1728,7 +1728,8 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
     }
     // No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
-    if compact_segment.is_empty() && used10.is_some() {
+    // Not in --json: the band's payload never has samples, so it would always show the placeholder.
+    if compact_segment.is_empty() && used10.is_some() && !json_mode() {
         compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
