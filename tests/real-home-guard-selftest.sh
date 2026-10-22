@@ -30,9 +30,13 @@ seed; check "NF_REAL_HOME: an unrelated line passes" 0 "$(runr '2026-10-22T01:00
 # The report names every appended line and marks the matching one, so a live session's line is told apart from a test's.
 out() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%b\n' "$1" >> "$L"; rhg_check ); }
 seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x\n2026-10-22T01:00:01Z 999 panic: boom')
-[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic: boom'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session: x'* && "$o" != *'>> 2026-10-22T01:00:00Z 777'* ]] \
+[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic:'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *'>> 2026-10-22T01:00:00Z 777'* ]] \
   && check "FAIL output lists the live session's line unmarked and the panic line marked" ok ok || check "FAIL output lists appended lines with a match marker" ok "$o"
-seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x')
-[[ "$o" == *'other-session: x'* ]] && check "PASS output names the appended line" ok ok || check "PASS output names the appended line" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: secret/path-abc')
+[[ "$o" == *'2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *secret* ]] && check "PASS output shows time, pid, tag and hides the text" ok ok || check "PASS output shows time, pid, tag and hides the text" ok "$o"
+o=$(NF_GUARD_VERBOSE=1 out '2026-10-22T01:00:00Z 777 other-session: secret/path-abc')
+[[ "$o" == *'secret/path-abc'* ]] && check "NF_GUARD_VERBOSE=1 shows the full line" ok ok || check "NF_GUARD_VERBOSE=1 shows the full line" ok "$o"
+seed; o=$(out '2026-10-22T01:00:01Z 999 panic: secret/path-abc')
+[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic:'* && "$o" != *secret* ]] && check "FAIL output hides the text too" ok ok || check "FAIL output hides the text too" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
 exit $fail

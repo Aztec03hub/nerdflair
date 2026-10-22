@@ -9,6 +9,7 @@
 #                 together run every case exactly once. Most of the time is renders waiting out the 300 ms hung git.
 #   --list        print the case names (with --part: only that part's) and run nothing
 set -uo pipefail
+export LC_NUMERIC=C   # time prints seconds with the locale radix; the parsing below wants a dot
 PART_N=1; PART_M=1; LIST=0
 while (( $# )); do
   case "$1" in
@@ -99,8 +100,10 @@ check_pair "gitdir trailing space and CR" "$d/wt" 'spaced'
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs"
 { printf 'ref: refs/heads/'; head -c 20000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$d/.git/HEAD"
 # CPU time (user+sys of the renders), not wall time: under load wall time measures the scheduler. The hung git sleeps, it costs no CPU.
-TIMEFORMAT='%3U %3S'; { time check_pair "huge HEAD" "$d" 'xxxx'; } 2> "$W/cpu"; read -r cu cs < <(tail -n 1 "$W/cpu")
-(( UNIT_ON )) && { cpu_ms=$(( 10#${cu/./} + 10#${cs/./} )); echo "huge HEAD: ${cpu_ms} ms CPU"
+t0=$SECONDS; TIMEFORMAT='%3U %3S'; { time check_pair "huge HEAD" "$d" 'xxxx'; } 2> "$W/cpu"; wall=$(( SECONDS - t0 )); read -r cu cs < <(tail -n 1 "$W/cpu")
+(( UNIT_ON )) && { cpu_ms=$(( 10#${cu/./} + 10#${cs/./} )); echo "huge HEAD: ${cpu_ms} ms CPU, ${wall} s wall"
+  # loose wall backstop: CPU time can't see a render that sleeps or blocks
+  (( wall <= ${NF_HEADFB_WALL_S:-30} )) || { echo "FAIL huge HEAD: ${wall} s wall"; fail=1; }
   (( cpu_ms < ${NF_HEADFB_BUDGET_MS:-6000} )) || { echo "FAIL huge HEAD: ${cpu_ms} ms CPU"; fail=1; }; }
 # a bare repo nested inside a repo: its own branch, not the outer one
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs" "$d/inner.git/refs"
