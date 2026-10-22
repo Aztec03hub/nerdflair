@@ -30,7 +30,8 @@ seed; check "NF_REAL_HOME: an unrelated line passes" 0 "$(runr '2026-10-22T01:00
 # The report names every appended line and marks the matching one, so a live session's line is told apart from a test's.
 out() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%b\n' "$1" >> "$L"; rhg_check ); }
 seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x\n2026-10-22T01:00:01Z 999 panic: boom')
-[[ "$o" == *'>> panic: 2026-10-22T01:00:01Z 999 panic:'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *'>> '*'777'* ]] \
+# The "not marked" check is per line: the header itself says ">> marks a match", so a whole-output glob always matched.
+[[ "$o" == *'>> panic: 2026-10-22T01:00:01Z 999 panic:'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session:'* ]] && ! rg -q '^>> .* 777 ' <<<"$o" \
   && check "FAIL output lists the live session's line unmarked and the panic line marked" ok ok || check "FAIL output lists appended lines with a match marker" ok "$o"
 seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: secret/path-abc')
 [[ "$o" == *'2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *secret* ]] && check "PASS output shows time, pid, tag and hides the text" ok ok || check "PASS output shows time, pid, tag and hides the text" ok "$o"
