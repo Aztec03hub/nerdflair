@@ -49,10 +49,17 @@ LOG = os.environ.get("NF_TMUX_WATCH_LOG") or os.path.expanduser("~/.local/state/
 HEAL = os.environ.get("NF_TMUX_HEAL") or os.path.join(HERE, "nf-tmux-heal")
 RESCAN = float(os.environ.get("NF_TMUX_WATCH_RESCAN", "30"))
 HEALS_PER_HOUR = 6
-# Scratch tmux servers (tests, throwaway TMUX_TMPDIRs) sit at /tmp/<dir>/tmux-UID/..., deeper than the real
-# /tmp/tmux-UID/ or $XDG_RUNTIME_DIR/tmux-UID/. The live service ignores them, or every test run that deletes
-# its own socket lands in tmux-watch.log as an incident. The watcher's own tests set NF_TMUX_WATCH_SCRATCH=1.
+# Only the user's real tmux socket roots are watched: /tmp/tmux-UID, $TMUX_TMPDIR/tmux-UID and
+# $XDG_RUNTIME_DIR/tmux-UID of the service's own environment. Any other tmux-UID dir (tests, throwaway
+# TMUX_TMPDIRs under /tmp/x, /var/tmp, /dev/shm...) is scratch: logging it makes every test run an incident.
+# The watcher's own tests set NF_TMUX_WATCH_SCRATCH=1 to watch their scratch servers.
 WATCH_SCRATCH = os.environ.get("NF_TMUX_WATCH_SCRATCH") == "1"
+
+
+def _real_socket_dir(p):
+    d = os.path.dirname(p)
+    roots = ["/tmp"] + [os.environ[k] for k in ("TMUX_TMPDIR", "XDG_RUNTIME_DIR") if os.environ.get(k)]
+    return any(d == os.path.join(r.rstrip("/") or "/", f"tmux-{UID}") for r in roots)
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
@@ -149,7 +156,7 @@ def socket_paths():
     for line in r.stdout.splitlines():
         m = SS_LINE.match(line)
         if m and f"/tmux-{UID}/" in m.group(1):
-            if not WATCH_SCRATCH and os.path.dirname(os.path.dirname(m.group(1))).startswith("/tmp/"):
+            if not WATCH_SCRATCH and not _real_socket_dir(m.group(1)):
                 continue
             paths.append(m.group(1))
         elif f"/tmux-{UID}/" in line:

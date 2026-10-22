@@ -43,7 +43,7 @@ EOF
   cat > "$S/systemctl" <<EOF
 #!/bin/bash
 [[ -f "$S/systemd.down" ]] && exit 1
-case "\$2" in show-environment) exit 0 ;; is-active) cat "$S/unit.\$3" 2>/dev/null || echo active ;; esac
+case "\$2" in show-environment) exit 0 ;; is-active) cat "$S/unit.\$3" 2>/dev/null || echo active ;; show) cat "$S/started" 2>/dev/null ;; esac
 EOF
   chmod +x "$S/tmux" "$S/systemctl"
 }
@@ -126,6 +126,8 @@ fresh; mkdir -p "$H/.cache/nerdflair"; chmod 755 "$H/.cache/nerdflair"; dflt; ex
 fresh; mv "$H/cache" "$H/cache.gone"; mkdir -m 700 "$H/realcache"; ln -s "$H/realcache" "$H/cache"; doc; expect "cache dir a symlink: BROKEN" 1 '^BROKEN  cache .*symlink'
 
 fresh; echo failed > "$S/unit.nf-tmux-watch.service"; doc; expect "unit inactive: warn" 0 '^warn    nf-tmux-watch.service +failed'
+fresh; echo "2001-01-01 00:00:00 UTC" > "$S/started"; doc; expect "service started before its installed file: warn running older code" 0 '^warn    nf-tmux-watch.service .*older code'
+fresh; echo "2999-01-01 00:00:00 UTC" > "$S/started"; doc; expect "service started after its installed file: ok" 0 '^ok      nf-tmux-watch.service +active'
 fresh; echo '# edited' >> "$H/.config/systemd/user/nf-tmux-watch.service"; doc; expect "installed unit differs from band/hover: hover BROKEN" 1 '^BROKEN  hover .*nf-tmux-watch.service stale'
 fresh; rm "$H/.config/systemd/user/nf-tmux-watch.service"; doc; expect "installed unit missing: hover BROKEN" 1 '^BROKEN  hover .*nf-tmux-watch.service missing'
 fresh; doc; expect "doctor says which checkout it checked" 0 "^checkout: $REPO\$"
@@ -142,6 +144,12 @@ fresh; mkdir -p "$H/.local/state/nerdflair"; printf '%s DELETED: /tmp/x/tmux-100
 doc; expect "a process-snapshot line naming panicked in tmux-watch.log: not BROKEN" 0 '^warn    tmux-watch.log +DELETED x1'
 printf '%s watch: thread main panicked at x\n' "$(date +%Y-%m-%d\ %H:%M:%S)" >> "$H/.local/state/nerdflair/tmux-watch.log"
 doc; expect "a real panic line in tmux-watch.log: still BROKEN" 1 '^BROKEN  tmux-watch.log +PANIC'
+fresh; mkdir "$H/st"; printf '%s nfpty: layout failed, hover disabled\nTraceback (most recent call last):\n  File "x", line 1\nKeyError: 1\n' "$(date +%Y-%m-%d\ %H:%M:%S)" > "$H/st/nfpty-error.log"
+NF_STATE_DIR="$H/st" doc; expect "a hover crash traceback in nfpty-error.log: BROKEN" 1 '^BROKEN  nfpty-error.log +PANIC'
+fresh; mkdir "$H/st"; printf '2020-01-01 00:00:00 nfpty: layout failed, hover disabled\nTraceback (most recent call last):\nKeyError: 1\n' > "$H/st/nfpty-error.log"
+NF_STATE_DIR="$H/st" doc; expect "an old traceback is ignored" 0 '^ok      nfpty-error.log'
+fresh; mkdir -p "$H/.local/state/nerdflair"; printf '%s pid=1 panic: not a snapshot shape\n' "$(date +%Y-%m-%d\ %H:%M:%S)" > "$H/.local/state/nerdflair/tmux-watch.log"
+doc; expect "a pid= line that is not the snapshot shape still counts" 1 '^BROKEN  tmux-watch.log +PANIC'
 fresh; mkdir "$H/st"; printf '%s pty: dup fd\n' "$now" > "$H/st/nfpty-error.log"
 NF_STATE_DIR="$H/st" doc; expect "NF_STATE_DIR is honoured for the logs" 0 '^warn    nfpty-error.log +pty x1'
 fresh; printf '%s pty: boom\n' "$now" > "$H/elsewhere.log"

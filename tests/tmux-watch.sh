@@ -111,19 +111,24 @@ if not sur: bad.append(("surrogate", "line lost"))
 open(os.path.join(root, "ctl-result"), "w").write("yes" if not bad else f"no {bad}")
 PY
 check "watch logs: ESC, C1, CR, BEL never reach tmux-watch.log or launcher.log" yes "$(cat "$ROOT/ctl-result" 2>/dev/null)"
-# ── the live service ignores scratch servers (/tmp/<dir>/tmux-UID), keeps the real /tmp/tmux-UID ──
-cat > "$ROOT/ss-stub" <<SH
+# ── the live service watches only the real socket roots; every other tmux-UID dir is scratch ──
+cat > "$ROOT/ss-stub" <<'SH'
 #!/bin/sh
-echo "u_str LISTEN 0 10 /tmp/zz-scratch/tmux-$uid/default 1 * 0 users:((\"tmux: server\",pid=1,fd=3))"
-echo "u_str LISTEN 0 10 /tmp/tmux-$uid/default 2 * 0 users:((\"tmux: server\",pid=2,fd=3))"
+for p in $NF_SS_PATHS; do echo "u_str LISTEN 0 10 $p 1 * 0 users:((\"tmux: server\",pid=1,fd=3))"; done
 SH
 chmod +x "$ROOT/ss-stub"; mkdir -p "$ROOT/ssbin"; ln -sf "$ROOT/ss-stub" "$ROOT/ssbin/ss"
-sp() { env -u NF_TMUX_WATCH_SCRATCH "$@" PATH="$ROOT/ssbin:$PATH" python3 -c '
+sp() { # extra-env... : how many of the stub sockets the watcher keeps
+  env -u NF_TMUX_WATCH_SCRATCH -u TMUX_TMPDIR -u XDG_RUNTIME_DIR NF_SS_PATHS="$SSP" "$@" PATH="$ROOT/ssbin:$PATH" python3 -c '
 import importlib.machinery, importlib.util, sys
 l = importlib.machinery.SourceFileLoader("nfw", sys.argv[1]); sp = importlib.util.spec_from_loader("nfw", l)
 m = importlib.util.module_from_spec(sp); l.exec_module(m); print(len(m.socket_paths()))' "$WATCH"; }
-check "live watcher ignores a scratch server socket, keeps the real one" 1 "$(sp)"
-check "NF_TMUX_WATCH_SCRATCH=1 (the tests' watcher) sees both" 2 "$(sp NF_TMUX_WATCH_SCRATCH=1)"
+SSP="/tmp/zz-scratch/tmux-$uid/default /var/tmp/zz/tmux-$uid/default /dev/shm/zz/tmux-$uid/default /home/x/tmux-$uid/default"
+check "live watcher ignores scratch sockets under /tmp/x, /var/tmp, /dev/shm and elsewhere" 0 "$(sp)"
+SSP="/tmp/tmux-$uid/default"; check "the real /tmp/tmux-UID stays watched" 1 "$(sp)"
+SSP="/run/user/$uid/tmux-$uid/default"; check "\$XDG_RUNTIME_DIR/tmux-UID stays watched" 1 "$(sp XDG_RUNTIME_DIR=/run/user/$uid)"
+SSP="/var/tmp/mine/tmux-$uid/default"; check "\$TMUX_TMPDIR/tmux-UID stays watched" 1 "$(sp TMUX_TMPDIR=/var/tmp/mine)"
+check "...but is scratch when the service has no TMUX_TMPDIR" 0 "$(sp)"
+SSP="/tmp/zz-scratch/tmux-$uid/default /var/tmp/zz/tmux-$uid/default"; check "NF_TMUX_WATCH_SCRATCH=1 (the tests' watcher) sees scratch too" 2 "$(sp NF_TMUX_WATCH_SCRATCH=1)"
 printf '\n'
 rhg_check || fail=1
 if (( fail )); then echo "tmux-watch: FAIL"; exit 1; fi

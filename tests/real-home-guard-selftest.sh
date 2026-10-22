@@ -62,10 +62,25 @@ seed; out '2026-10-22T01:00:00Z 999 tmp-write:/home/phil/secret-dir: panic' >/de
 seed; o=$(out "2026-10-22T01:00:00Z 777 t: ${TMPDIR:-/tmp}/nf-x"); [[ "$o" == *'>> tmp: '* ]] && check "marker names the temp-path rule" ok ok || check "marker names the temp-path rule" ok "$o"
 seed; o=$(NF_GUARD_VERBOSE=1 out "2026-10-22T01:00:00Z 777 t: $(printf '\xc3\xa9%.0s' {1..150}) panic"); [[ "$o" == *'>> panic:'* && "$o" != *$'\xc3'$'\n'* ]] && check "verbose cut keeps multibyte characters whole" ok ok || check "verbose cut keeps multibyte characters whole" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
-# The real ~/.local/state/nerdflair/: any file that grows or appears fails, a quiet one passes.
-mkdir -p "$W/home/.local/state/nerdflair"; SL="$W/home/.local/state/nerdflair/tmux-watch.log"
-runs() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; [[ -n "$1" ]] && printf '%b' "$1" > "$W/home/.local/state/nerdflair/$2"; rhg_check >/dev/null; echo $? ); }
-seed; echo old > "$SL"; check "state dir: nothing written passes" 0 "$(runs '')"
-seed; echo old > "$SL"; check "state dir: a grown tmux-watch.log fails" 1 "$( ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; echo more >> "$SL"; rhg_check >/dev/null; echo $? ) )"
-seed; check "state dir: a new file fails" 1 "$(runs 'x\n' launcher.log)"
+# The real ~/.local/state/nerdflair/: the live system writes there during a run, so growth alone passes (and is
+# printed); only a new line naming this run's scratch paths fails, and it is marked.
+SD="$W/home/.local/state/nerdflair"; mkdir -p "$SD"; SL="$SD/tmux-watch.log"
+sout() { # home-dir appended-line file -> guard output; the line is appended between snapshot and check
+  ( HOME="$1"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%s\n' "$2" >> "$1/.local/state/nerdflair/$3"; rhg_check; echo "rc=$?" ); }
+LIVE='2026-10-22 04:34:04 ss: cannot run ss: timed out after 5 seconds'
+seed; echo old > "$SL"; o=$(sout "$W/home" "$LIVE" tmux-watch.log)
+[[ "$o" == *'rc=0'* && "$o" == *'gained'* ]] && check "state dir: a live path-free line passes, and is printed" ok ok || check "state dir: a live path-free line passes, and is printed" ok "$o"
+o=$(sout "$W/home" "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x/tmux-1000" tmux-watch.log)
+[[ "$o" == *'rc=1'* && "$o" == *'>> '* && "$o" == *'wrote into the real'* ]] && check "state dir: a line naming a suite scratch dir fails, marked >>" ok ok || check "state dir: a line naming a suite scratch dir fails, marked >>" ok "$o"
+o=$(sout "$W/home" "x /tmp/tmp.AbC/nf-noleaks-1/tmux-1000" launcher.log)
+[[ "$o" == *'rc=1'* ]] && check "state dir: a new file with a /tmp/tmp.* path fails" ok ok || check "state dir: a new file with a /tmp/tmp.* path fails" ok "$o"
+# One failing check must not hide the other.
+seed; o=$( ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot
+  printf '2026-10-22T01:00:00Z 999 panic: boom\n' >> "$L"; echo "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x" >> "$SL"; rhg_check; echo "rc=$?" ) )
+[[ "$o" == *'the real'*'errors.log'*'matching'* || "$o" == *'nerdflair-errors.log gained'* ]] && [[ "$o" == *'wrote into the real'* && "$o" == *'rc=1'* ]] \
+  && check "both guard checks report in one run" ok ok || check "both guard checks report in one run" ok "$o"
+# $HOME with a space.
+SP="$W/home sp"; mkdir -p "$SP/.local/state/nerdflair" "$SP/.claude"; echo old > "$SP/.local/state/nerdflair/tmux-watch.log"
+o=$(sout "$SP" "$LIVE" tmux-watch.log); [[ "$o" == *'rc=0'* && "$o" != *'integer expression'* ]] && check "state dir: HOME with a space, live line passes" ok ok || check "state dir: HOME with a space, live line passes" ok "$o"
+o=$(sout "$SP" "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x" tmux-watch.log); [[ "$o" == *'rc=1'* ]] && check "state dir: HOME with a space, scratch line fails" ok ok || check "state dir: HOME with a space, scratch line fails" ok "$o"
 exit $fail

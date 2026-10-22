@@ -157,7 +157,12 @@ else
   # claude-tmp-fix.timer is not installed or documented by this repo (added with no reason in 1ac67d0): not checked
   for u in nf-tmux-watch.service; do
     st="$(systemctl --user is-active "$u" 2>/dev/null)"
-    if [[ "$st" == active ]]; then row ok "$u" active
+    started="$(systemctl --user show -p ActiveEnterTimestamp --value "$u" 2>/dev/null)"   # date -d "" would mean midnight
+    [[ -n "$started" ]] && started="$(date -d "$started" +%s 2>/dev/null)"
+    mt="$(stat -c %Y "$NF/bin/nf-tmux-watch" 2>/dev/null)"
+    if [[ "$st" == active && -n "$started" && -n "$mt" ]] && (( started < mt )); then
+      row warn "$u" "active but started before $NF/bin/nf-tmux-watch was installed (running older code)" "systemctl --user restart $u"
+    elif [[ "$st" == active ]]; then row ok "$u" active
     else row warn "$u" "${st:-unknown}" "systemctl --user enable --now $u"; fi
   done
 fi
@@ -178,10 +183,14 @@ for path in sys.argv[1:]:
         print(f"ok\t{name}\tabsent"); continue
     except OSError as e:
         print(f"warn\t{name}\tunreadable ({e.strerror})"); continue
-    keys, panic = {}, False
+    keys, panic, recent = {}, False, False
     for ln in lines:
         m = re.match(r"(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(Z|[+-]\d{4})?\s+(.*)", ln)
-        if not m: continue
+        if not m:
+            # nfpty.degrade() logs a timestamped "failed, hover disabled" line, then a bare traceback: that is a hover crash.
+            # (The launcher is shell and nf-tmux-watch's crashes go to the journal, so only nfpty-error.log can hold one.)
+            if recent and ln.startswith("Traceback (most recent call last)"): panic = True
+            continue
         d, t, z, rest = m.groups()
         try:
             ts = dt.datetime.fromisoformat(f"{d}T{t}")
@@ -190,13 +199,14 @@ for path in sys.argv[1:]:
             ts = ts.timestamp()
         except ValueError:
             continue
-        if now - ts > 86400: continue
+        recent = now - ts <= 86400
+        if not recent: continue
         rest = re.sub(r"^\d+ ", "", rest)             # errors.log: pid
         rest = re.sub(r"^(nfpty|watch): ", "", rest)  # the component every line of that log shares
         k = re.match(r"[\w.:~/-]{1,40}?(?=:\s|\s|$)", rest)
         k = k.group(0) if k else "?"
         # a process-snapshot line (nf-tmux-watch lists what ran: "pid=N ppid=N ...") is another program's text, never ours
-        if "panic" in ln and not rest.startswith("pid="): panic = True
+        if "panic" in ln and not re.match(r"pid=\d+ ppid=\d+ age=", rest): panic = True
         c, newest = keys.get(k, (0, 0)); keys[k] = (c + 1, max(newest, ts))
     if not keys:
         print(f"ok\t{name}\tnothing in 24 h"); continue

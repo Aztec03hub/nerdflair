@@ -261,6 +261,20 @@ bash "$INSTALL" install >/dev/null 2>&1 || true
 out=$(bash "$INSTALL" uninstall 2>&1); rc=$?
 check "uninstall: a never-installed watcher unit is not a failure (exit 0)" 0 "$rc"
 check "uninstall: and it prints no warning for it" 0 "$(grep -c 'could not stop' <<<"$out")"
+# enable --now never restarts a running service: install restarts it only when the installed watcher or unit changed.
+printf '#!/bin/sh\necho "$*" >> "$SC_LOG"\nexit 0\n' > "$ROOT/stub/systemctl"
+export SC_LOG="$ROOT/systemctl.log"
+restarts() { grep -c 'try-restart nf-tmux-watch' "$SC_LOG" 2>/dev/null || true; }
+: > "$SC_LOG"; bash "$INSTALL" uninstall >/dev/null 2>&1; : > "$SC_LOG"
+bash "$INSTALL" install >/dev/null 2>&1
+check "install: new watcher files restart the service" 1 "$(restarts)"
+bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: nothing changed, no restart" 1 "$(restarts)"
+echo '# edited' >> "$HOME/.nerdflair/bin/nf-tmux-watch"; bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: installed watcher differed, restarted" 2 "$(restarts)"
+echo '# edited' >> "$HOME/.config/systemd/user/nf-tmux-watch.service"; bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: installed unit differed, restarted" 3 "$(restarts)"
+bash "$INSTALL" uninstall >/dev/null 2>&1
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
 
 # Remove only what mktemp made, checked first: no glob, no guess.

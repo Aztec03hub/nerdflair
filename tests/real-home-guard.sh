@@ -16,10 +16,12 @@ rhg_snapshot() {
   RHG_LOG="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.claude/nerdflair-errors.log"
   RHG_PID=$$
   RHG_SIZE=-1
-  # Any file in the real ~/.local/state/nerdflair/ must keep its size (a test writing there is the bug; the
-  # live nf-tmux-watch service ignores scratch servers, so a growing file here is this run's doing).
+  # The real ~/.local/state/nerdflair/ is watched too (see rhg_check_state). Associative array: $HOME may hold a space.
   RHG_STATE="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.local/state/nerdflair"
-  RHG_STATE_SNAP=$(stat -c '%n %s' "$RHG_STATE"/* 2>/dev/null | sort)
+  RHG_REAL_HOME="${NF_REAL_HOME:-${HOME:-/nonexistent}}"
+  declare -gA RHG_SNAP=()
+  local f
+  while IFS= read -r -d '' f; do RHG_SNAP["$f"]=$(stat -c %s "$f"); done < <(find "$RHG_STATE" -maxdepth 1 -type f -print0 2>/dev/null)
   [[ -f "$RHG_LOG" ]] || return 0
   RHG_SIZE=$(stat -c %s "$RHG_LOG")
   RHG_LAST=$(head -c "$RHG_SIZE" "$RHG_LOG" | tail -n 1 | cksum)
@@ -44,18 +46,35 @@ rhg_show() {
   else t='?'; p='?'; k='?'; fi
   printf '%s %s %s' "$t" "$p" "$k"; [[ $k == '?' ]] || printf ':'
 }
-rhg_check_state() { # 1 if a file in the real state dir grew or appeared since rhg_snapshot
-  local now f n o rc=0
-  now=$(stat -c '%n %s' "$RHG_STATE"/* 2>/dev/null | sort)
-  while read -r f n; do
-    [[ -n "$f" ]] || continue
-    o=$(printf '%s\n' "$RHG_STATE_SNAP" | awk -v f="$f" '$1==f{print $2}')
-    if [[ -z "$o" || "$n" -gt "$o" ]]; then printf '  FAIL  the real %s grew during this run (%s -> %s bytes)\n' "$f" "${o:-absent}" "$n"; rc=1; fi
-  done <<< "$now"
+# The live system writes into the same dir while a suite runs (launcher.log, nfpty-error.log, tmux-watch.log
+# events such as "ss timed out"), so growth alone proves nothing. Every new line is printed (time, pid and tag
+# only, like the errors.log guard); the run FAILS only on a new line that names this run's scratch paths:
+# ${TMPDIR:-/tmp}/nf-, ${TMPDIR:-/tmp}/tmp. and, under a temp HOME, that HOME.
+# ponytail: a test that leaks a path-free line into the real dir is not caught; add a marker if one ever does.
+rhg_check_state() {
+  local f old new l t m q rc=0 pats=("${TMPDIR:-/tmp}/nf-" "${TMPDIR:-/tmp}/tmp.")
+  [[ "$HOME" != "$RHG_REAL_HOME" ]] && pats+=("$HOME/")
+  while IFS= read -r -d '' f; do
+    old=${RHG_SNAP["$f"]:--1}; new=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    (( new > old )) || continue
+    (( old < 0 )) && old=0
+    printf '  NOTE  %s gained %s byte(s); new line(s), >> marks one naming this run'"'"'s scratch paths:\n' "$f" "$(( new - old ))"
+    while IFS= read -r l; do
+      m=""; for q in "${pats[@]}"; do [[ "$l" == *"$q"* ]] && m=1; done
+      t=$(rhg_show "$l")
+      if [[ -n $m ]]; then printf '      >> %s\n' "$t"; rc=1; else printf '         %s\n' "$t"; fi
+    done < <(tail -c +$(( old + 1 )) "$f")
+  done < <(find "$RHG_STATE" -maxdepth 1 -type f -print0 2>/dev/null)
+  (( rc )) && printf '  FAIL  this run wrote into the real %s\n' "$RHG_STATE"
   return $rc
 }
-rhg_check() {
-  rhg_check_state || return 1
+rhg_check() { # both checks always run, so one failure never hides the other
+  local a=0 b=0
+  rhg_check_state || a=1
+  rhg_check_errlog || b=1
+  return $(( a || b ))
+}
+rhg_check_errlog() {
   [[ "$RHG_SIZE" == -1 ]] && { printf '  NOTE  no real error log at %s; guard skipped (start the runner with your real HOME)\n' "$RHG_LOG"; return 0; }
   local now last new bad warn m q
   now=$(stat -c %s "$RHG_LOG" 2>/dev/null || echo 0)

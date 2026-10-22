@@ -158,6 +158,10 @@ case "${1:-install}" in
     ln -sfn "$BRIDGE" "$NF/hover"
     install -m 755 "$HERE/claude-shim" "$NF/bin/claude"
     install -m 755 "$HERE/nf-tmux-heal" "$NF/bin/nf-tmux-heal"
+    # Remember whether the running service is about to be out of date: enable --now never restarts an active unit.
+    watch_changed=0; unit_changed=0
+    cmp -s "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch" || watch_changed=1
+    cmp -s "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service" || unit_changed=1
     install -m 755 "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch"
     install -m 644 "$HERE/nf-log.sh" "$NF/bin/nf-log.sh"
     # A user service that notices a deleted tmux socket the moment it happens,
@@ -170,6 +174,11 @@ case "${1:-install}" in
       out=$(systemctl --user daemon-reload 2>&1) || warn "install: WARNING systemctl daemon-reload failed: ${out//$'\n'/ }"
       if out=$(systemctl --user enable --now nf-tmux-watch.service 2>&1); then
         echo "  tmux socket watcher running"
+        if (( watch_changed || unit_changed )); then
+          out=$(systemctl --user try-restart nf-tmux-watch.service 2>&1) \
+            && echo "  tmux socket watcher restarted on the new code" \
+            || warn "install: WARNING tmux socket watcher not restarted: ${out//$'\n'/ }"
+        fi
       else
         warn "install: WARNING tmux socket watcher not started: ${out//$'\n'/ }"
       fi
