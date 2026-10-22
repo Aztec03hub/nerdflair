@@ -1,1 +1,1 @@
-rc: session id a/b finds its own record
+rc: 300-character session id: capped name plus checksum, found by both renderers

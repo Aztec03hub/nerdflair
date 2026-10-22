@@ -355,7 +355,9 @@ emit "rc: unknown written by the plugin: amber, RC unknown" "$(mut '.')" "${E_FU
 emit "rc: no record at all (plugin not loaded): no readout, nothing invented" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one"
 emit "rc: on but 140 s old (plugin stopped refreshing): amber unknown, logged once" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_AGE=140"
 emit "rc: on and 100 s old (inside the 120 s bound): still green" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=$RCSEED" "CASE_SEED_RC_AGE=100"
-emit "rc: off and 600 s old: still grey off (only an old 'on' is distrusted)" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off" "CASE_SEED_RC_AGE=600"
+emit "rc: off and 600 s old: amber unknown, logged once (an old off is distrusted like an old on)" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off" "CASE_SEED_RC_AGE=600"
+emit "rc: off and 119 s old (last second inside the bound, 119 not 120 so a clock tick cannot flip it): still grey off" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off" "CASE_SEED_RC_AGE=119"
+emit "rc: off and 121 s old (just past the bound): amber unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 off 1700000000 off" "CASE_SEED_RC_AGE=121"
 emit "rc: corrupt record: amber unknown, logged once" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=this is not a record"
 emit "rc: label with a character outside the allowed set: corrupt, amber unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" 'CASE_SEED_RC=v1 on 1700000000 we$b'
 emit "rc: unknown state word: corrupt, amber unknown" "$(mut '.')" "${E_FULL[@]}" "CASE_MCP=one" "CASE_SEED_RC=v1 maybe 1700000000"

@@ -2293,7 +2293,7 @@ fi
 # ── Remote Control ───────────────────────────────────────────────
 # Written by the band plugin (`nerdflair-statusline --rc-sync`) into the private cache dir as
 # rc-<session id>: `v1 on|off|unknown <since-epoch> <label>`. Nothing here can ask Claude Code, so
-# this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" over 120 s
+# this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" or "off" over 120 s
 # old (the plugin rewrites it every 30 s), draws UNKNOWN in amber and logs once. Twin of rc.rs.
 # The record's file name for a session id: ONE rule, twin of rc::rc_name. Keep ASCII [A-Za-z0-9_-],
 # every other BYTE becomes _ (hence LC_ALL=C), cap at 64; when anything was changed or cut, append
@@ -2316,10 +2316,10 @@ if [[ -n "$session_id" ]]; then
     if { IFS= read -r _rc_line || [[ -n "$_rc_line" ]]; } 2>/dev/null < "$_rc_file"; then
       if [[ "$_rc_line" =~ $_rc_re ]]; then
         _rc_st="${BASH_REMATCH[1]}"; _rc_lab="${BASH_REMATCH[4]}"
-        if [[ "$_rc_st" == on ]]; then
+        if [[ "$_rc_st" != unknown ]]; then
           _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_file" 2>/dev/null || stat -f %m "$_rc_file" 2>/dev/null || echo 0) ))
           if (( _rc_age < 0 || _rc_age > 120 )); then
-            _nf_err rc-stale "${_rc_file} is over 120 s old while on; the band plugin is not refreshing it, remote control state unknown"
+            _nf_err rc-stale "${_rc_file} is over 120 s old; the band plugin is not refreshing it, remote control state unknown"
             _rc_st="unknown"
           fi
         fi

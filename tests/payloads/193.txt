@@ -1,1 +1,1 @@
-rc: off and 600 s old: still grey off (only an old 'on' is distrusted)
+rc: off and 600 s old: amber unknown, logged once (an old off is distrusted like an old on)
