@@ -2982,7 +2982,8 @@ fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
 /// then empty), and a project_dir that starts with a newline is empty too. Mirrored here, BEFORE the
 /// emptiness choice.
 fn mcp_key_src(cwd: &str, project_dir: &str) -> String {
-    let first = |s: &str| s.split('\n').next().unwrap_or("").to_string();
+    // bash's `read` drops NUL bytes from the fields, so they go here too
+    let first = |s: &str| s.split('\n').next().unwrap_or("").replace('\0', "");
     let pd = if cwd.contains('\n') { String::new() } else { first(project_dir) };
     if pd.is_empty() { first(cwd) } else { pd }
 }

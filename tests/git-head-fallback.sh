@@ -63,6 +63,7 @@ check_pair "above U+10FFFF" "$(mkcase x 'ref: refs/heads/a\364\220\200\200b\n')"
 check_pair "5-byte form" "$(mkcase x 'ref: refs/heads/a\370\210\200\200\200b\n')" 'ab'
 check_pair "surrogate" "$(mkcase x 'ref: refs/heads/a\355\240\200b\n')" 'ab'
 check_pair "valid 4-byte char" "$(mkcase x 'ref: refs/heads/a\360\237\230\200b\n')" 'a😀b'
+check_pair "control byte between UTF-8 bytes" "$(mkcase x 'ref: refs/heads/a\342\001\202\254b\n')" 'ab'
 check_pair "trailing spaces" "$(mkcase x 'ref: refs/heads/trail   \n')" 'trail'
 # a `.git` FILE whose gitdir line ends in a space (and CR)
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/real.git/refs" "$d/wt"; printf 'ref: refs/heads/spaced\n' > "$d/real.git/HEAD"
@@ -88,5 +89,12 @@ o=$(printf '{"session_id":"ni","workspace":{"current_dir":"%s","project_dir":"%s
     NERDFLAIR_ERR_STAMP_DIR="$W/st-noiconv" NERDFLAIR_PROC_TIMEOUT_MS=300 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -n 1)
 [[ "$o" == *featx* ]] || { echo "FAIL no iconv: want the ASCII branch 'featx' in: $o"; fail=1; }
 rg -q 'git-branch-fallback-noiconv' "$W/home/.claude/nerdflair-errors.log" 2>/dev/null || { echo "FAIL no iconv: the cause was not logged"; fail=1; }
+# no iconv: the ASCII-only cut applies to the branch, not to the gitdir path (a non-ASCII worktree path keeps its branch)
+d="$W/wt-é"; mkdir -p "$d/real.git/refs" "$d/wt"; printf 'ref: refs/heads/wtbranch\n' > "$d/real.git/HEAD"
+printf 'gitdir: %s/real.git\n' "$d" > "$d/wt/.git"
+o=$(printf '{"session_id":"ni2","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"}}' "$d/wt" "$d/wt" |
+  env -i PATH="$W/noiconv:$W/hang:$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 NERDFLAIR_CACHE_DIR="$nd" \
+    NERDFLAIR_ERR_STAMP_DIR="$W/st-noiconv2" NERDFLAIR_PROC_TIMEOUT_MS=300 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST=0 bash "$SH" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -n 1)
+[[ "$o" == *wtbranch* ]] || { echo "FAIL no iconv: non-ASCII gitdir path lost its branch: $o"; fail=1; }
 (( fail )) && exit 1
 echo "git-head-fallback: ok"

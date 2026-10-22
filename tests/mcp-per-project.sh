@@ -19,7 +19,7 @@ render() { # impl dir cachedir
   printf '{"session_id":"mp-%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":1.5,"total_duration_ms":600000,"total_api_duration_ms":240000},"context_window":{"used_percentage":20,"context_window_size":200000}}' "$RANDOM" "$dir" "$dir" |
     env -i PATH="$W/bin:$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
       NERDFLAIR_CACHE_DIR="$c" NERDFLAIR_ERR_STAMP_DIR="$W/st" NERDFLAIR_MCP_HEALTH=1 NERDFLAIR_MCP_HEALTH_TTL=999999999 \
-      NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
+      NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | tr -d '\000' | sed 's/\x1b\[[0-9;]*m//g'
 }
 mkdir -p "$W/home"; printf '{"numStartups":7,"mcpServers":{"context7":{"command":"x"}},"projects":{}}' > "$W/home/.claude.json"
 for impl in rust bash; do
@@ -124,7 +124,7 @@ done
 raw_render() { # impl raw-json cachedir
   local impl=$1 j=$2 c=$3 cmd; cmd=("$BIN"); [[ $impl == bash ]] && cmd=(bash "$SH")
   printf '%s' "$j" | env -i PATH="$W/bin:$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
-    NERDFLAIR_CACHE_DIR="$c" NERDFLAIR_ERR_STAMP_DIR="$W/st" NERDFLAIR_MCP_HEALTH=1 NERDFLAIR_MCP_HEALTH_TTL=999999999 NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
+    NERDFLAIR_CACHE_DIR="$c" NERDFLAIR_ERR_STAMP_DIR="$W/st" NERDFLAIR_MCP_HEALTH=1 NERDFLAIR_MCP_HEALTH_TTL=999999999 NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | tr -d '\000' | sed 's/\x1b\[[0-9;]*m//g'
 }
 for impl in rust bash; do
   c="$W/r5-$impl"; mkdir -m 700 "$c"
@@ -135,6 +135,9 @@ for impl in rust bash; do
   # (b) a newline inside current_dir loses the later fields in bash: project_dir is empty, the cut cwd keys
   o=$(raw_render "$impl" "{\"session_id\":\"r5b\",\"workspace\":{\"current_dir\":\"$A\\nx\",\"project_dir\":\"$B\"},\"model\":{\"display_name\":\"Opus\"},\"cost\":{\"total_cost_usd\":1.5}}" "$c")
   [[ "$o" == *7/7* ]] || { echo "FAIL $impl: R5b newline in current_dir did not key on the cut working dir"; fail=1; }
+  # (c) a NUL inside project_dir: bash's read drops it, Rust must too
+  o=$(raw_render "$impl" "{\"session_id\":\"r5c\",\"workspace\":{\"current_dir\":\"$A\",\"project_dir\":\"$A\\u0000\"},\"model\":{\"display_name\":\"Opus\"},\"cost\":{\"total_cost_usd\":1.5}}" "$c")
+  [[ "$o" == *7/7* ]] || { echo "FAIL $impl: R5c a NUL in project_dir split the key"; fail=1; }
 done
 
 # R6: symlinks are never aged or removed, the legacy shared file is pruned, and the bash prune also works

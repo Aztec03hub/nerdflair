@@ -387,15 +387,18 @@ OPT_BULLET="${DIM} ·${RESET}"
 # above U+10FFFF, as Rust does). Without a working iconv the line is cut to printable ASCII instead and
 # git-branch-fallback-noiconv is logged: a non-ASCII branch name then differs from the Rust renderer's.
 _nf_clean_line() {
-  local LC_ALL=C
+  local LC_ALL=C _ascii="${2:-}"   # $2 = "ascii": cut the result to printable ASCII (the no-iconv degrade) only for the BRANCH
   if [[ -z "${_NF_ICONV:-}" ]]; then
     if iconv -f UTF-8 -t UTF-16LE </dev/null >/dev/null 2>&1; then _NF_ICONV=1
     else _NF_ICONV=0; _nf_err git-branch-fallback-noiconv "iconv is missing or broken; the .git/HEAD branch fallback shows printable ASCII only"; fi
   fi
+  # The control characters go AFTER the round trip: removing them first could join the bytes around them into a
+  # valid sequence (E2 01 82 AC would become the euro sign), which Rust never does. Only GNU iconv is verified.
   if [[ "$_NF_ICONV" == 1 ]]; then
-    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | tr -d '\000-\037\177' | iconv -f UTF-8 -t UTF-16LE -c 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null) || true
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-16LE -c 2>/dev/null | iconv -f UTF-16LE -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177') || true
   else
-    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | tr -cd '\040-\176') || true
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | tr -d '\000-\037\177') || true
+    [[ -n "$_ascii" ]] && _NF_CL=$(printf '%s' "$_NF_CL" | tr -cd '\040-\176')
   fi
   _NF_CL=${_NF_CL//$'\xc2'[$'\x80'-$'\x9f']/}
   _NF_CL=${_NF_CL%"${_NF_CL##*[! ]}"}
@@ -417,7 +420,7 @@ _nf_head_branch() {
     elif [[ -f "$_d/HEAD" && -d "$_d/refs" ]]; then _gd="$_d"
     fi
     if [[ -n "$_gd" ]]; then
-      _nf_clean_line "$_gd/HEAD"; _l="$_NF_CL"
+      _nf_clean_line "$_gd/HEAD" ascii; _l="$_NF_CL"
       if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
       elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
       [[ -n "$_NF_HB" ]]; return
