@@ -25,6 +25,8 @@ set -euo pipefail
 # The statusline script reads this file on every render.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Before anything below: doctor is pure read, and the state setup further down writes.
+[[ "${1:-}" == doctor ]] && { shift; exec bash "$SCRIPT_DIR/doctor.sh" "$@"; }
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 _nf_require_jq
