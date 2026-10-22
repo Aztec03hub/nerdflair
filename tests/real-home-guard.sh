@@ -25,14 +25,24 @@ rhg_snapshot() {
 # Display only (the match is made on the full line before this): 200 chars in verbose mode; otherwise time, pid and the
 # tag up to its first ':' (tags carry runtime data such as tmp-write:<file>), and a fixed note for a line that does not parse.
 rhg_show() {
-  local l=${1:0:200} t p g
-  if [[ "${NF_GUARD_VERBOSE:-}" == 1 ]]; then printf '%s' "$l"; return; fi
-  IFS=' ' read -r t p g _ <<< "$l"
-  if [[ -z "$g" ]]; then printf '(unparsed line)'; else printf '%s %s %s:' "$t" "$p" "${g%%:*}"; fi
+  local t p g k
+  if [[ "${NF_GUARD_VERBOSE:-}" == 1 ]]; then
+    local LC_ALL=C.UTF-8   # cut by characters, not bytes, so a multibyte character is never split
+    printf '%s' "${1:0:200}"; return
+  fi
+  local LC_ALL=C   # ASCII classes below; IFS default splits on spaces and tabs
+  read -r t p g _ <<< "$1"
+  # Every printed field must match a strict pattern, else it is `?`. A line without a valid time is not in the
+  # documented format, so nothing of it is trusted (a foreign line's first words can be paths).
+  if [[ $t =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9:]+)?$ ]]; then
+    [[ $p =~ ^[0-9]+$ ]] || p='?'
+    k='?'; [[ $g =~ ^([A-Za-z0-9_-]+) ]] && k=${BASH_REMATCH[1]}
+  else t='?'; p='?'; k='?'; fi
+  printf '%s %s %s' "$t" "$p" "$k"; [[ $k == '?' ]] || printf ':'
 }
 rhg_check() {
   [[ "$RHG_SIZE" == -1 ]] && { printf '  NOTE  no real error log at %s; guard skipped (start the runner with your real HOME)\n' "$RHG_LOG"; return 0; }
-  local now last new bad warn
+  local now last new bad warn m q
   now=$(stat -c %s "$RHG_LOG" 2>/dev/null || echo 0)
   last=$(head -c "$RHG_SIZE" "$RHG_LOG" 2>/dev/null | tail -n 1 | cksum)
   if (( now < RHG_SIZE )) || [[ "$last" != "$RHG_LAST" ]]; then
@@ -48,7 +58,9 @@ rhg_check() {
     printf '  FAIL  the real %s gained %s matching line(s) from this run (panic, temp path or this pid); all %s appended line(s), >> marks a match:\n' "$RHG_LOG" "$bad" "$warn"
     printf '%s\n' "$new" | while IFS= read -r l; do
       t=$(rhg_show "$l")
-      if printf '%s\n' "$l" | rg -q "${pat[@]}"; then printf '      >> %s\n' "$t"; else printf '         %s\n' "$t"; fi; done
+      m=""; for q in panic "${TMPDIR:-/tmp}/nf-" " ${RHG_PID} "; do
+        if printf '%s\n' "$l" | rg -qF -e "$q"; then case $q in panic) m="${m:+$m,}panic";; *nf-) m="${m:+$m,}tmp";; *) m="${m:+$m,}pid";; esac; fi; done
+      if [[ -n $m ]]; then printf '      >> %s: %s\n' "$m" "$t"; else printf '         %s\n' "$t"; fi; done
     return 1
   fi
   printf '  PASS  the real error log gained %s line(s), none from this run (other sessions; warning only):\n' "$warn"
