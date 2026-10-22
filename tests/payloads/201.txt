@@ -1,1 +1,1 @@
-rc: cost-less row (fresh session) equals the cost row minus cost
+rc: unknown state word: corrupt, amber unknown

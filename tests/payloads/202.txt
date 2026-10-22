@@ -1,1 +1,1 @@
-rc: payload without a session_id: no readout
+rc: second line in the record is ignored

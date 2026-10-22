@@ -7,7 +7,7 @@
   },
   "cost": {
     "total_api_duration_ms": 240000,
-    "total_cost_usd": 4.73,
+    "total_cost_usd": 0,
     "total_duration_ms": 1860000
   },
   "effort": {
@@ -21,17 +21,7 @@
   "output_style": {
     "name": "default"
   },
-  "rate_limits": {
-    "five_hour": {
-      "resets_at": "@@NOW+1830@@",
-      "used_percentage": 23.5
-    },
-    "seven_day": {
-      "resets_at": "@@NOW+200030@@",
-      "used_percentage": 59
-    }
-  },
-  "session_id": "é日本-1",
+  "session_id": "sess-fixed-0001",
   "thinking": {
     "enabled": true
   },

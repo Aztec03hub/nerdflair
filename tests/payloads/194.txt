@@ -1,1 +1,1 @@
-rc: off and 119 s old (last second inside the bound, 119 not 120 so a clock tick cannot flip it): still grey off
+rc: on and exactly 120 s old (the bound is over 120, so still green; seeded at the second, a clock tick may make it 121)

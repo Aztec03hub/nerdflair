@@ -836,6 +836,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         'the renderer did not say whether Remote Control is on',
         rcRaw === undefined ? 'no remote_control segment in its output' : `it sent "${rcRaw.slice(0, 40)}"`,
         'the binary may be out of step with this plugin; see the debug log',
+        'the main line also reads unknown when its record is over 120 s old (on or off) or corrupt; see the error log',
       ]
     : rcOn
     ? [

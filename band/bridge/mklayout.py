@@ -155,7 +155,7 @@ RC_STATES = {
     ], ["grey is a real answer: the plugin says off"]),
     "unknown": ("?", (251, 191, 36), [
         "the renderer did not say whether Remote Control is on",
-    ], ["the record is missing its refresh (over 120 s old while on) or corrupt; see the error log"]),
+    ], ["the record is missing its refresh (over 120 s old, on or off) or corrupt; see the error log"]),
 }
 RC_COMMON = ["written by the band plugin each few seconds, read by this line"]
 

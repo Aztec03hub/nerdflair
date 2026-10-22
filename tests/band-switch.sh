@@ -10,7 +10,8 @@ trap 'rm -rf -- "$W"' EXIT
 cp -r "$REPO/band" "$W/band"
 rg -q '^const BAND_ROW_ENABLED = false$' "$W/band/hooks/register.tsx" || { echo "band-switch: FAIL, committed constant is not false"; exit 1; }
 sed -i 's/^const BAND_ROW_ENABLED = false$/const BAND_ROW_ENABLED = true/' "$W/band/hooks/register.tsx"
-out=$(cd "$W/band" && claude plugin test . 2>&1)
+mkdir -p "$W/home" "$W/cache"
+out=$(cd "$W/band" && env HOME="$W/home" NERDFLAIR_CACHE_DIR="$W/cache" claude plugin test . 2>&1)
 fail=0
 want_fail() { grep -qF "(fail) $1" <<<"$out" || { echo "  FAIL  with the constant true, expected to fail: $1"; fail=1; }; }
 want_pass() { grep -qF "(pass) $1" <<<"$out" || { echo "  FAIL  with the constant true, expected to pass: $1"; fail=1; }; }
@@ -18,5 +19,7 @@ want_fail "constant false and no flag: the row is hidden"
 want_fail "the band row is not drawn without the debug flag"
 want_pass "with the flag the band is drawn exactly as before"
 want_fail "the committed default of the code switch is false"
+np=$(grep -c "^(pass) " <<<"$out"); nf=$(grep -c "^(fail) " <<<"$out")
+[[ "$np/$nf" == "34/7" ]] || { echo "  FAIL  with the constant true want 34 pass / 7 fail, got $np / $nf"; fail=1; }
 (( fail )) && { echo "band-switch: FAIL"; exit 1; }
 echo "band-switch: PASS"
