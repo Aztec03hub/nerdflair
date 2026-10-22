@@ -71,8 +71,13 @@ check "the log records the heal" yes "$(grep -q 'healed rc=0' "$ROOT/log" && ech
 # log and heal for ever.
 before=$(grep -c 'DELETED:' "$ROOT/log")
 mkdir "$ROOT/tmux-$uid-decoy" && rmdir "$ROOT/tmux-$uid-decoy"
-sleep 1.5
-check "a decoy named tmux-UID-x is ignored" "$before" "$(grep -c 'DELETED:' "$ROOT/log")"
+# Events are handled in order: delete the real directory once more and wait (bounded) for its log line.
+# If the decoy had logged, it would have done so before that line, so the count would be before+2.
+[[ -d "$ROOT/tmux-$uid" ]] || sleep 0.5
+mv "$ROOT/tmux-$uid" "$ROOT/gone3"
+deadline=$((SECONDS + 15))
+until (( $(grep -c 'DELETED:' "$ROOT/log") > before )) || (( SECONDS >= deadline )); do sleep 0.1; done
+check "a decoy named tmux-UID-x is ignored (exactly one new DELETED line)" "$((before + 1))" "$(grep -c 'DELETED:' "$ROOT/log")"
 
 kill "$wpid" 2>/dev/null
 stop_scratch

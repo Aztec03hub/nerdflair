@@ -260,6 +260,14 @@ Three bash scripts and one JSON state file.
 All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.
 
 
+## Running the tests
+
+- `tests/quick.sh` runs every check in `tests/quick.list` (each under 15 s) one after another at `nice -n 19 ionice -c3`, each under `timeout 15` with its own temp HOME and cache dir, and prints a table of PASS / FAIL / SKIP / TIMEOUT with seconds. It exits non-zero on any FAIL or TIMEOUT. The slowest are `ledger-concurrency.sh` (about 4 s) and `mcp-per-project.sh` (about 4 s) when the machine is quiet, so a busy machine can push them toward the limit. `tmux-watch.sh`, `nfpty-exit.sh` and `golden-mutation.sh` (7 s each) live in `heavy.list`: tmux-watch flaked under load, and the other two sit too close to the cap.
+- `tests/full.sh` runs the slow checks in `tests/heavy.list` (the full difftest, silent-failures, load test and so on) through the machine-wide `heavy` gate when `/home/plafayette/claude_projects/lantern/tools/heavy` exists, and plain otherwise. The hover e2e scripts are listed but skipped unless you pass `--e2e`, because they use the ambient tmux.
+- `tests/difftest.sh -j N` runs N cases at once (default 1, the old behaviour). Every case gets its own cache dir and run dir, and the report is printed in case order, so it matches `-j 1` apart from timing. `--only 1-12` still picks a range.
+
+A new check goes in `quick.list` with its measured time, or in `heavy.list` if it takes over about 10 s.
+
 ## Update
 
 ```
