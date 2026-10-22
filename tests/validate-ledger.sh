@@ -52,7 +52,27 @@ block_of() { # impl-cmd... ; reads payload on stdin
     | sed 's/\x1b\[[0-9;]*m//g' | grep -oE $'\xef\x82\x94 \\$[0-9]+\\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | tail -1
 }
 
-printf 'validate-ledger: ledger %s\n\n' "$LEDGER"
+printf 'validate-ledger: ledger %s\n' "$LEDGER"
+# Host version: a host rate change (2.1.295 priced Sonnet 5.5 reads at 0.20) must
+# read as a version change, not as ledger drift. Transcript `version` fields of
+# the newest files are the version that wrote the spend; `claude --version` is the
+# installed one. Neither prints anything but a version string.
+HOSTV=$(python3 - <<'PY'
+import glob, json, os
+fs = sorted(glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True), key=os.path.getmtime)[-20:]
+seen = []
+for p in fs:
+    try:
+        for ln in open(p, errors="replace"):
+            if '"version"' in ln:
+                v = json.loads(ln).get("version")
+                if v and v not in seen: seen.append(v)
+    except (OSError, ValueError):
+        pass
+print(",".join(seen[-3:]) or "unknown")
+PY
+)
+printf 'validate-ledger: host version in recent transcripts: %s; installed: %s\n\n' "$HOSTV" "$(claude --version 2>/dev/null | head -1)"
 printf '  %-6s %10s %10s %10s %8s\n' window rust bash recount delta
 for hours in 1 3 4.8; do
   now=$(date +%s)
