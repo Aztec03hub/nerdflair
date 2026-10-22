@@ -183,17 +183,29 @@ def classify(text):
     return None, title, rgb, body
 
 
+def cell_step(ch, prev_wide=False, joined=False):
+    """(width of `ch`, prev_wide, joined) for one character in context. Combining marks and format
+    characters take none; a wide glyph right after a zero-width joiner that follows a wide glyph is
+    the same cell (tmux 3.4 draws a ZWJ emoji sequence in 2 cells, measured: man ZWJ woman and the
+    family of three both advance the cursor by 2)."""
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0, prev_wide, (ch == "\u200d" and prev_wide) or joined
+    w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    if joined and w == 2:
+        return 0, True, False           # joined; a further ZWJ sets it up again for the next link
+    return w, w == 2, False
+
+
 def cells(s):
     """Screen cells a string occupies: East Asian wide and fullwidth characters
-    take two, combining marks none. A cwd or branch with CJK in it used to
+    take two, combining marks none, a ZWJ emoji sequence two. A cwd or branch with CJK in it used to
     shift every later column by one per wide character, so hover hit the
     wrong card. Nerd Font glyphs are ambiguous-width and count one, as the
     terminal this is built for draws them."""
-    n = 0
+    n, pw, jn = 0, False, False
     for ch in s:
-        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
-            continue
-        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        w, pw, jn = cell_step(ch, pw, jn)
+        n += w
     return n
 
 
@@ -230,8 +242,9 @@ def pieces(line):
 def _in_folder(s, m):
     """True for a two-space match inside a readout that starts with the folder glyph ("<icon> my  proj"):
     the folder is the one readout whose name the user types, and it is always followed by a bullet or a
-    wide gap, so its own two spaces are not a join."""
-    if m.end() - m.start() != 2:
+    wide gap, so its own two spaces are not a join. A real two-space justification gap (the next readout
+    starts with its Nerd Font glyph) is a join even right after a folder."""
+    if m.end() - m.start() != 2 or NERD.match(s, m.end()):
         return False
     seg = re.split(r"\s{3,}| %s " % re.escape(SEP.strip()), s[:m.start()])[-1].lstrip()
     return seg[:1] in FOLDER_GLYPHS
@@ -338,9 +351,17 @@ def selfcheck():
     # Wide glyphs: CJK and emoji take two cells, a combining mark none. A miscount of 1 each fails here
     # (and in the e2e's wide row, where tmux draws them).
     assert cells("\u6f22\u5b57") == 4 and cells("\U0001f600") == 2 and cells("e\u0301x") == 2 and cells("\u2615\ufe0f") == 2
+    # A ZWJ sequence is ONE emoji cell pair in tmux (man ZWJ woman, a family of three), a trailing ZWJ adds none, and two
+    # emoji side by side are still two.
+    man, woman, girl = "\U0001f468", "\U0001f469", "\U0001f467"
+    assert cells(man + "\u200d" + woman) == 2 and cells(man + "\u200d" + woman + "\u200d" + girl) == 2 and cells(man + "\u200d") == 2
+    assert cells(man + "\u200d" + woman + woman) == 4 and cells("a\u200db") == 2, "only a wide glyph after a wide glyph's joiner joins"
     # A folder named with two spaces stays one readout; the same two spaces anywhere else are a join.
     assert [t for _c, _w, t in pieces("\U000f024b my  proj \u00b7 \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
     assert [t for _c, _w, t in pieces("\uf1bb a  b" + " " * 9 + "\uf044 1 [+1]")] == ["\uf1bb a  b", "\uf044 1 [+1]"]
+    # ...but a folder followed by a REAL two-space justification gap and the next glyph readout is a join.
+    assert [t for _c, _w, t in pieces("\U000f024b proj  \U000f062c main")] == ["\U000f024b proj", "\U000f062c main"], pieces("\U000f024b proj  \U000f062c main")
+    assert [t for _c, _w, t in pieces("\U000f024b my  proj  \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
 
     # The justification gap must SPLIT, and a lone separator must not produce
     # an empty readout.
