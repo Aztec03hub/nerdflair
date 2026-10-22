@@ -67,7 +67,7 @@ CARDS = [
         "workspace.project_dir, else current_dir",
     ]),
     ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.…-]+$", "Branch", (125, 211, 252), [
-        "branch from `git rev-parse --abbrev-ref HEAD`, cached 5s",
+        "branch from `git rev-parse --abbrev-ref HEAD`, cached 3s",
         "a worktree branch in the payload wins over git",
     ]),
     ("dirty", "|" + r"\[\+\d","Working tree and divergence", (251, 191, 36), [
@@ -124,11 +124,10 @@ CARDS = [
     ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
     ]),
-    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%|(?<!\S)--(?!\S)", "Context window", (125, 211, 252), [
+    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
         "read from the payload, else the newest usage line in the transcript",
         "compaction triggers near the top; the ETA reads off the same series",
-        "-- = no figure yet (the payload has none and there is no transcript usage line)",
     ]),
     ("effort", r"\b(minimal|low|medium|high|xhigh|max)\b", "Effort",
      (196, 181, 253), [
@@ -188,17 +187,43 @@ def classify(text):
     return None, title, rgb, body
 
 
+CLUSTER_BYTES = 21                  # tmux keeps one cluster (base + joiners + marks) in a 21-byte UTF-8 buffer (3.4)
+NEW_CLUSTER = (0, 0, False, False)  # (bytes of the open cluster, its width, last was a ZWJ, last was a regional indicator)
+
+
+def cell_step(ch, st=NEW_CLUSTER):
+    """(cells this character adds, new state), counted the way tmux 3.4 draws them (measured, see
+    cells-table.py). Zero-width characters (combining marks, ZWJ, VS16, keycap) join the open cluster and add
+    nothing, except VS16 on a one-cell base, which makes it two. A pictograph right after a ZWJ, a regional
+    indicator after one, and a skin-tone modifier join too. All of it only while the cluster fits tmux's
+    21-byte buffer: past that the glyph starts a new cluster with its own width."""
+    nbytes, width, zwj, ri = st
+    n = len(ch.encode("utf-8"))
+    fits = 0 < nbytes and nbytes + n <= CLUSTER_BYTES
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        if not fits:
+            return 0, st
+        if ch == "\ufe0f" and width == 1:
+            return 1, (nbytes + n, 2, False, False)
+        return 0, (nbytes + n, width, ch == "\u200d", False)
+    pict = ord(ch) >= 0x1F000 or 0x2600 <= ord(ch) <= 0x27BF
+    is_ri = "\U0001f1e6" <= ch <= "\U0001f1ff"
+    if fits and pict and (zwj or (is_ri and ri) or "\U0001f3fb" <= ch <= "\U0001f3ff"):
+        return 0, (nbytes + n, width, False, is_ri)
+    w = 2 if is_ri or unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w, (n, w, False, is_ri)
+
+
 def cells(s):
-    """Screen cells a string occupies: East Asian wide and fullwidth characters
-    take two, combining marks none. A cwd or branch with CJK in it used to
-    shift every later column by one per wide character, so hover hit the
-    wrong card. Nerd Font glyphs are ambiguous-width and count one, as the
-    terminal this is built for draws them."""
-    n = 0
+    """Screen cells a string occupies, as tmux 3.4 draws it (cells-table.py measures every case against a
+    real tmux): East Asian wide and fullwidth characters take two, combining marks none, an emoji sequence
+    what the cluster rule in cell_step gives. A cwd or branch with CJK in it used to shift every later
+    column by one per wide character, so hover hit the wrong card. Nerd Font glyphs are ambiguous-width and
+    count one, as the terminal this is built for draws them."""
+    n, st = 0, NEW_CLUSTER
     for ch in s:
-        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
-            continue
-        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        w, st = cell_step(ch, st)
+        n += w
     return n
 
 
@@ -235,8 +260,9 @@ def pieces(line):
 def _in_folder(s, m):
     """True for a two-space match inside a readout that starts with the folder glyph ("<icon> my  proj"):
     the folder is the one readout whose name the user types, and it is always followed by a bullet or a
-    wide gap, so its own two spaces are not a join."""
-    if m.end() - m.start() != 2:
+    wide gap, so its own two spaces are not a join. A real two-space justification gap (the next readout
+    starts with its Nerd Font glyph) is a join even right after a folder."""
+    if m.end() - m.start() != 2 or NERD.match(s, m.end()):
         return False
     seg = re.split(r"\s{3,}| %s " % re.escape(SEP.strip()), s[:m.start()])[-1].lstrip()
     return seg[:1] in FOLDER_GLYPHS
@@ -343,9 +369,20 @@ def selfcheck():
     # Wide glyphs: CJK and emoji take two cells, a combining mark none. A miscount of 1 each fails here
     # (and in the e2e's wide row, where tmux draws them).
     assert cells("\u6f22\u5b57") == 4 and cells("\U0001f600") == 2 and cells("e\u0301x") == 2 and cells("\u2615\ufe0f") == 2
+    # A ZWJ sequence is ONE emoji cell pair in tmux (man ZWJ woman, a family of three), a trailing ZWJ adds none, and two
+    # emoji side by side are still two.
+    man, woman, girl = "\U0001f468", "\U0001f469", "\U0001f467"
+    assert cells(man + "\u200d" + woman) == 2 and cells(man + "\u200d" + woman + "\u200d" + girl) == 2 and cells(man + "\u200d") == 2
+    boy = "\U0001f466"
+    fam4 = man + "\u200d" + woman + "\u200d" + girl + "\u200d" + boy
+    assert cells(fam4) == 4 and cells(fam4 + "\u200d" + man) == 4, "tmux closes a cluster at 21 bytes: a family of four is 4, a chain of five 4"
+    assert cells(man + "\u200d" + woman + woman) == 4 and cells("a\u200db") == 2, "only a wide glyph after a wide glyph's joiner joins"
     # A folder named with two spaces stays one readout; the same two spaces anywhere else are a join.
     assert [t for _c, _w, t in pieces("\U000f024b my  proj \u00b7 \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
     assert [t for _c, _w, t in pieces("\uf1bb a  b" + " " * 9 + "\uf044 1 [+1]")] == ["\uf1bb a  b", "\uf044 1 [+1]"]
+    # ...but a folder followed by a REAL two-space justification gap and the next glyph readout is a join.
+    assert [t for _c, _w, t in pieces("\U000f024b proj  \U000f062c main")] == ["\U000f024b proj", "\U000f062c main"], pieces("\U000f024b proj  \U000f062c main")
+    assert [t for _c, _w, t in pieces("\U000f024b my  proj  \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
 
     # The justification gap must SPLIT, and a lone separator must not produce
     # an empty readout.
@@ -362,12 +399,6 @@ def selfcheck():
         assert hit and hit.group(0) == label, (label, hit and hit.group(0))
         assert bar_label(bar) == (22, cells(label), label), bar_label(bar)
     assert re.search(r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "200k/1M 20%").group(0) == "0k/1M 20%"
-    # The gauge with no source says "--": still the context readout, and nothing else is mistaken for it.
-    bar = "\ue0b6" + " " * 20 + "--" + " " * 30 + "\ue0b4"
-    assert bar_label(bar) == (22, 2, "--") and CONTEXT_ROW.search(bar).group(0) == "--", bar_label(bar)
-    assert classify("--")[0] == "context", classify("--")
-    for other in ("\U000f04c5 --/s", "~--", "$--", "a--b"):
-        assert not CONTEXT_ROW.search(other), other
     # The halves of a row are justified with at least TWO spaces: two readouts, not one. The chime's own
     # two spaces (volume icon, style) stay inside its readout.
     tight = " 2 MCP   main · 5h 2%"
@@ -556,8 +587,7 @@ PLACEHOLDER_LINES = {
 
 def placeholder_drift(root):
     """Each placeholder readout (`--/s`, `$--`, `~$`, `~--`) is explained on its hover card, in the bridge
-    (CARDS here) and in the band plugin (register.tsx), word for word. The gauge's `--` card line exists
-    only here: the plugin has no context card."""
+    (CARDS here) and in the band plugin (register.tsx), word for word."""
     with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
         tsx = fh.read()
     for cid, want in PLACEHOLDER_LINES.items():
@@ -565,8 +595,6 @@ def placeholder_drift(root):
         for line in want:
             assert line in mk[4], f"card {cid}: mklayout.py lacks {line!r}"
             assert f"'{line}'" in tsx, f"card {cid}: register.tsx lacks {line!r}"
-    ctx = next(c for c in CARDS if c[0] == "context")
-    assert any(l.startswith("-- = no figure yet") for l in ctx[4]), "context card does not explain the -- gauge"
 
 
 def rc_drift(root):
@@ -610,7 +638,7 @@ def bar_label(line):
     """The context readout of a gauge row: the one run of text sitting inside the bar, between the
     bar's cap glyphs and spaces. (col, width, text), or None when the row has no such label."""
     runs = list(re.finditer(r"[^\s\ue0b4\ue0b6]+(?: [^\s\ue0b4\ue0b6]+)*", line))
-    if len(runs) != 1 or not (("/" in runs[0].group(0) and "%" in runs[0].group(0)) or runs[0].group(0) == "--"):
+    if len(runs) != 1 or "/" not in runs[0].group(0) or "%" not in runs[0].group(0):
         return None
     return cells(line[:runs[0].start()]) + 1, cells(runs[0].group(0)), runs[0].group(0)
 

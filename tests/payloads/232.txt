@@ -1,0 +1,1 @@
+256 clamp: full bar 100%, TMUX set, opt-in empty

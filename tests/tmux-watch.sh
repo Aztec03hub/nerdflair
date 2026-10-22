@@ -17,6 +17,16 @@ export TMUX_TMPDIR="$ROOT" NF_TMUX_WATCH_LOG="$ROOT/log" NF_TMUX_HEAL="$REPO/ban
 unset TMUX
 export NF_STATE_DIR="$ROOT/state"   # heal/watch failure logs go here, never the real ~/.local/state
 fail=0
+cleanup() {   # every exit path: kill our scratch server and watcher, remove ONLY the dir mktemp made
+  trap - EXIT
+  [[ -n "${wpid:-}" ]] && kill "$wpid" 2>/dev/null
+  stop_scratch
+  sleep 0.3
+  if [[ -d "$ROOT" && ! -L "$ROOT" && "$ROOT" == "${TMPDIR:-/tmp}"/nf-watch-* ]]; then rm -rf -- "$ROOT"; fi
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 reachable() { tmux ls >/dev/null 2>&1; echo $?; }
 uid=$(id -u)

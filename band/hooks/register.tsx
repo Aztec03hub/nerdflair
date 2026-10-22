@@ -68,7 +68,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
     color: '#7dd3fc',
     lines: [
       'workspace.project_dir, else current_dir',
-      'branch from `git rev-parse --abbrev-ref HEAD`, cached 5s',
+      'branch from `git rev-parse --abbrev-ref HEAD`, cached 3s',
       'a worktree branch in the payload wins over git',
     ],
   },

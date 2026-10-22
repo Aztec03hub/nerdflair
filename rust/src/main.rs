@@ -55,7 +55,11 @@ fn main() {
         errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
     }
     let input = String::from_utf8_lossy(&buf).into_owned();
-    let out = render(&input);
+    let mut out = render(&input);
+    // --json is the band plugin's call: its `ansi` field is never drawn, so leave it untouched.
+    if colors::clamp256_active() && !json_mode() {
+        out = colors::safe256_sgr(&out);
+    }
     let mut so = std::io::stdout().lock();
     // EPIPE means the host went away (it kills slow renderers); that is not a
     // renderer fault and stdout is no place to report it. Anything else is.
@@ -511,7 +515,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
         // No cache dir: no probe cache either (already logged as cache-dir).
-        let mh = mcp_cache_path(uid, if project_dir.is_empty() { &cwd } else { &project_dir });
+        let mh = mcp_cache_path(uid, &mcp_key_src(&cwd, &project_dir));
         match mh.as_ref().map(std::fs::read_to_string) {
             None => {}
             Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
@@ -791,8 +795,6 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut total_used: i64 = 0;
     let mut pct: i64 = 0;
     let mut pct_is_int = true;
-    // False when neither the payload nor a transcript usage line gave a figure: the gauge then says "--".
-    let mut ctx_src = true;
     if !f.used_pct.is_empty() && !f.ctx_size.is_empty() {
         ctx_total_s = f.ctx_size.clone();
         // A fractional `used_percentage` is legal in the payload (the docs' own
@@ -828,7 +830,6 @@ fn render_inner(input: &str) -> Result<String, String> {
             },
         }
     } else {
-        ctx_src = false;
         let transcript = jqx::path(&root, &["transcript_path"])
             .map(jqx::tostring)
             .unwrap_or_default();
@@ -912,7 +913,6 @@ fn render_inner(input: &str) -> Result<String, String> {
                                         }),
                                     }
                                 };
-                                ctx_src = true;
                                 total_used = g("input_tokens")
                                     + g("cache_creation_input_tokens")
                                     + g("cache_read_input_tokens")
@@ -986,7 +986,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         Some(t) => format!("{}", t),
         None => ctx_total_s.clone(),
     };
-    let ctx_label = if ctx_src { format!("{}/{} {}%", used_fmt, size_fmt, pct) } else { "--".to_string() };
+    let ctx_label = format!("{}/{} {}%", used_fmt, size_fmt, pct);
 
     // ── Width ────────────────────────────────────────────────────
     // The configured number IS the row width; the bar is that less its two
@@ -1339,7 +1339,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
 
     // ── MCP health ───────────────────────────────────────────────
-    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, if project_dir.is_empty() { &cwd } else { &project_dir });
+    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, &mcp_key_src(&cwd, &project_dir));
 
     // ── Time, cost, speed ────────────────────────────────────────
     let mut api_fmt = String::new();
@@ -1484,9 +1484,10 @@ fn render_inner(input: &str) -> Result<String, String> {
         // spend is simply missing, and an undercount looks like a real figure.
         let covered = !ledger_cut || (oldest > 0 && oldest <= now - win);
         if !covered {
-            errlog::note(
+            errlog::note_every(
                 "ledger-uncovered",
                 &format!("tail cap {} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                86_400,
             );
         }
         if span > 0 && span >= min_span && spent > 0.0 && covered && now - newest <= stale_after {
@@ -1605,9 +1606,10 @@ fn render_inner(input: &str) -> Result<String, String> {
                 // read as fact.
                 let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
                 if !covered {
-                    errlog::note(
+                    errlog::note_every(
                         "ledger-uncovered",
                         &format!("tail cap {} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                        86400,
                     );
                 }
                 block_segment = if !covered {
@@ -1732,7 +1734,8 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
     }
     // No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
-    if compact_segment.is_empty() && used10.is_some() {
+    // Not in --json: the band's payload never has samples, so it would always show the placeholder.
+    if compact_segment.is_empty() && used10.is_some() && !json_mode() {
         compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
@@ -2311,6 +2314,10 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
                 if ucount > 100 {
                     break;
                 }
+                // A nested worktree or repo is listed as a directory: no lines to count.
+                if d.join(file).is_dir() {
+                    continue;
+                }
                 match std::fs::read(d.join(file)) {
                     Ok(bytes) => added += bytes.iter().filter(|b| **b == b'\n').count() as i64,
                     // A file listed then gone (a race) is normal; anything else
@@ -2735,7 +2742,7 @@ fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, St
     if !fresh && idle {
         let script = format!(
             "{cd}exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-             _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 2>\"$_ef\"); _rc=$?; \
+             _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 9>&- 2>\"$_ef\"); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
@@ -2821,7 +2828,7 @@ struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 /// per-session and account-wide state file alone (sample ring, ledger, repo-cost
 /// stamp, limits-last), or it corrupts what the real status line measured.
 fn json_mode() -> bool {
-    std::env::args().any(|a| a == "--json")
+    std::env::args_os().any(|a| a == "--json")
 }
 
 /// Account-wide last-known rate limits, in the private cache dir. One line:
@@ -2987,7 +2994,18 @@ fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
     }
 }
 
-/// The ONE rule for the per-project key (twin of `_nf_norm_key_dir`): cut at the first newline (bash reads the
+/// Which dir keys the MCP cache: the project dir, else the working dir, as bash sees the payload. Bash reads the
+/// fields with one line-wise `read`, so a newline inside `current_dir` loses every later field (project_dir is
+/// then empty), and a project_dir that starts with a newline is empty too. Mirrored here, BEFORE the
+/// emptiness choice.
+fn mcp_key_src(cwd: &str, project_dir: &str) -> String {
+    // bash's `read` drops NUL bytes from the fields, so they go here too
+    let first = |s: &str| s.split('\n').next().unwrap_or("").replace('\0', "");
+    let pd = if cwd.contains('\n') { String::new() } else { first(project_dir) };
+    if pd.is_empty() { first(cwd) } else { pd }
+}
+
+/// The ONE rule for the per-project key (the bash twin is the inline block above the MCP cache path in statusline.sh): cut at the first newline (bash reads the
 /// payload fields line-wise), collapse runs of `/`, strip a trailing `/` (the root stays `/`).
 fn norm_key_dir(s: &str) -> String {
     let s = s.split('\n').next().unwrap_or("");
@@ -3006,7 +3024,8 @@ fn norm_key_dir(s: &str) -> String {
 
 /// At most once a day, delete per-project probe files (`nerdflair-mcphealth-UID-<crc>` and its siblings) whose
 /// mtime is 14+ days old: a probe touches its cache every few minutes while the project is in use, so these
-/// are projects nobody has opened. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
+/// are projects nobody has opened. The same pass drops per-session repo-cost stamps and orphan
+/// `nerdflair-*.tmp.*` files as old as the MCP files. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
 fn prune_mcp_caches(cache: &Path, uid: u32) {
     if json_mode() || std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
         return;
@@ -3022,8 +3041,18 @@ fn prune_mcp_caches(cache: &Path, uid: u32) {
     let prefix = format!("nerdflair-mcphealth-{}-", uid);
     let max_age = env_int("NERDFLAIR_MCP_PRUNE_DAYS", 14) * 86400;
     let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let rc_prefix = format!("nerdflair-repocost-{}-", uid); // per-session stamps (not the -total- memo)
     for e in rd.flatten() {
-        if e.file_name().to_string_lossy().starts_with(&prefix) && file_age(&e.path()) >= max_age {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Symlinks and directories are skipped (never aged, never removed), like bash. Also pruned at the
+        // same age: the old shared file `nerdflair-mcphealth-UID`, per-session repo-cost stamps and
+        // orphan `nerdflair-*.tmp.<pid>` files (a writer killed between create and rename).
+        let is_link = e.file_type().map_or(true, |t| t.is_symlink());
+        let swept = !is_link
+            && (name.starts_with(&rc_prefix) || (name.starts_with("nerdflair-") && name.contains(".tmp.")))
+            && e.metadata().ok().map_or(false, |m| m.is_file())
+            && file_age(&e.path()) >= max_age;
+        if swept || (!is_link && (name.starts_with(&prefix) || name == format!("nerdflair-mcphealth-{}", uid)) && file_age(&e.path()) >= max_age) {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
             }

@@ -14,7 +14,37 @@ if ! _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX" 2>/dev/null); then
   _SL_BUF="${HOME:-}/.claude/.nerdflair-sl.$$"
 fi
 exec 3>&1 1>"$_SL_BUF"
-trap '_nf_rc=$?; cat "$_SL_BUF" >&3; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
+# Claude Code clamps its output to 256 colours when $TMUX is set and
+# CLAUDE_CODE_TMUX_TRUECOLOR is empty (chalk level 2, ansi-styles
+# rgbToAnsi256). Schemes remap indices 16 and 17 (Catppuccin Mocha: peach,
+# rosewater), so near-black colours that land there would show orange. In that
+# mode _nf_flush sends every 38;2/48;2 colour through _nf_safe256, which swaps
+# a would-be 16/17 for a grey on the 232-255 ramp. Twin of colors::safe256 /
+# safe256_sgr in rust/src/colors.rs; both must agree byte for byte.
+_nf_safe256() { # r g b -> sets _s256 to "r;g;b"
+  local r=$((10#$1)) g=$((10#$2)) b=$((10#$3)) l
+  if (( r == g && g == b ? r < 8 : (r <= 25 && g <= 25 && b <= 76) )); then
+    l=$(( (299*r + 587*g + 114*b + 500) / 1000 )); (( l < 8 )) && l=8
+    _s256="$l;$l;$l"
+  else
+    _s256="$1;$2;$3"
+  fi
+}
+_nf_flush() {
+  if [[ -z "${TMUX:-}" || -n "${CLAUDE_CODE_TMUX_TRUECOLOR:-}" ]]; then
+    cat "$_SL_BUF" >&3; return
+  fi
+  local rest out="" re='[[;]([34]8);2;([0-9]+);([0-9]+);([0-9]+)' _s256
+  IFS= read -r -d '' rest < "$_SL_BUF"
+  while [[ $rest =~ $re ]]; do
+    out+="${rest%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[0]:0:1}${BASH_REMATCH[1]};2;"
+    _nf_safe256 "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    out+="$_s256"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  printf '%s' "$out$rest" >&3
+}
+trap '_nf_rc=$?; _nf_flush; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
 
 # ── Shared library ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -383,9 +413,23 @@ OPT_BULLET="${DIM} ·${RESET}"
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
 # First line of a small file into _NF_CL, read as at most 4 KiB: invalid UTF-8 dropped, control characters
 # (C0, DEL, C1, so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of clean_first_line.
+# Invalid UTF-8 is dropped by a round trip through UTF-16 (which, unlike UTF-8 to UTF-8, also drops code points
+# above U+10FFFF, as Rust does). Without a working iconv the line is cut to printable ASCII instead and
+# git-branch-fallback-noiconv is logged: a non-ASCII branch name then differs from the Rust renderer's.
 _nf_clean_line() {
-  local LC_ALL=C
-  _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177' 2>/dev/null) || true
+  local LC_ALL=C _ascii="${2:-}"   # $2 = "ascii": cut the result to printable ASCII (the no-iconv degrade) only for the BRANCH
+  if [[ -z "${_NF_ICONV:-}" ]]; then
+    if iconv -f UTF-8 -t UTF-16LE </dev/null >/dev/null 2>&1; then _NF_ICONV=1
+    else _NF_ICONV=0; _nf_err git-branch-fallback-noiconv "iconv is missing or broken; the .git/HEAD branch fallback shows printable ASCII only"; fi
+  fi
+  # The control characters go AFTER the round trip: removing them first could join the bytes around them into a
+  # valid sequence (E2 01 82 AC would become the euro sign), which Rust never does. Only GNU iconv is verified.
+  if [[ "$_NF_ICONV" == 1 ]]; then
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-16LE -c 2>/dev/null | iconv -f UTF-16LE -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177') || true
+  else
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | tr -d '\000-\037\177') || true
+    [[ -n "$_ascii" ]] && _NF_CL=$(printf '%s' "$_NF_CL" | tr -cd '\040-\176')
+  fi
   _NF_CL=${_NF_CL//$'\xc2'[$'\x80'-$'\x9f']/}
   _NF_CL=${_NF_CL%"${_NF_CL##*[! ]}"}
 }
@@ -406,7 +450,7 @@ _nf_head_branch() {
     elif [[ -f "$_d/HEAD" && -d "$_d/refs" ]]; then _gd="$_d"
     fi
     if [[ -n "$_gd" ]]; then
-      _nf_clean_line "$_gd/HEAD"; _l="$_NF_CL"
+      _nf_clean_line "$_gd/HEAD" ascii; _l="$_NF_CL"
       if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
       elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
       [[ -n "$_NF_HB" ]]; return
@@ -495,6 +539,7 @@ if [[ -n "$git_dir" ]]; then
         [[ -z "$ufile" ]] && continue
         (( _ucount++ ))
         (( _ucount > 100 )) && break
+        [[ -d "$ufile" ]] && continue   # a nested worktree or repo is listed as a directory
         # a file listed then gone is a race and normal; unreadable is not
         if [[ -e "$ufile" && ! -r "$ufile" ]]; then _nf_err git-untracked-read "cannot read $ufile"; fi
         ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
@@ -905,7 +950,6 @@ ctx_segment=""
 ctx_total=200000  # default context window size
 total_used=0
 pct=0
-_ctx_src=1   # 0 when neither the payload nor a transcript usage line gave a figure: the gauge then says "--"
 
 if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   # used_pct is the authoritative context fill percentage from Claude Code.
@@ -919,7 +963,6 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   pct="${used_pct%%.*}"
   total_used=$(( ctx_total * pct / 100 ))
 else
-  _ctx_src=0
   # Fall back: parse last usage entry from transcript JSONL
   # 2>/dev/null on every parse of the PAYLOAD: it is untrusted input, and a
   # malformed one made jq print "parse error: Invalid numeric literal" on
@@ -976,7 +1019,6 @@ else
           printf -v "$_uf" 0
         fi
       done
-      _ctx_src=1
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
       (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
@@ -1043,7 +1085,6 @@ fi
 
 # Context label for embedding in progress bar
 ctx_label="${used_fmt}/${size_fmt} ${pct}%"
-(( _ctx_src )) || ctx_label="--"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
@@ -1674,12 +1715,21 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
   # Daily: delete per-project probe files untouched for 14+ days (twin of prune_mcp_caches).
   if [[ -z "${NERDFLAIR_MCP_CACHE:-}" ]]; then
     _nf_cache_path "nerdflair-mcphealth-prune-${UID}"; _pr_stamp="$_NF_CP"
-    if [[ -n "$_pr_stamp" ]] && { [[ ! -f "$_pr_stamp" ]] || (( EPOCHSECONDS - $(stat -c %Y "$_pr_stamp" 2>/dev/null || echo 0) >= 86400 )); }; then
+    if [[ -n "$_pr_stamp" ]] && (( $(_nf_stamp_age "$_pr_stamp") >= 86400 )); then
       if _nf_cache_put "$_pr_stamp" ""; then
         _pr_max=$(( ${NERDFLAIR_MCP_PRUNE_DAYS:-14} * 86400 ))
-        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"*; do
-          [[ -e "$_pr_f" ]] || continue
-          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        # Symlinks are skipped (never aged, never removed): same in Rust. The old shared file
+        # nerdflair-mcphealth-UID (no project suffix, never read since the per-project change) goes too.
+        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"* "${_mh_cache%/*}/nerdflair-mcphealth-${UID}"; do
+          [[ -L "$_pr_f" || ! -e "$_pr_f" ]] && continue
+          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        done
+        # Same pass, same age (NERDFLAIR_MCP_PRUNE_DAYS): per-session repo-cost stamps (not the -total-
+        # memo) and orphan `nerdflair-*.tmp.*` files (a writer killed between create and rename).
+        # Symlinks and directories are skipped entirely, like the rest of this prune.
+        for _pr_f in "${_mh_cache%/*}/nerdflair-repocost-${UID}-"* "${_mh_cache%/*}/nerdflair-"*.tmp.*; do
+          [[ -f "$_pr_f" && ! -L "$_pr_f" ]] || continue
+          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
       else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
     fi
@@ -1726,7 +1776,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
       # The probe's stderr goes to an unguessable mktemp file, never to a
       # predictable name in shared /tmp that a planted symlink could redirect.
       _mh_err=$(mktemp "${TMPDIR:-/tmp}/nerdflair-mcperr.XXXXXX" 2>/dev/null) || _mh_err=/dev/null
-      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 2>"$_mh_err"); _rc=$?
+      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 9>&- 2>"$_mh_err"); _rc=$?   # 9>&-: the probe and the servers it spawns must not inherit the lock
       _out=$(printf '%s\n' "$_raw" | sed 's/\x1b\[[0-9;]*m//g')
       _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
@@ -2065,7 +2115,7 @@ if [[ -n "$_ledger" ]]; then
   # is simply missing, and an undercount looks like a real figure.
   _bcov=1
   (( _ledger_cut == 1 )) && { (( _bold > 0 && _bold <= EPOCHSECONDS - _bw )) || _bcov=0; }
-  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
   if (( _bspan > 0 && _bspan >= _bmin && _bcov == 1 && EPOCHSECONDS - _bnew <= _bstale )) 2>/dev/null; then
     _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>"$_SL_BUF.err") \
       || _nf_err burn-awk "awk burn rate failed: $(head -n 1 "$_SL_BUF.err")"
@@ -2186,7 +2236,7 @@ elif [[ -n "$_ledger" && -n "${_rl_blk_reset:-}" ]]; then
       # absolute amount of money, and a quietly low one is read as fact.
       _kcov=1
       (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
-      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
       if (( _kcov == 1 )); then
         _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>"$_SL_BUF.err") \
           || _nf_err burn-awk "awk billing block failed: $(head -n 1 "$_SL_BUF.err")"
@@ -2940,12 +2990,11 @@ _render_bar() {
   (( _bar_area < 20 )) && _bar_area=20
 
   # Position logo centered in the bar area (only when bar is empty)
-  # (A "--" label is the gauge with no source: the label shows instead of the logo.)
-  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )) && [[ "$_label" != "--" ]]; then
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
     _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
     (( _logo_start < 0 )) && _logo_start=0
     _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
-  elif (( _pct > 0 )) || [[ "$_label" == "--" ]]; then
+  elif (( _pct > 0 )); then
     _logo_icons=()
   fi
 
