@@ -1603,19 +1603,28 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     elif [[ -e "$_REPO_COST_FILE" && ! -r "$_REPO_COST_FILE" ]]; then
       _nf_err ledger-read "$_REPO_COST_FILE exists but is not readable; repo total unavailable"
     elif [[ -r "$_REPO_COST_FILE" ]]; then
-      _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
+      # Bounded tail (twin of ledger_tail): a ledger compaction has not kept small must not cost a full read.
+      _rc_tcap=${NERDFLAIR_REPO_TOTAL_TAIL_BYTES:-16777216}
+      (( _rc_tcap < 4096 )) && _rc_tcap=4096; (( _rc_tcap > 67108864 )) && _rc_tcap=67108864
+      _rc_tcut=0; (( $(stat -c %s "$_REPO_COST_FILE" 2>/dev/null || echo 0) > _rc_tcap )) && _rc_tcut=1
+      _rc_total=$(if (( _rc_tcut )); then tail -c "$_rc_tcap" "$_REPO_COST_FILE" | tail -n +2; else cat "$_REPO_COST_FILE"; fi | awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
                       -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" '
         NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
-      ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
+      ' 2>"$_SL_BUF.err") \
         || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
+      if (( _rc_tcut )) && [[ -n "$_rc_total" ]]; then
+        _rc_total="~${_rc_total}"
+        _nf_err repo-total-cut "ledger is larger than NERDFLAIR_REPO_TOTAL_TAIL_BYTES; repo total is a lower bound (~); compaction is not keeping up"
+      fi
       if [[ -n "$_rc_memo" ]]; then
         _nf_cache_put "$_rc_memo" "$_rc_total" || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
       fi
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
-      repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
+      [[ "$_rc_total" == "~"* ]] && repocost_segment="${DARK_GREEN}${_rc_icon} ~\$${_rc_total#\~}${RESET}" \
+        || repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
     fi
   fi
 fi
@@ -1898,6 +1907,17 @@ if [[ -f "$_LEDGER_FILE" ]]; then
   if (( _lg_bytes > _LEDGER_CAP )); then
     _ledger_cut=1
     if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
+    # The block can start up to 5 h back. If the cut tail starts later than that, widen ONCE (16x, twin of the
+    # Rust side) instead of hiding burn and block at high activity.
+    _lg_first=${_ledger%%$'\t'*}; [[ "$_lg_first" =~ ^[0-9]+$ ]] || _lg_first=0
+    if (( _lg_first == 0 || _lg_first > EPOCHSECONDS - 18000 )); then
+      _lg_wide=$(( _LEDGER_CAP * 16 )); (( _lg_wide > 67108864 )) && _lg_wide=67108864
+      if (( _lg_wide > _LEDGER_CAP )) && _ledger=$(tail -c "$_lg_wide" "$_LEDGER_FILE" 2>"$_SL_BUF.err"); then
+        if (( _lg_bytes > _lg_wide )); then
+          if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
+        else _ledger_cut=0; fi
+      fi
+    fi
   fi
 fi
 

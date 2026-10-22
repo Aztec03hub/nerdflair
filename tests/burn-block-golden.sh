@@ -204,10 +204,10 @@ fi
 # The tail read has a hard byte cap. If the block began before the oldest row
 # the cap let us see, the sum is missing its earliest spend. An absolute
 # dollar figure that is quietly low is read as fact, so it must not be shown.
-# Forced here with a tiny cap against a ledger far larger than it.
+# Forced here with a tiny cap against a ledger far larger than it (and than its one 16x widen).
 L7="$RUN/c7.tsv"
-for i in $(seq 1 4000); do
-  printf '%s\tS%s\trepo\t%s.00\n' $((NOW-18000+i*4)) $((i % 7)) $((i))
+for i in $(seq 1 8000); do
+  printf '%s\tS%s\trepo\t%s.00\n' $((NOW-18000+i*2)) $((i % 7)) $((i))
 done > "$L7"
 out7=$(NERDFLAIR_LEDGER_TAIL_BYTES=4096 render "$L7" $((NOW+9000)))
 printf '\n[%s] case 7: tail cap shorter than the block window\n' "$LABEL"

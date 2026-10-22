@@ -1438,7 +1438,18 @@ fn render_inner(input: &str) -> Result<String, String> {
         std::env::var("NERDFLAIR_REPO_COST_FILE")
             .unwrap_or_else(|_| format!("{}/.claude/nerdflair-usage.tsv", home)),
     );
-    let (ledger, ledger_cut) = ledger_tail(&ledger_file, ledger_cap, "ledger-read");
+    let (mut ledger, mut ledger_cut) = ledger_tail(&ledger_file, ledger_cap, "ledger-read");
+    // The block can start up to 5 h back. If the cut tail starts later than that, widen ONCE (16x, like the
+    // transcript path) instead of hiding burn and block at high activity.
+    if ledger_cut {
+        let first = ledger.lines().next().and_then(|l| l.split('\t').next()).map_or(0.0, fmtx::awk_num);
+        if first <= 0.0 || first > (now - 18000) as f64 {
+            let wider = clamp_cap((ledger_cap as i64).saturating_mul(16));
+            if wider > ledger_cap {
+                (ledger, ledger_cut) = ledger_tail(&ledger_file, wider, "ledger-read");
+            }
+        }
+    }
 
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
@@ -3245,13 +3256,12 @@ fn repo_cost_segment(
         while total.ends_with('\n') {
             total.pop();
         }
-    } else if let Some(text) = match read_lossy(&cost_file) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None, // no ledger yet: normal
-        Err(e) => {
-            errlog::note_io("ledger-read", &format!("cannot read {} for the repo total", cost_file.display()), &e);
-            None
-        }
+    } else if let Some((text, total_cut)) = {
+        // Bounded: a ledger that compaction has not kept small must not cost a full read per refresh.
+        // ledger_tail logs every failure under its key and returns "" for a missing file (first run).
+        let cap = clamp_cap(env_int("NERDFLAIR_REPO_TOTAL_TAIL_BYTES", 16_777_216));
+        let (t, cut) = ledger_tail(&cost_file, cap, "ledger-read");
+        if t.is_empty() { None } else { Some((t, cut)) }
     } {
         let cutoff = (now - days * 86400) as f64;
         let mut m: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
@@ -3274,7 +3284,11 @@ fn repo_cost_segment(
         }
         let t: f64 = m.values().sum();
         if t > 0.0 {
-            total = fmtx::f2(t);
+            // "~" = the tail cap cut the file, so older sessions are missing: an estimate, not a total.
+            total = format!("{}{}", if total_cut { "~" } else { "" }, fmtx::f2(t));
+            if total_cut {
+                errlog::note("repo-total-cut", "ledger is larger than NERDFLAIR_REPO_TOTAL_TAIL_BYTES; repo total is a lower bound (~); compaction is not keeping up");
+            }
         }
         if let Some(memo) = memo.as_ref() {
             if let Err(e) = cache_write(memo, total.as_bytes()) {
@@ -3283,7 +3297,8 @@ fn repo_cost_segment(
         }
     }
     if !total.is_empty() && total != "0.00" {
-        return format!("{}{} ${}{}", pal.dark_green, REPO_ICON, total, RESET);
+        let (tilde, num) = match total.strip_prefix('~') { Some(n) => ("~", n), None => ("", total.as_str()) };
+        return format!("{}{} {}${}{}", pal.dark_green, REPO_ICON, tilde, num, RESET);
     }
     String::new()
 }
