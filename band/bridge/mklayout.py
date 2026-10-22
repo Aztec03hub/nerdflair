@@ -66,8 +66,9 @@ CARDS = [
     ("folder", "\U000f024b|\uf1bb", "Folder", (125, 211, 252), [
         "workspace.project_dir, else current_dir",
     ]),
-    ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.…-]+$", "Branch", (125, 211, 252), [
+    ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.…-]+$|^[A-Za-z][\\w.-]{0,4}…$", "Branch", (125, 211, 252), [
         "branch from `git rev-parse --abbrev-ref HEAD`, cached 3s",
+        "under a folder of several repos: the first repo:branch, then the next repo's first 5 characters and an ellipsis",
         "a worktree branch in the payload wins over git",
     ]),
     ("dirty", "|" + r"\[\+\d","Working tree and divergence", (251, 191, 36), [
@@ -416,6 +417,15 @@ def selfcheck():
 
     ids = [classify(t)[0] for _c, _w, t in got]
     assert ids == ["folder", "branch", "limits"], ids
+    # Multi-repo row 1: the peek of the second repo ("aleth…", no colon) is still the Branch readout, in its own
+    # column span, and a model truncated with an ellipsis is not.
+    multi = "\U000f024b dir · \U000f062c SillyTavern:release · aleth… · \uf0e7 Opus 4.6"
+    mp = pieces(multi)
+    assert [t for _c, _w, t in mp] == ["\U000f024b dir", "\U000f062c SillyTavern:release", "aleth…", "\uf0e7 Opus 4.6"], mp
+    assert [classify(t)[0] for _c, _w, t in mp][:3] == ["folder", "branch", "branch"], mp
+    c3, w3, t3 = mp[2]
+    assert c3 == multi.index("aleth…") + 1 and w3 == cells("aleth…") == 6, (c3, w3)
+    assert classify("Mythos Ex…")[0] != "branch" and classify("…wrap-longfirst")[0] != "branch"
     # Something with no card still gets one, rather than being unhoverable.
     sid, title, _rgb, body = classify("wat")
     assert sid is None and title == "Readout" and body

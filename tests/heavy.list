@@ -18,3 +18,4 @@ bash tests/tmux-watch.sh   # 7.2s, load-flaky when it sleeps; private TMUX_TMPDI
 bash tests/golden-mutation.sh   # 7 s alone, moved from quick.list so load can't time it out
 bash tests/nfpty-exit.sh   # 7 s alone, moved from quick.list so load can't time it out
 bash tests/no-leaks.sh   # about 25 s (4 children, each capped at 15 s); the leak check for the tmux scripts it runs
+python3 tests/row1-edge.py   # about 15 s: runs the row1 cases through difftest, then checks the right edge of both renderers

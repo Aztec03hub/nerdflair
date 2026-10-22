@@ -280,6 +280,18 @@ build_fixtures() {
     _gitq -C "$FIXROOT/nfdt-diverged" commit -q -m "diverged local commit $i"
   done
 
+  # ── long branch + dirty + ahead and behind (row 1 right-edge cases) ───
+  _gitq clone -q "$FIXROOT/.upstream.git" "$FIXROOT/nfdt-longdiv"
+  _gitq -C "$FIXROOT/nfdt-longdiv" config user.name Fixture
+  _gitq -C "$FIXROOT/nfdt-longdiv" config user.email fixture@example.invalid
+  _gitq -C "$FIXROOT/nfdt-longdiv" checkout -q -b feature/extremely-long-branch-name-with-divergence-and-dirty-files --track origin/main
+  printf 'local\n' > "$FIXROOT/nfdt-longdiv/l1.txt"
+  _gitq -C "$FIXROOT/nfdt-longdiv" add -A
+  _gitq -C "$FIXROOT/nfdt-longdiv" commit -q -m "long local commit"
+  _gitq -C "$FIXROOT/nfdt-longdiv" fetch -q origin
+  for (( i=0; i<37; i++ )); do printf 'x\ny\n' > "$FIXROOT/nfdt-longdiv/u$i.txt"; done
+  printf 'changed\n' > "$FIXROOT/nfdt-longdiv/README.md"
+
   # ── very long branch name ──────────────────────────────────────────────
   mkrepo "$FIXROOT/nfdt-longbranch" \
     "feature/extremely-long-branch-name-that-will-definitely-need-truncating-at-any-width"
@@ -302,6 +314,20 @@ build_fixtures() {
   mkrepo "$FIXROOT/nfdt-wrap-many/alpha"   "feature/alpha-work"
   mkrepo "$FIXROOT/nfdt-wrap-many/bravo"   "bugfix/bravo-thing"
   mkrepo "$FIXROOT/nfdt-wrap-many/charlie" "spike/charlie-experiment"
+
+  mkdir -p "$FIXROOT/nfdt-wrap-two"
+  mkrepo "$FIXROOT/nfdt-wrap-two/SillyTavern" "release"
+  mkrepo "$FIXROOT/nfdt-wrap-two/aletheia"    "feat/stage2-hardening-vllm-gguf"
+
+  mkdir -p "$FIXROOT/nfdt-wrap-four"
+  mkrepo "$FIXROOT/nfdt-wrap-four/SillyTavern"       "release"
+  mkrepo "$FIXROOT/nfdt-wrap-four/aletheia"          "feat/stage2-hardening-vllm-gguf"
+  mkrepo "$FIXROOT/nfdt-wrap-four/koboldcpp"         "concedo"
+  mkrepo "$FIXROOT/nfdt-wrap-four/vllm-gguf-plugin"  "wsl-headroom-and-mi-extra-long"
+
+  mkdir -p "$FIXROOT/nfdt-wrap-longfirst"
+  mkrepo "$FIXROOT/nfdt-wrap-longfirst/a-very-long-repository-name-indeed" "feature/a-very-long-branch-name-for-the-first-entry"
+  mkrepo "$FIXROOT/nfdt-wrap-longfirst/zeta" "second-branch"
 
   mkdir -p "$FIXROOT/nfdt-wrap-main"
   mkrepo "$FIXROOT/nfdt-wrap-main/one"   main

@@ -701,9 +701,10 @@ _MULTI_SIDE_MIN=5
 
 # Separator between entries. Rendered inside the magenta branch run, so it reads
 # as a purple bullet. The cached list uses ", " internally; this is applied only
-# when joining for display. _MULTI_SEP_W is its visible width.
+# when joining for display. Its visible width is 3.
 _MULTI_SEP=" · "
-_MULTI_SEP_W=3
+# Chars of the second entry shown after the first (then ELLIPSIS).
+_MULTI_PEEK=5
 
 # ── Render one "repo:branch" entry to a target visible width ────────
 # Truncates repo and/or branch independently (start kept, ELLIPSIS appended),
@@ -739,83 +740,36 @@ _render_multi_entry() {
   printf '%s:%s' "$_repo_out" "$_br_out"
 }
 
-# ── Fit the multi-repo branch list into a target visible width ──────
-# Returns the entries joined with _MULTI_SEP, or "" if they can't fit (caller
-# collapses to "N branches"). When the full list overflows, width is shared
-# round-robin: trim one char at a time from the longest entry, so long entries
-# shrink together rather than one staying full while another is clipped. Each
-# entry truncates via _render_multi_entry.
+# ── Fit the multi-repo branch readout into a target visible width ───
+# First entry, then (if a second exists) _MULTI_SEP and the second entry's first
+# _MULTI_PEEK chars plus ELLIPSIS. A first entry too long for the target shrinks
+# via _render_multi_entry; if it can't fit with the peek, the peek goes; if it
+# can't fit alone, prints "" (caller collapses to "N branches").
 _fit_multi_branches() {
   local _target=$1
-
-  local _entries=() _rest="$_multi_branch_list"
-  while [[ "$_rest" == *", "* ]]; do
-    _entries+=("${_rest%%, *}")
-    _rest="${_rest#*, }"
-  done
-  _entries+=("$_rest")
-  local _n=${#_entries[@]}
-  local _sep_cost=$(( (_n - 1) * _MULTI_SEP_W ))
-  local _content_budget=$(( _target - _sep_cost ))
-
-  # Fast path: full list fits as-is.
-  local _full_content=0 _i
-  for (( _i=0; _i<_n; _i++ )); do (( _full_content += ${#_entries[$_i]} )); done
-  if (( _full_content <= _content_budget )); then
-    local _out=""
-    for (( _i=0; _i<_n; _i++ )); do
-      [[ -n "$_out" ]] && _out+="$_MULTI_SEP"
-      _out+="${_entries[$_i]}"
-    done
-    printf '%s' "$_out"
-    return
+  local _e1="${_multi_branch_list%%, *}" _peek="" _peek_w=0
+  if [[ "$_multi_branch_list" == *", "* ]]; then
+    local _e2="${_multi_branch_list#*, }"
+    _e2="${_e2%%, *}"
+    _e2="${_e2:0:$_MULTI_PEEK}"
+    _peek="${_MULTI_SEP}${_e2}${ELLIPSIS}"
+    _peek_w=$(( 3 + ${#_e2} + 1 ))  # sep + chars + ELLIPSIS (names are ASCII)
   fi
-
-  # Per-entry floor (smallest render width) and starting allowance (full length).
-  # A side over _MULTI_SIDE_MIN floors at that many chars + 1 ELLIPSIS; plus the
-  # colon. The floor never exceeds the entry's own length.
-  local _floor=() _alloc=() _i
-  for (( _i=0; _i<_n; _i++ )); do
-    local _e="${_entries[$_i]}"
-    local _elen=${#_e}
-    local _rp="${_e%%:*}" _bp="${_e#*:}"
-    local _rmin=${#_rp} _bmin=${#_bp}
-    (( _rmin > _MULTI_SIDE_MIN )) && _rmin=$(( _MULTI_SIDE_MIN + 1 ))
-    (( _bmin > _MULTI_SIDE_MIN )) && _bmin=$(( _MULTI_SIDE_MIN + 1 ))
-    local _f=$(( _rmin + 1 + _bmin ))
-    (( _f > _elen )) && _f=$_elen
-    _floor[$_i]=$_f
-    _alloc[$_i]=$_elen
-  done
-
-  # If even all entries at their floor don't fit, collapse to a count.
-  local _floor_sum=0
-  for (( _i=0; _i<_n; _i++ )); do (( _floor_sum += _floor[_i] )); done
-  (( _floor_sum > _content_budget )) && { printf ''; return; }
-
-  # Trim the longest above-floor entry one char at a time until within budget.
-  # Ties break to the earliest index, keeping output stable across renders.
-  local _total=0
-  for (( _i=0; _i<_n; _i++ )); do (( _total += _alloc[_i] )); done
-  while (( _total > _content_budget )); do
-    local _longest=-1 _longest_len=-1
-    for (( _i=0; _i<_n; _i++ )); do
-      if (( _alloc[_i] > _floor[_i] && _alloc[_i] > _longest_len )); then
-        _longest_len=${_alloc[$_i]}
-        _longest=$_i
-      fi
-    done
-    (( _longest < 0 )) && break
-    (( _alloc[_longest]-- ))
-    (( _total-- ))
-  done
-
-  local _out=""
-  for (( _i=0; _i<_n; _i++ )); do
-    [[ -n "$_out" ]] && _out+="$_MULTI_SEP"
-    _out+="$(_render_multi_entry "${_entries[$_i]}" "${_alloc[$_i]}")"
-  done
-  printf '%s' "$_out"
+  local _rp="${_e1%%:*}" _bp="${_e1#*:}"
+  local _rmin=${#_rp} _bmin=${#_bp}
+  (( _rmin > _MULTI_SIDE_MIN )) && _rmin=$(( _MULTI_SIDE_MIN + 1 ))
+  (( _bmin > _MULTI_SIDE_MIN )) && _bmin=$(( _MULTI_SIDE_MIN + 1 ))
+  local _floor=$(( _rmin + 1 + _bmin ))
+  (( _floor > ${#_e1} )) && _floor=${#_e1}
+  if [[ -n "$_peek" ]]; then
+    local _w=$(( _target - _peek_w ))
+    if (( _w >= _floor )); then
+      printf '%s%s' "$(_render_multi_entry "$_e1" "$_w")" "$_peek"
+      return
+    fi
+  fi
+  (( _target >= _floor )) && printf '%s' "$(_render_multi_entry "$_e1" "$_target")"
+  return 0
 }
 
 # ── Folder + branch segment ──────────────────────────────────────
@@ -850,7 +804,7 @@ if [[ -n "$_display_dir" ]]; then
     if (( _multi_off_count > 0 )); then
       # Apply the display separator now so width budgeting matches the final
       # render; _fit_multi_branches resolves the real fit once width is known.
-      branch="${_multi_branch_list//, /$_MULTI_SEP}"
+      branch=$(_fit_multi_branches 100000)
       _branch_is_multi=1
     else
       branch="${_multi_total_count} repos"
@@ -1296,6 +1250,11 @@ if [[ -n "$branch" ]] && (( _branch_is_multi == 0 )) && (( effort_suffix_len > 0
     effort_floor=$(( min_model + _effort_cost ))
   fi
 fi
+# Never let the effort floor starve path and branch below their 4-column minimums.
+if [[ -n "$branch" ]] && (( text_budget - effort_floor < 8 )); then
+  effort_floor=$(( text_budget - 8 ))
+  (( effort_floor < min_model )) && effort_floor=$min_model
+fi
 model_budget=$(( text_budget - path_branch_len ))
 (( model_budget < effort_floor )) && model_budget=$effort_floor
 
@@ -1410,38 +1369,64 @@ fi
 
 
 
-# Assemble folder segment
-if [[ "${_is_home:-0}" == "1" ]]; then
-  if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE} ${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
-  else
-    folder_segment="${BLUE} ${RESET}"
+# Row 1 left is assembled in up to five passes. When the right readout exists and
+# the left plus a 2-column gap would push it past ROW_WIDTH (so past the bar's right
+# edge), pass N shrinks one more thing: folder, branch, the model suffixes, then the
+# model name. Never the right readout.
+for (( _pass=0; _pass<5; _pass++ )); do
+  folder_segment=""
+  # Assemble folder segment
+  if [[ "${_is_home:-0}" == "1" ]]; then
+    if [[ -n "$branch" ]]; then
+      folder_segment="${BLUE} ${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+    else
+      folder_segment="${BLUE} ${RESET}"
+    fi
+  elif [[ -n "$folder_name" ]]; then
+    if [[ -n "$branch" ]]; then
+      folder_segment="${BLUE}${folder_icon} ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
+    else
+      folder_segment="${BLUE}${folder_icon} ${folder_name}${RESET}"
+    fi
   fi
-elif [[ -n "$folder_name" ]]; then
-  if [[ -n "$branch" ]]; then
-    folder_segment="${BLUE}${folder_icon} ${folder_name}${BULLET}${MAGENTA}󰘬 ${branch}${RESET}"
-  else
-    folder_segment="${BLUE}${folder_icon} ${folder_name}${RESET}"
+
+  # Assemble model segment: icon + name + bullet + effort + thinking + style icon + fast.
+  # Fast mode is rendered last so it always trails the segment. Suffixes use
+  # their colored forms; the plain forms above were only for width.
+  model_segment=""
+  if [[ -n "$model_text" ]]; then
+    model_segment="${CYAN}${model_icon} ${model_text}${RESET}"
+    [[ -n "$effort_suffix$state_suffix$style_suffix$fast_suffix" ]] && model_segment+="${OPT_BULLET}"
+    model_segment+="${effort_suffix_colored}${state_suffix_colored}${STATE_COLOR}${style_suffix}${RESET}${fast_suffix_colored}"
   fi
-fi
 
-# Assemble model segment: icon + name + bullet + effort + thinking + style icon + fast.
-# Fast mode is rendered last so it always trails the segment. Suffixes use
-# their colored forms; the plain forms above were only for width.
-model_segment=""
-if [[ -n "$model_text" ]]; then
-  model_segment="${CYAN}${model_icon} ${model_text}${RESET}"
-  [[ -n "$effort_suffix$state_suffix$style_suffix$fast_suffix" ]] && model_segment+="${OPT_BULLET}"
-  model_segment+="${effort_suffix_colored}${state_suffix_colored}${STATE_COLOR}${style_suffix}${RESET}${fast_suffix_colored}"
-fi
-
-# Build row 1 left
-row1_left="\033[0m"
-[[ -n "$folder_segment" ]] && row1_left+="$folder_segment"
-if [[ -n "$model_segment" ]]; then
-  [[ -n "$folder_segment" ]] && row1_left+="${BULLET}"
-  row1_left+="$model_segment"
-fi
+  # Build row 1 left
+  row1_left="\033[0m"
+  [[ -n "$folder_segment" ]] && row1_left+="$folder_segment"
+  if [[ -n "$model_segment" ]]; then
+    [[ -n "$folder_segment" ]] && row1_left+="${BULLET}"
+    row1_left+="$model_segment"
+  fi
+  (( right_width > 0 )) && [[ "$_SL_MODE" != "minimal" ]] || break
+  _over=$(( $(_vis_len "$row1_left") + 2 + right_width - ROW_WIDTH ))
+  (( _over > 0 )) || break
+  case $_pass in
+    0) if [[ "${_is_home:-0}" != "1" ]] && (( ${#folder_name} > 2 )); then
+         _n=${#folder_name}; _nl=$(( _n - _over )); (( _nl < 2 )) && _nl=2
+         folder_name="${ELLIPSIS}${folder_name:$(( _n - _nl + 1 ))}"
+       fi ;;
+    1) if (( ${#branch} > 2 )); then
+         _n=${#branch}; _nl=$(( _n - _over )); (( _nl < 2 )) && _nl=2
+         branch="${branch:0:$(( _nl - 1 ))}${ELLIPSIS}"
+       fi ;;
+    2) effort_suffix=""; effort_suffix_colored=""; state_suffix=""; state_suffix_colored=""
+       style_suffix=""; fast_suffix=""; fast_suffix_colored="" ;;
+    3) if (( ${#model_text} > 2 )); then
+         _n=${#model_text}; _nl=$(( _n - _over )); (( _nl < 2 )) && _nl=2
+         model_text="${model_text:0:$(( _nl - 1 ))}${ELLIPSIS}"
+       fi ;;
+  esac
+done
 
 # Row 1: folder/branch/model + dirty (non-minimal modes render now;
 # minimal deferred until after TIER arrays are defined for the pill)

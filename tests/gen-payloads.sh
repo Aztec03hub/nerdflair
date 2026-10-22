@@ -387,4 +387,19 @@ emit "256 clamp: logo splash 0%, TMUX set, opt-in empty (greys, no 16/17)" "$(mu
 emit "256 clamp: logo splash 0%, TMUX set, opt-in set (truecolor as before)" "$(mut '.context_window.used_percentage=0')" "${E_FULL[@]}" "CASE_TMUX=%3" "CASE_EXTRA_ENV=CLAUDE_CODE_TMUX_TRUECOLOR=1"
 emit "256 clamp: bar 37%, TMUX set, opt-in empty" "$(mut '.')" "${E_FULL[@]}" "CASE_TMUX=%3"
 emit "256 clamp: full bar 100%, TMUX set, opt-in empty" "$(mut '.context_window.used_percentage=100')" "${E_FULL[@]}" "CASE_TMUX=%3"
+# ═══ row 1 layout: multi-repo peek, and the right readout pinned to the bar edge ═══
+for r in wrap-two wrap-many wrap-four wrap-longfirst; do
+  for w in 50 60 100 150; do
+    emit "row1 multi: $r at COLUMNS=$w, effort high" \
+      "$(mut ".workspace={\"current_dir\":\"@@REPO:$r@@\",\"project_dir\":\"@@REPO:$r@@\"}")" \
+      "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w"
+  done
+done
+for r in longdiv bigdirty diverged; do
+  for w in 50 56 60 70 80 100 150; do
+    emit "row1 right edge: $r, long model + effort + thinking, COLUMNS=$w" \
+      "$(mut ".workspace={\"current_dir\":\"@@REPO:$r@@\",\"project_dir\":\"@@REPO:$r@@\"} | .model.display_name=\"Mythos Experimental Preview Edition 12.5\" | .effort.level=\"xhigh\" | .thinking.enabled=true | .output_style.name=\"Explanatory\"")" \
+      "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w"
+  done
+done
 echo "generated $N payloads in $OUT"
