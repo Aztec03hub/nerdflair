@@ -188,28 +188,42 @@ def classify(text):
     return None, title, rgb, body
 
 
-def cell_step(ch, prev_wide=False, joined=False):
-    """(width of `ch`, prev_wide, joined) for one character in context. Combining marks and format
-    characters take none; a wide glyph right after a zero-width joiner that follows a wide glyph is
-    the same cell (tmux 3.4 draws a ZWJ emoji sequence in 2 cells, measured: man ZWJ woman and the
-    family of three both advance the cursor by 2)."""
+CLUSTER_BYTES = 21                  # tmux keeps one cluster (base + joiners + marks) in a 21-byte UTF-8 buffer (3.4)
+NEW_CLUSTER = (0, 0, False, False)  # (bytes of the open cluster, its width, last was a ZWJ, last was a regional indicator)
+
+
+def cell_step(ch, st=NEW_CLUSTER):
+    """(cells this character adds, new state), counted the way tmux 3.4 draws them (measured, see
+    cells-table.py). Zero-width characters (combining marks, ZWJ, VS16, keycap) join the open cluster and add
+    nothing, except VS16 on a one-cell base, which makes it two. A pictograph right after a ZWJ, a regional
+    indicator after one, and a skin-tone modifier join too. All of it only while the cluster fits tmux's
+    21-byte buffer: past that the glyph starts a new cluster with its own width."""
+    nbytes, width, zwj, ri = st
+    n = len(ch.encode("utf-8"))
+    fits = 0 < nbytes and nbytes + n <= CLUSTER_BYTES
     if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
-        return 0, prev_wide, (ch == "\u200d" and prev_wide) or joined
-    w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-    if joined and w == 2:
-        return 0, True, False           # joined; a further ZWJ sets it up again for the next link
-    return w, w == 2, False
+        if not fits:
+            return 0, st
+        if ch == "\ufe0f" and width == 1:
+            return 1, (nbytes + n, 2, False, False)
+        return 0, (nbytes + n, width, ch == "\u200d", False)
+    pict = ord(ch) >= 0x1F000 or 0x2600 <= ord(ch) <= 0x27BF
+    is_ri = "\U0001f1e6" <= ch <= "\U0001f1ff"
+    if fits and pict and (zwj or (is_ri and ri) or "\U0001f3fb" <= ch <= "\U0001f3ff"):
+        return 0, (nbytes + n, width, False, is_ri)
+    w = 2 if is_ri or unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w, (n, w, False, is_ri)
 
 
 def cells(s):
-    """Screen cells a string occupies: East Asian wide and fullwidth characters
-    take two, combining marks none, a ZWJ emoji sequence two. A cwd or branch with CJK in it used to
-    shift every later column by one per wide character, so hover hit the
-    wrong card. Nerd Font glyphs are ambiguous-width and count one, as the
-    terminal this is built for draws them."""
-    n, pw, jn = 0, False, False
+    """Screen cells a string occupies, as tmux 3.4 draws it (cells-table.py measures every case against a
+    real tmux): East Asian wide and fullwidth characters take two, combining marks none, an emoji sequence
+    what the cluster rule in cell_step gives. A cwd or branch with CJK in it used to shift every later
+    column by one per wide character, so hover hit the wrong card. Nerd Font glyphs are ambiguous-width and
+    count one, as the terminal this is built for draws them."""
+    n, st = 0, NEW_CLUSTER
     for ch in s:
-        w, pw, jn = cell_step(ch, pw, jn)
+        w, st = cell_step(ch, st)
         n += w
     return n
 
@@ -360,6 +374,9 @@ def selfcheck():
     # emoji side by side are still two.
     man, woman, girl = "\U0001f468", "\U0001f469", "\U0001f467"
     assert cells(man + "\u200d" + woman) == 2 and cells(man + "\u200d" + woman + "\u200d" + girl) == 2 and cells(man + "\u200d") == 2
+    boy = "\U0001f466"
+    fam4 = man + "\u200d" + woman + "\u200d" + girl + "\u200d" + boy
+    assert cells(fam4) == 4 and cells(fam4 + "\u200d" + man) == 4, "tmux closes a cluster at 21 bytes: a family of four is 4, a chain of five 4"
     assert cells(man + "\u200d" + woman + woman) == 4 and cells("a\u200db") == 2, "only a wide glyph after a wide glyph's joiner joins"
     # A folder named with two spaces stays one readout; the same two spaces anywhere else are a join.
     assert [t for _c, _w, t in pieces("\U000f024b my  proj \u00b7 \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]

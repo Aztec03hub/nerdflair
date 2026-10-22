@@ -57,7 +57,7 @@ import tty
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mklayout
-from mklayout import cell_step  # noqa: E402
+from mklayout import NEW_CLUSTER, cell_step  # noqa: E402
 from panel import FRAME, Panel  # noqa: E402
 from shadow import Shadow  # noqa: E402
 import nflog  # noqa: E402
@@ -319,13 +319,13 @@ def cut(line, x, w, hl=""):
     nothing is ever half-painted (the range then grows by up to a cell a side)."""
     state, col, start, out = "", 1, x, []
     toks = [m.groups() for m in _TOK.finditer(line)]
-    pw, jn = False, False               # width state: the last counted glyph was wide / a joiner is pending
+    st = NEW_CLUSTER                    # the open cluster, as cell_step counts it
     for i, (sgr, other, ch) in enumerate(toks):
         if col >= x + w and out:
             # Past the last lit cell. What still belongs to it: zero-width characters (an accent, a joiner and the
             # glyph it joins), even behind SGR escapes, which are looked past.
             nxt = next((t[2] for t in toks[i:] if t[2] is not None), None)
-            if nxt is None or cell_step(nxt, pw, jn)[0] != 0:
+            if nxt is None or (cell_step(nxt, st)[0] != 0 and nxt != "\ufe0f"):
                 break
         elif col >= x + w:
             break
@@ -334,7 +334,7 @@ def cut(line, x, w, hl=""):
             if out:
                 out.append(hl or sgr)
         elif ch is not None:
-            cw, pw, jn = cell_step(ch, pw, jn)
+            cw, st = cell_step(ch, st)
             if col + cw > x:
                 if not out:
                     start = col
@@ -428,27 +428,38 @@ class Highlight:
         if got is None or not self.settled():
             # The paint above is the saved copy, or waits behind an unfinished engine sequence: either way
             # it can land on top of newer engine output. Repaint from the shadow once things are clean.
-            self.redo = [r for r in self.redo if r[0] != key][-(self.REDO_MAX - 1):] + [(key, 0, 0.0)]
+            kept = [r for r in self.redo if r[0] != key]
+            if len(kept) >= self.REDO_MAX:
+                note_once("highlight-redo-evicted", "highlight: more stale-restore re-checks pending than the limit "
+                                                    f"({self.REDO_MAX}); the oldest was dropped, so a readout may show an old value until the engine redraws it")
+            self.redo = kept[max(0, len(kept) - self.REDO_MAX + 1):] + [(key, 0, 0.0)]
         return True
 
     def recheck(self):
-        """Repaint possibly stale restores from the shadow (see off). Called every loop pass; cheap when idle."""
+        """Repaint a possibly stale restore from the shadow (see off). Called every loop pass; cheap when idle.
+        At most ONE tmux capture per call, so the relay loop is never held for several; returns True if it
+        read tmux (the caller counts that time into hl.busy)."""
         if not self.redo or not self.settled() or self.cur is not None:
-            return
-        now, keep = time.monotonic(), []
+            return False
+        now, read = time.monotonic(), False
+        keep = []
         for key, tries, due in self.redo:
-            if now < due:
+            if read or now < due:
                 keep.append((key, tries, due))
             elif self.blocked(key[0]):
                 pass                        # the card sits on that row now: leave it alone
-            elif (got := self._cells(key)) is not None:
-                self._paint(got[1], keep=True)
-            elif tries >= 4:
-                note_rate("highlight-restore-stale", "highlight: the shadow screen never answered after a restore, so a "
-                                                     "readout may show an old value until the engine redraws it")
             else:
-                keep.append((key, tries + 1, now + 0.5))
+                read = True
+                got = self._cells(key)
+                if got is not None:
+                    self._paint(got[1], keep=True)
+                elif tries >= 4:
+                    note_rate("highlight-restore-stale", "highlight: the shadow screen never answered after a restore, so a "
+                                                         "readout may show an old value until the engine redraws it")
+                else:
+                    keep.append((key, tries + 1, now + 0.5))
         self.redo = keep
+        return read
 
     def sync(self, key):
         """True if this pass did tmux work (took one down or tried to put one up)."""
@@ -507,7 +518,7 @@ def hl_step(hl, key, dirty, due):
     """One relay-loop pass over the highlight: follow `key`, run the stale-restore re-checks, and repaint if
     the engine drew (`dirty`) and a refresh is `due`. Returns (dirty, did tmux work)."""
     worked = bool(hl.sync(key))
-    hl.recheck()
+    worked = hl.recheck() or worked         # its one capture counts as tmux work too (hl.busy, the next gap)
     if hl.cur is None:
         return False, worked            # nothing is up to repaint (covered row, failed on(), resize)
     if dirty and due:
@@ -528,10 +539,11 @@ ALT_SCREEN = re.compile(rb"\033\[\?(?:\d+;)*(?:1049|1047|47)(?:;\d+)*[hl]")     
 # Known limits (deliberate): a read that ends inside "ESC", "ESC[", "ESC[?" or "ESC[?1" is not acted on, because
 # reads end there constantly and a false alarm erases a live card; the next read then completes the switch with
 # the card still up, so it may stay painted until the engine redraws (one rate-limited line says so). The combined
-# form "ESC[?1000;1049h" IS recognised, in one read or split across two (the tail is 24 bytes), but a combined
-# form cut off before its alt number ("ESC[?1000;10") is not a partial. "ESC[?10" also ends reads before ?1000h
+# form "ESC[?1000;1049h" IS recognised, in one read or split across two (the tail is 24 bytes: a longer list,
+# split near its start, is missed), and a read ending in it from the alt number's first digits on ("ESC[?1000;10")
+# is a partial, so the card comes down first. "ESC[?10" and "ESC[?1000;10" also end reads before ?1000h, ?1000;1006h
 # and friends: the cost is one erased card.
-ALT_PARTIAL = re.compile(rb"\033\[\?(?:10|104|47|1047|1049)$")
+ALT_PARTIAL = re.compile(rb"\033\[\?(?:\d+;)*(?:10|104|47|1047|1049)$")
 
 
 def alt_switch(tail, data):
@@ -938,11 +950,13 @@ def selfcheck():
     for k in range(10):
         hr.sync((2 + k, 3, 2, RGB)); hr.sync(None)
     assert len(hr.redo) == Highlight.REDO_MAX, "bounded"
+    assert "highlight-redo-evicted" in nflog._seen, "an evicted re-check is logged"
     hr.redo = [(k, t, 0.0) for k, t, _d in hr.redo]
     st3["ok"] = True
     nr5 = len(wr5)
-    hr.recheck()
-    assert len(wr5) == nr5 + Highlight.REDO_MAX and not hr.redo, "every pending re-check is repainted"
+    for k in range(Highlight.REDO_MAX):
+        assert hr.recheck() is True and len(wr5) == nr5 + k + 1, "one capture per call, reported as tmux work"
+    assert not hr.redo and hr.recheck() is False, "every pending re-check is repainted, then idle"
     # R9-1: no refresh is armed inside the shadow's cool-down; R7-6: the loop's highlight step and its settled test.
     class Cool(FakeShadow):
         cool = 102.0
@@ -972,6 +986,12 @@ def selfcheck():
             hit1, tl = alt_switch(b"", b"ls" + sw2[:cut_at])
             hit2, tl = alt_switch(tl, sw2[cut_at:] + b"x")
             assert (hit1, hit2) == (False, True), (sw2, cut_at, hit1, hit2)
+    # ...and a read that ENDS inside the combined form is a partial from the alt number's first digits on,
+    # so the card comes down before the final h arrives: ESC[?1000;10, ;104, ;1049 (not ESC[?1000; or ESC[?1000;1).
+    full = b"\x1b[?1000;1049h"
+    hits = [bool(ALT_PARTIAL.search(b"ls" + full[:k])) for k in range(1, len(full))]
+    assert hits == [k == 5 or k >= len(b"\x1b[?1000;10") for k in range(1, len(full))], hits   # k=5 is ESC[?10, the known prefix
+    assert not ALT_PARTIAL.search(b"\x1b[?1000;1006")
     assert not alt_switch(b"", b"\x1b[?1000;1006h")[0] and not alt_switch(b"", b"\x1b[?25;1h")[0] and not alt_switch(b"", b"\x1b[?1;2h")[0]
     assert alt_switch(b"", b"abc") == (False, b"abc") and alt_switch(sw, b"x")[0] is False, "a switch already seen is not seen again"
     assert ALT_PARTIAL.search(b"abc" + sw[:6]) and ALT_PARTIAL.search(b"x\x1b[?47") and not ALT_PARTIAL.search(b"abc\x1b[") \
@@ -1034,6 +1054,10 @@ def selfcheck():
     z = cut(f"a{man}{zwj}{woman}z", 4, 1)
     assert z.count("z") == 1 and woman not in z, "the cell after the sequence is col 4 (tmux draws it in 2): z, not the emoji"
     assert cut(f"a{man}{woman}z", 2, 2).count(woman) == 0, "two emoji side by side are two cells pairs: the second is not in a 2-wide range"
+    fam4 = man + zwj + woman + zwj + "\U0001f467" + zwj + "\U0001f466"        # 4 cells in tmux 3.4 (21-byte cluster)
+    c4 = cut(f"a{fam4}z", 2, 2)
+    assert fam4[:6] in c4 and "\U0001f466" not in c4 and "z" not in c4, "cut agrees with cells(): the first 2 cells of a family of four"
+    assert "\U0001f466" in cut(f"a{fam4}z", 4, 2) and cut(f"a{fam4}z", 6, 1).count("z") == 1, "...and the next cluster starts at col 4, z at col 6"
     print("nfpty ok")
 
 
