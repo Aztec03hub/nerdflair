@@ -508,6 +508,17 @@ class Highlight:
         self.cur, self.redo = None, []
 
 
+def reread_for_judging(layout, covered):
+    """Re-read the layout to judge an open card after the engine drew. False if the read is suspended
+    (slow-tmux backoff): the readout may be gone (a dialog), so the caller must stay dirty and judge again
+    once reads resume, not repaint the highlight over what it cannot see (a card then sat on a dialog until
+    the 20 s watchdog)."""
+    if layout.paused:
+        return False
+    layout.refresh(covered, force=True)
+    return True
+
+
 def next_refresh(now, gap, shadow):
     """When the next highlight refresh may run: `gap` from now, and never inside the shadow's cool-down
     (it answers nothing then, so a re-arm would only spend a layout spawn every gap for nothing)."""
@@ -789,6 +800,17 @@ def selfcheck():
         lay2.backoff_until = time.monotonic() + 5
         lay2.refresh(force=True)
         assert len(calls) == 2 and lay2.paused, "force must not bypass the slow-read backoff"
+    finally:
+        mklayout.build_ex = real_ex
+    # A suspended layout read (slow tmux) must not be judged on: the caller stays dirty.
+    calls = []
+    try:
+        mklayout.build_ex = lambda _p, skip=(), shadow=None: (calls.append(1) or [], False)
+        lay3 = Layout("%0")
+        lay3.backoff_until = time.monotonic() + 5
+        assert reread_for_judging(lay3, set()) is False and not calls, "no read, and not judged, while paused"
+        lay3.backoff_until = 0.0
+        assert reread_for_judging(lay3, set()) is True and len(calls) == 1, "reads resume after the backoff"
     finally:
         mklayout.build_ex = real_ex
     # A card is not opened while a card's erase is still queued and the live pane
@@ -1534,7 +1556,8 @@ def main():
                     # (a dialog over the line, or a figure that changed width, with the pointer still)
                     covered = set(range(panel.rect[1], panel.rect[1] + panel.rect[3])) if panel.rect else set()
                     # force: a rate-limited (stale) read would still show the readout under a dialog
-                    layout.refresh(covered, force=True)
+                    if not reread_for_judging(layout, covered):
+                        return                    # still dirty: judged on the first pass after the backoff
                     cur_seg = next((s for s in layout.segs if s["id"] == panel.shown), None)
                     if cur_seg is None and panel.shown.startswith("row") and shown_seg[0]:
                         # a readout without a card id is known by its text, so it is followed when it shifts

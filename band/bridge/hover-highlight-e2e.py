@@ -409,7 +409,11 @@ def dialog_ticking():
             time.sleep(0.5)
             r.hover(col + w // 2, wait=0.3 + 0.04 * i)       # vary the phase against the 0.15 s layout limit
             r.mode("dialog")                                 # drawn once, pointer still   # the repair is spaced out (REFRESH, more when tmux is slow): allow for it
-            if not until(lambda: not (r.screen_has_lit() or r.card())):     # the repair lags by up to gap() + cool-down
+            clear = lambda: not (r.screen_has_lit() or r.card())
+            ok = until(clear)                                # the repair lags by up to gap() + cool-down
+            if not ok and "hover is paused for 5 s" in r.log():
+                ok = until(clear, deadline=7.0)              # a slow tmux read suspends layout reads for 5 s: judged right after
+            if not ok:
                 bad += 1
             r.hover(3, 3, 0.2)
         check(f"zero lit cells on the dialog and the card closed, in {cycles} cycles", bad == 0, f"{bad} of {cycles} cycles bad")
