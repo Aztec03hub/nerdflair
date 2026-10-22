@@ -18,6 +18,8 @@
 #   ./difftest.sh --normalize-countdown    mask rate-limit countdowns before comparing
 #   ./difftest.sh --rebuild-fixtures       force git fixture rebuild
 #   ./difftest.sh --keep                   keep the run directory for inspection
+#   ./difftest.sh -j N                     run N cases in parallel (default 1); report order and
+#                                          content are the same as -j 1
 #
 # Everything the script under test can observe is pinned; see README section
 # "Environment pinning" in worklogs/difftest-harness.md.
@@ -38,6 +40,7 @@ LIST_ONLY=0
 NORMALIZE_COUNTDOWN=0
 REBUILD_FIXTURES=0
 KEEP=0
+JOBS=1
 
 while (( $# )); do
   case "$1" in
@@ -51,10 +54,14 @@ while (( $# )); do
     --normalize-countdown) NORMALIZE_COUNTDOWN=1; shift ;;
     --rebuild-fixtures) REBUILD_FIXTURES=1; shift ;;
     --keep)  KEEP=1; shift ;;
-    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -j)      JOBS="$2"; shift 2 ;;
+    -j[0-9]*) JOBS="${1#-j}"; shift ;;
+    -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'difftest: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { printf 'difftest: -j needs a positive integer\n' >&2; exit 2; }
 
 # ── Pin side A to a git revision when asked ──────────────────────────────────
 # The working-tree copy of scripts/statusline.sh is NOT frozen: a concurrent
@@ -94,9 +101,8 @@ flock -w 300 9 || { echo "difftest: another run holds the lock" >&2; exit 2; }
 # exit, so a difftest run never leaves the real statusline holding our fixtures.
 RUN_DIR=$(mktemp -d /tmp/nerdflair-difftest.XXXXXX)
 SHARED_CACHES=("/tmp/nerdflair-ccusage-${UID}")
-# Every renderer cache lives in this private dir (NERDFLAIR_CACHE_DIR), never in the user's real one.
-CACHE_DIR="$RUN_DIR/cache"
-mkdir -m 700 "$CACHE_DIR"
+# Every renderer cache lives in a private per-case dir (CACHE_DIR = $RUN_DIR/<case>/cache, set in
+# run_case), so parallel cases can't see each other's files, and never in the user's real one.
 for f in "${SHARED_CACHES[@]}"; do
   [[ -e "$f" ]] && cp -a "$f" "$RUN_DIR/$(basename "$f").orig"
 done
@@ -266,17 +272,6 @@ resolve_repo() {
   esac
 }
 
-# ── Per-fixture /tmp git-cache paths (cleared before every single run) ───────
-GIT_CACHE_PATHS=()
-_collect_cache_paths() {
-  local d h
-  while IFS= read -r d; do
-    h=$(printf '%s' "$d" | cksum | cut -d' ' -f1)
-    GIT_CACHE_PATHS+=("$CACHE_DIR/nerdflair-git-${h}" "$CACHE_DIR/nerdflair-multibranch-${h}")
-  done < <(find "$FIXROOT" -mindepth 1 -maxdepth 2 -type d ! -name '.git' 2>/dev/null; printf '%s\n' "$FIXROOT")
-}
-_collect_cache_paths
-
 # ═════════════════════════════════════════════════════════════════════════════
 # Corpus index
 # ═════════════════════════════════════════════════════════════════════════════
@@ -371,9 +366,16 @@ run_side() {
   chmod +x "$sbox/bin/tmux"
 
   # ── clear every /tmp cache this case can touch, for THIS side ───────────
-  rm -f "${GIT_CACHE_PATHS[@]}" 2>/dev/null
-  rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
-  rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-git-* "$CACHE_DIR"/nerdflair-multibranch-* 2>/dev/null
+  # /tmp/nerdflair-ccusage-UID is a hard-coded path shared by all cases: a case that seeds it holds the
+  # lock exclusively for its whole run, every other case holds it shared (see the release below).
+  local lk
+  exec {lk}>"$RUN_DIR/ccusage.lock"
+  if [[ -n "${CASE_SEED_CCUSAGE:-}" ]]; then flock -x "$lk"; else flock -s "$lk"; fi
+  if [[ -n "${CASE_SEED_CCUSAGE:-}" || "$JOBS" == 1 ]]; then
+    rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
+    rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
+  fi
   rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-mcphealth-${UID}-* "$CACHE_DIR/nerdflair-mcphealth-prune-${UID}" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
@@ -458,6 +460,7 @@ run_side() {
       < "$outdir/payload.json" \
       > "$outdir/$tag.out" 2> "$outdir/$tag.err" )
   printf '%s' "$?" > "$outdir/$tag.rc"
+  exec {lk}>&-
 
   # Detached refreshes are disabled by env for every case; make sure none
   # linger before the next side runs.
@@ -503,15 +506,17 @@ fi
 printf '%s│  A provenance = %s%s\n' "$C_DIM" "$_prov" "$C_RST"
 printf '%s╰─%s\n' "$C_DIM" "$C_RST"
 
-for id in "${CASES[@]}"; do
-  _selected "$id" || { SKIPPED=$((SKIPPED+1)); continue; }
-  TOTAL=$((TOTAL+1))
+# run_case <id>: run one case; print its report; leave its verdict as marker files in its OUTDIR
+# (fail, unstable, noisy, bothfail) for the aggregation below. Nothing here touches shared state.
+run_case() {
+  local id="$1" DESC OUTDIR _attempt rcA rcB errA errB problems p off ev
   DESC=$(cat "$PAYLOAD_DIR/$id.txt")
   # Re-pin the epoch per case. Payload offsets all carry a +30s remainder, so
   # both sides land on the same integer-minute countdown as long as they run
   # within ~29s of each other (they run within ~0.2s).
   PINNED_NOW=$EPOCHSECONDS
   OUTDIR="$RUN_DIR/$id"; mkdir -p "$OUTDIR"
+  CACHE_DIR="$OUTDIR/cache"; mkdir -m 700 "$CACHE_DIR"
 
   # ── per-case environment directives ───────────────────────────────────
   CASE_STATE=""; CASE_COLUMNS=""; CASE_TMUX=""; CASE_MCP=""
@@ -568,7 +573,7 @@ for id in "${CASES[@]}"; do
     (( _attempt++ >= 1 )) && break
   done
   if (( _attempt > 0 )); then
-    UNSTABLE+=("$id")
+    : > "$OUTDIR/unstable"
     # evidence: what differed on the first attempt (cp ran before the retry)
     printf '%sUNSTABLE %s first-attempt diff:%s\n' "$C_YEL" "$id" "$C_RST"
     diff <(cat -v "$OUTDIR/first-A.out") <(cat -v "$OUTDIR/first-B.out") | head -20 | cut -c1-1500
@@ -595,18 +600,17 @@ for id in "${CASES[@]}"; do
   # real behavioural difference and must fail. Both noisy is reported, not failed.
   # Both sides failing the same way is "identical" but may be a shared fixture
   # problem rather than the behaviour under test: surfaced as a note, below.
-  [[ "$rcA" == "$rcB" && "$rcA" != 0 ]] && BOTHFAIL+=("$id=$rcA")
+  [[ "$rcA" == "$rcB" && "$rcA" != 0 ]] && printf '%s' "$rcA" > "$OUTDIR/bothfail"
   if (( (errA > 0) != (errB > 0) )); then
     problems+=("stderr emptiness differs: A=${errA}B B=${errB}B")
   elif (( errA > 0 )); then
-    NOISY+=("$id")
+    : > "$OUTDIR/noisy"
   fi
 
   if (( ${#problems[@]} == 0 )); then
-    SAME=$((SAME+1))
     (( VERBOSE )) && printf '%s  ok  %s  %s%s\n' "$C_GRN" "$id" "$DESC" "$C_RST"
   else
-    FAILED+=("$id")
+    : > "$OUTDIR/fail"
     printf '\n%s╔═ FAIL %s ══ %s%s\n' "$C_RED" "$id" "$DESC" "$C_RST"
     for p in "${problems[@]}"; do printf '%s║ %s%s\n' "$C_RED" "$p" "$C_RST"; done
     printf '%s║ payload: %s%s\n' "$C_DIM" "$(jq -c . "$OUTDIR/payload.json" | cut -c1-220)" "$C_RST"
@@ -621,8 +625,30 @@ for id in "${CASES[@]}"; do
     if (( errA > 0 )); then printf '%s║ A stderr: %s%s\n' "$C_RED" "$(head -c 400 "$OUTDIR/A.err")" "$C_RST"; fi
     if (( errB > 0 )); then printf '%s║ B stderr: %s%s\n' "$C_RED" "$(head -c 400 "$OUTDIR/B.err")" "$C_RST"; fi
     printf '%s╚═ artifacts: %s%s\n' "$C_DIM" "$OUTDIR" "$C_RST"
-    KEEP=1
   fi
+}
+
+export -f run_case run_side mcp_json_for maybe_normalize resolve_repo
+export JOBS RUN_DIR PAYLOAD_DIR SIDE_A SIDE_B SIDE_A_NAME SIDE_B_NAME RUST_IMPL NORMALIZE_COUNTDOWN VERBOSE \
+  FIXROOT FIX_UNICODE NORM_SED C_RED C_GRN C_YEL C_DIM C_RST
+
+SEL=()
+for id in "${CASES[@]}"; do
+  _selected "$id" && SEL+=("$id") || SKIPPED=$((SKIPPED+1))
+done
+TOTAL=${#SEL[@]}
+if (( JOBS == 1 )); then
+  for id in "${SEL[@]}"; do run_case "$id"; done
+else
+  # Each case reports into its own file; the reports are printed below in case order.
+  printf '%s\n' "${SEL[@]}" | xargs -P "$JOBS" -I{} bash -c 'run_case "$1" > "$RUN_DIR/$1.report" 2>&1' _ {}
+  for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report"; done
+fi
+for id in "${SEL[@]}"; do
+  if [[ -e "$RUN_DIR/$id/fail" ]]; then FAILED+=("$id"); KEEP=1; else SAME=$((SAME+1)); fi
+  [[ -e "$RUN_DIR/$id/unstable" ]] && UNSTABLE+=("$id")
+  [[ -e "$RUN_DIR/$id/noisy" ]] && NOISY+=("$id")
+  [[ -e "$RUN_DIR/$id/bothfail" ]] && BOTHFAIL+=("$id=$(<"$RUN_DIR/$id/bothfail")")
 done
 
 printf '\n'
