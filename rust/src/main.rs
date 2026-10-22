@@ -1413,6 +1413,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             format!("{}", rate_show)
         };
         speed_segment = format!("{}{} {}/s{}", pal.mauve, SPEED_ICON, sf, RESET);
+    } else if !f.output_tokens.is_empty() && !f.total_api_ms.is_empty() {
+        // Tokens and api time are in the payload but no rate exists yet (first render, or the previous sample
+        // was not older): a stable dim placeholder, not a segment that appears later.
+        speed_segment = format!("{}{} --/s{}", pal.dim, SPEED_ICON, RESET);
     }
 
     // `printf '%.2f' "${cost:-0}"` -> C strtod semantics, not Rust's parser.
@@ -1716,6 +1720,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             let _ = cp_fuzzy;
             compact_segment = format!("{}{}~{}{}", color, DOWN_DASHED, fmt, RESET);
         }
+    }
+    // Under 5% used the estimate is not drawn: keep the slot with a dim placeholder.
+    if compact_segment.is_empty() && used10.map_or(false, |u| u < 50) {
+        compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
     // ── Persist this sample ──────────────────────────────────────
@@ -3300,7 +3308,8 @@ fn repo_cost_segment(
         let (tilde, num) = match total.strip_prefix('~') { Some(n) => ("~", n), None => ("", total.as_str()) };
         return format!("{}{} {}${}{}", pal.dark_green, REPO_ICON, tilde, num, RESET);
     }
-    String::new()
+    // Slug resolved, nothing in the ledger yet: a stable dim placeholder, not a segment that appears later.
+    format!("{}{} $--{}", pal.dim, REPO_ICON, RESET)
 }
 
 /// A non-blocking flock on `path`, held for as long as the returned File

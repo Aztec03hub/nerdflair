@@ -135,10 +135,11 @@ CARDS = [
         "else the config files: what is CONFIGURED, not what connected",
         "cached 300s, refreshed by one locked background job",
     ]),
-    ("compact_eta", r"^\W*~[<>]?\d", "Compaction ETA", (163, 163, 163), [
+    ("compact_eta", r"^\W*~(?:[<>]?\d|--)", "Compaction ETA", (163, 163, 163), [
         "when the context window is projected to fill",
         "Theil-Sen slope over a 16-sample ring, idle gaps excluded",
         "measured ~68% median error, so it is rounded and always ~",
+        "dim ~-- = under 5% used, no estimate yet",
     ]),
 ]
 
@@ -660,7 +661,8 @@ def corpus_env(cdir, pane, style, vol, cols="250"):
                    "chime_events": "Notification,PermissionRequest,Stop",
                    "color": "vibrant", "last_session": "", "chime_recent_styles": []}, fh)
     return dict(os.environ, HOME=home, COLUMNS=cols, TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
-                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
+                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999",
+                NERDFLAIR_MCP_CACHE=os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"))  # the default is per project now
 
 
 def _cards_check_body(root, binary, pane, cdir, style, vol, widths=("250",)):

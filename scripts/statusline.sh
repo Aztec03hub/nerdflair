@@ -1625,6 +1625,10 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
       [[ "$_rc_total" == "~"* ]] && repocost_segment="${DARK_GREEN}${_rc_icon} ~\$${_rc_total#\~}${RESET}" \
         || repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
+    else
+      # Slug resolved, nothing in the ledger yet: a stable dim placeholder, not a segment that appears later.
+      printf -v _rc_icon '\xef\x90\x81'
+      repocost_segment="${DIM}${_rc_icon} \$--${RESET}"
     fi
   fi
 fi
@@ -1861,6 +1865,9 @@ if [[ -n "$_rate_show" ]] && (( _rate_show > 0 )) 2>/dev/null; then
     _speed_fmt="$_rate_show"
   fi
   speed_segment="${MAUVE}󰓅 ${_speed_fmt}/s${RESET}"
+elif [[ -n "$output_tokens" && -n "$total_api_ms" ]]; then
+  # Tokens and api time are in the payload but no rate exists yet: a stable dim placeholder.
+  speed_segment="${DIM}󰓅 --/s${RESET}"
 fi
 
 COST_COLOR="${COST_GREEN}"
@@ -2283,6 +2290,10 @@ if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && 
     _cp_fmt="<5m"
   fi
   compact_segment="${_cp_color}\xf3\xb0\x94\x9f ~${_cp_fmt}${RESET}"
+fi
+# Under 5% used the estimate is not drawn: keep the slot with a dim placeholder.
+if [[ -z "$compact_segment" && -n "$_used10" ]] && (( _used10 < 50 )) 2>/dev/null; then
+  compact_segment="${DIM}\xf3\xb0\x94\x9f ~--${RESET}"
 fi
 
 
