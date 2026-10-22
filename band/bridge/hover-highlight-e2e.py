@@ -128,6 +128,27 @@ while True:
 '''
 
 
+def stable(read, tries=10, gap=0.1):
+    """`read()` again (bounded) until two reads in a row agree: a capture taken while the engine repaints can come
+    back short, and a `base` taken from one such read makes every later comparison chase the wrong row."""
+    prev = read()
+    for _ in range(tries):
+        time.sleep(gap)
+        cur = read()
+        if cur == prev:
+            return cur
+        prev = cur
+    return prev
+
+
+def stable_selftest():
+    print("stable(): a short first read is not taken as the base")
+    reads = iter([[("a", 0)], [("a", 0), ("b", 0)], [("a", 0), ("b", 0)]])
+    check("two agreeing reads win over a short first one", stable(lambda: next(reads), gap=0) == [("a", 0), ("b", 0)])
+    steady = iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    check("it is bounded when the reads never agree", stable(lambda: next(steady), tries=3, gap=0) == 4)
+
+
 class Run:
     """One nfpty + stand-in engine in its own private tmux server."""
 
@@ -471,7 +492,7 @@ def real_spans():
                 f.write(out)
             r.mode(f"real{k}")
             time.sleep(1.0)
-            bases = {i: r.rowat(r0 + i) for i, *_ in spans}
+            bases = {i: stable(lambda i=i: r.rowat(r0 + i)) for i, *_ in spans}
             for i, col, w, text in spans:
                 base = bases[i]
                 drawn = "".join(c for c, _ in base)[col - 1:col - 1 + w]
@@ -496,25 +517,26 @@ def real_spans():
 
 def wide_span():
     print("a CJK + emoji + combining-mark readout: lit text is exactly the readout (a width miscount lights too much or too little)")
-    # Cells, counted by hand: icon 1, space 1, two CJK 4, emoji 2, space 1, e + combining acute 1 = 10;
-    # then " · " 3, so the branch readout starts at column 14 (icon 1, space 1, "main" 4 = 6 cells).
-    first, second = "\U000f024b \u6f22\u5b57\U0001f600 e\u0301", "\U000f062c main"
-    row = "  "[:0] + first + " \u00b7 " + second + "   \U000f0238 $1.00/h"
+    # Cells, counted by hand: icon 1, space 1, two CJK 4, emoji 2, space 1, e + combining acute 1, space 1,
+    # man ZWJ woman 2 (tmux 3.4 draws the sequence in 2 cells, measured) = 13;
+    # then " · " 3, so the branch readout starts at column 17 (icon 1, space 1, "main" 4 = 6 cells).
+    first, second = "\U000f024b \u6f22\u5b57\U0001f600 e\u0301 \U0001f468\u200d\U0001f469", "\U000f062c main"
+    row = first + " \u00b7 " + second + "   \U000f0238 $1.00/h"
     r = Run("wide2", rows=50, row=40)
     try:
         with open(r.flag + ".rows", "w") as f:
             f.write(row)
         r.mode("real0")
         time.sleep(1.0)
-        raw = r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]
-        base = cells(raw)
-        for text, col, w in ((first, 1, 10), (second, 14, 6)):
+        at40 = lambda: cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0])
+        base = stable(at40)
+        for text, col, w in ((first, 1, 13), (second, 17, 6)):
             r.hover(col + w // 2, 40)
-            during = cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0])
+            during = stable(at40)
             got = "".join(during[i][0] for i in lit_idx(during))
             check(f"{text!r}: lit text is exactly the readout", got == text, repr(got))
             r.hover(3, 3, 0.6)
-            check(f"{text!r}: restored cell for cell", cells(r.tmux("capture-pane", "-e", "-p", "-t", "hl", "-S", "39", "-E", "39").split("\n")[0]) == base)
+            check(f"{text!r}: restored cell for cell", stable(at40) == base)
     finally:
         r.close()
 
@@ -805,6 +827,7 @@ def no_shadow():
 
 
 def main():
+    stable_selftest()
     for t in (basic, real_spans, wide_span, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         if not sys.argv[1:] or t.__name__ in sys.argv[1:]:       # a scenario name runs just that one
             t()
