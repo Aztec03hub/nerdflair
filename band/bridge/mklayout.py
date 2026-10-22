@@ -142,7 +142,7 @@ CARDS = [
         "when the context window is projected to fill",
         "Theil-Sen slope over a 16-sample ring, idle gaps excluded",
         "measured ~68% median error, so it is rounded and always ~",
-        "dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known",
+        "dim ~-- = no estimate yet (under 5% used, too few samples, or already full); used% is known",
     ]),
 ]
 
@@ -159,7 +159,7 @@ RC_STATES = {
     ], ["grey is a real answer: the plugin says off"]),
     "unknown": ("?", (251, 191, 36), [
         "the renderer did not say whether Remote Control is on",
-    ], ["the record is missing its refresh (over 120 s old, on or off) or corrupt; see the error log"]),
+    ], ["the record is stale (over 120 s old, on or off), future-dated, or corrupt; see the error log"]),
 }
 RC_COMMON = ["written by the band plugin each few seconds, read by this line"]
 
@@ -383,6 +383,9 @@ def selfcheck():
     # ...but a folder followed by a REAL two-space justification gap and the next glyph readout is a join.
     assert [t for _c, _w, t in pieces("\U000f024b proj  \U000f062c main")] == ["\U000f024b proj", "\U000f062c main"], pieces("\U000f024b proj  \U000f062c main")
     assert [t for _c, _w, t in pieces("\U000f024b my  proj  \U000f062c main")] == ["\U000f024b my  proj", "\U000f062c main"]
+    # KNOWN LIMIT (pinned, not a rule change): a 2-space gap before a readout with no Nerd Font glyph (row 1's
+    # `ahead` alone, `\u21912`) is indistinguishable from a folder named with two spaces, so it stays one piece.
+    assert [t for _c, _w, t in pieces("\U000f024b proj  \u21912")] == ["\U000f024b proj  \u21912"], pieces("\U000f024b proj  \u21912")
 
     # The justification gap must SPLIT, and a lone separator must not produce
     # an empty readout.
@@ -578,7 +581,7 @@ def text_drift(root):
 
 
 PLACEHOLDER_LINES = {
-    "compact_eta": ["dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known"],
+    "compact_eta": ["dim ~-- = no estimate yet (under 5% used, too few samples, or already full); used% is known"],
     "throughput": ["dim --/s = no rate measured yet (first response of the session)"],
     "repo_cost": ["dim $-- = the ledger has nothing for this repo yet",
                   "~$ = the ledger is over its tail cap, so this is a lower bound"],

@@ -119,7 +119,7 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
       'when the context window is projected to fill',
       'Theil-Sen slope over a 16-sample ring, idle gaps excluded',
       'measured ~68% median error, so it is rounded and always ~',
-      'dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known',
+      'dim ~-- = no estimate yet (under 5% used, too few samples, or already full); used% is known',
     ],
   },
   throughput: {
@@ -846,7 +846,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         'the renderer did not say whether Remote Control is on',
         rcRaw === undefined ? 'no remote_control segment in its output' : `it sent "${rcRaw.slice(0, 40)}"`,
         'the binary may be out of step with this plugin; see the debug log',
-        'the main line also reads unknown when its record is over 120 s old (on or off) or corrupt; see the error log',
+        'the main line also reads unknown when its record is stale (over 120 s old, on or off), future-dated, or corrupt; see the error log',
       ]
     : rcOn
     ? [

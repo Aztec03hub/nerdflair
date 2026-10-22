@@ -394,9 +394,9 @@ run_side() {
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"
     # NO NERDFLAIR_MCP_CACHE: the renderers must find the per-project file by its own name,
     # nerdflair-mcphealth-UID-<cksum of the normalised project dir> (the dir comes from the payload).
-    local kd; kd=$(jq -r '(.workspace.project_dir // .workspace.current_dir // empty)' "$outdir/payload.json")
-    kd="${kd%%$'\n'*}"; while [[ "$kd" == *//* ]]; do kd="${kd//\/\//\/}"; done; [[ ${#kd} -gt 1 ]] && kd="${kd%/}"
-    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}-$(printf '%s' "$kd" | cksum | cut -d' ' -f1)"
+    # The key rule lives in the renderer (--mcp-cache-name), not in a copy here.
+    local kn; kn=$(NERDFLAIR_CACHE_DIR="$CACHE_DIR" "$RUST_IMPL" --mcp-cache-name "$(jq -r '.workspace.current_dir // ""' "$outdir/payload.json")" "$(jq -r '.workspace.project_dir // ""' "$outdir/payload.json")")
+    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/$kn"
     extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")

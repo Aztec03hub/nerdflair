@@ -1718,18 +1718,20 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
     if [[ -n "$_pr_stamp" ]] && (( $(_nf_stamp_age "$_pr_stamp") >= 86400 )); then
       if _nf_cache_put "$_pr_stamp" ""; then
         _pr_max=$(( ${NERDFLAIR_MCP_PRUNE_DAYS:-14} * 86400 ))
-        # Symlinks are skipped (never aged, never removed): same in Rust. The old shared file
-        # nerdflair-mcphealth-UID (no project suffix, never read since the per-project change) goes too.
+        # One rule for every file here, same in Rust and in the rc prune: regular files only (no symlinks, no
+        # directories), and a future-dated file is kept (it reads as "infinitely old", not a reason to delete).
+        # The old shared file nerdflair-mcphealth-UID (no project suffix, never read since the per-project change) goes too.
         for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"* "${_mh_cache%/*}/nerdflair-mcphealth-${UID}"; do
-          [[ -L "$_pr_f" || ! -e "$_pr_f" ]] && continue
-          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+          [[ -f "$_pr_f" && ! -L "$_pr_f" ]] || continue
+          _pr_a=$(_nf_stamp_age "$_pr_f")
+          (( _pr_a >= _pr_max && _pr_a < 4611686018427387903 )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
         # Same pass, same age (NERDFLAIR_MCP_PRUNE_DAYS): per-session repo-cost stamps (not the -total-
         # memo) and orphan `nerdflair-*.tmp.*` files (a writer killed between create and rename).
-        # Symlinks and directories are skipped entirely, like the rest of this prune.
         for _pr_f in "${_mh_cache%/*}/nerdflair-repocost-${UID}-"* "${_mh_cache%/*}/nerdflair-"*.tmp.*; do
           [[ -f "$_pr_f" && ! -L "$_pr_f" ]] || continue
-          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+          _pr_a=$(_nf_stamp_age "$_pr_f")
+          (( _pr_a >= _pr_max && _pr_a < 4611686018427387903 )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
       else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
     fi
