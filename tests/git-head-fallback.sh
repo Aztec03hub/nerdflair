@@ -28,7 +28,7 @@ unit_on() { # name -> true when this part runs the case; --list prints it instea
 }
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${NF_BIN:-$REPO/rust/target/release/nerdflair-statusline}"; SH="${NF_SH:-$REPO/scripts/statusline.sh}"
-[[ -x "$BIN" ]] || { echo "git-head-fallback: not built: $BIN" >&2; exit 2; }
+(( LIST )) || [[ -x "$BIN" ]] || { echo "git-head-fallback: not built: $BIN" >&2; exit 2; }
 W=$(mktemp -d "${TMPDIR:-/tmp}/nf-headfb-XXXXXX") || exit 1
 trap 'rm -rf -- "$W"' EXIT
 fail=0
@@ -98,8 +98,10 @@ check_pair "gitdir trailing space and CR" "$d/wt" 'spaced'
 # bounded read: a first line longer than 4 KiB is cut at 4096 bytes in both, and a 20 MB HEAD costs nothing
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs"
 { printf 'ref: refs/heads/'; head -c 20000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$d/.git/HEAD"
-t0=$EPOCHREALTIME; check_pair "huge HEAD" "$d" 'xxxx'; t1=$EPOCHREALTIME
-(( (${t1/./} - ${t0/./}) / 1000 < 6000 )) || { echo "FAIL huge HEAD: took too long"; fail=1; }
+# CPU time (user+sys of the renders), not wall time: under load wall time measures the scheduler. The hung git sleeps, it costs no CPU.
+TIMEFORMAT='%3U %3S'; { time check_pair "huge HEAD" "$d" 'xxxx'; } 2> "$W/cpu"; read -r cu cs < <(tail -n 1 "$W/cpu")
+(( UNIT_ON )) && { cpu_ms=$(( 10#${cu/./} + 10#${cs/./} )); echo "huge HEAD: ${cpu_ms} ms CPU"
+  (( cpu_ms < ${NF_HEADFB_BUDGET_MS:-6000} )) || { echo "FAIL huge HEAD: ${cpu_ms} ms CPU"; fail=1; }; }
 # a bare repo nested inside a repo: its own branch, not the outer one
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs" "$d/inner.git/refs"
 printf 'ref: refs/heads/outer-branch\n' > "$d/.git/HEAD"; printf 'ref: refs/heads/inner-branch\n' > "$d/inner.git/HEAD"

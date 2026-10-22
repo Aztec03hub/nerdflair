@@ -23,8 +23,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import leakcheck  # noqa: E402
 WIN = "nf-stale"
-FLAG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.flag"))
-ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.errlog"))
 ROW = 46                     # inside the card (rows 45-47, columns from 4), which sits just above the status line on row 48
 
 FAKE = r'''
@@ -90,9 +88,12 @@ def run(shadow):
 
 
 def main():
+    global FLAG, ERRLOG
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     leakcheck.install()
+    FLAG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.flag"))   # made after the tmux check: no dir leaks on an early exit
+    ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.errlog"))
     fails = 0
     for label, shadow, want in (("with the shadow screen", True, "bravo"),
                                 ("control, shadow off (old behaviour)", False, "alpha")):

@@ -90,9 +90,29 @@ def server_pids(sock):
     return pids
 
 
+def _own_tmux_socket(sock):
+    """True only when `sock` sits inside a dir this script made or was given as its scratch dir (_dirs, $NF_E2E_TMP):
+    never Phil's ambient /tmp/tmux-UID server."""
+    own = [os.path.realpath(d) for d in _dirs + ([_e2e_tmp] if _e2e_tmp else [])]
+    return any(os.path.realpath(sock).startswith(d + os.sep) for d in own)
+
+
+def _is_tmux(pid):
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip().startswith("tmux")
+    except OSError:
+        return False
+
+
 def _kill_orphans(sock):
-    """A server whose socket file is gone cannot be reached by `tmux kill-server`: kill the PID that still holds the name."""
+    """A server whose socket file is gone cannot be reached by `tmux kill-server`: kill the PID that still holds the name,
+    but only a tmux process and only for a socket inside our own temp dirs (`ss` also lists children that inherited the fd)."""
+    if not _own_tmux_socket(sock):
+        return
     for pid in server_pids(sock):
+        if not _is_tmux(pid):
+            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:

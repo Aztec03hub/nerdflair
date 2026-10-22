@@ -24,7 +24,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import leakcheck  # noqa: E402
 WIN = "nf-covered"
-ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-covered.errlog"))
 
 FAKE = r'''
 import os, sys, time
@@ -55,9 +54,11 @@ def card_open(target):
 
 
 def main():
+    global ERRLOG
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     leakcheck.install()
+    ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-covered.errlog"))   # made after the tmux check: no dir leaks on an early exit
     flag = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-covered.flag"))
     try:
         os.unlink(ERRLOG)

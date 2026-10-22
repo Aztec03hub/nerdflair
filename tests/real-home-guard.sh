@@ -8,6 +8,9 @@
 #                  `panic`, this suite's temp prefix (${TMPDIR:-/tmp}/nf-) or this script's pid.
 #                  Other appended lines are a printed warning count. If the log shrank or its last
 #                  line changed (trimmed/rotated) the check is skipped with a note.
+#                  Every appended line is printed (a match marked >>), so a person can tell a live session's line
+#                  from a test's. Start the runners with your REAL HOME: under a temp HOME the guard watches a
+#                  log that does not exist and says so ("skipped").
 # Read-only on the real HOME; skipped when the log does not exist.
 rhg_snapshot() {
   RHG_LOG="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.claude/nerdflair-errors.log"
@@ -18,7 +21,7 @@ rhg_snapshot() {
   RHG_LAST=$(head -c "$RHG_SIZE" "$RHG_LOG" | tail -n 1 | cksum)
 }
 rhg_check() {
-  [[ "$RHG_SIZE" == -1 ]] && return 0
+  [[ "$RHG_SIZE" == -1 ]] && { printf '  NOTE  no real error log at %s; guard skipped (start the runner with your real HOME)\n' "$RHG_LOG"; return 0; }
   local now last new bad warn
   now=$(stat -c %s "$RHG_LOG" 2>/dev/null || echo 0)
   last=$(head -c "$RHG_SIZE" "$RHG_LOG" 2>/dev/null | tail -n 1 | cksum)
@@ -28,12 +31,15 @@ rhg_check() {
   fi
   new=$(tail -c +$(( RHG_SIZE + 1 )) "$RHG_LOG")
   [[ -z "$new" ]] && { printf '  PASS  the real error log gained no lines\n'; return 0; }
-  bad=$(printf '%s\n' "$new" | rg -c -e 'panic' -e "${TMPDIR:-/tmp}/nf-" -e " ${RHG_PID} " || true)
+  local pat=(-e 'panic' -e "${TMPDIR:-/tmp}/nf-" -e " ${RHG_PID} ")
+  bad=$(printf '%s\n' "$new" | rg -c "${pat[@]}" || true)
   warn=$(printf '%s\n' "$new" | wc -l)
   if [[ -n "$bad" && "$bad" != 0 ]]; then
-    printf '  FAIL  the real %s gained %s line(s) from this run (panic, temp path or this pid):\n' "$RHG_LOG" "$bad"
-    printf '%s\n' "$new" | rg -e 'panic' -e "${TMPDIR:-/tmp}/nf-" -e " ${RHG_PID} " | cut -c1-200 | sed 's/^/        /'
+    printf '  FAIL  the real %s gained %s matching line(s) from this run (panic, temp path or this pid); all %s appended line(s), >> marks a match:\n' "$RHG_LOG" "$bad" "$warn"
+    printf '%s\n' "$new" | cut -c1-200 | while IFS= read -r l; do
+      if printf '%s\n' "$l" | rg -q "${pat[@]}"; then printf '      >> %s\n' "$l"; else printf '         %s\n' "$l"; fi; done
     return 1
   fi
-  printf '  PASS  the real error log gained %s line(s), none from this run (other sessions; warning only)\n' "$warn"
+  printf '  PASS  the real error log gained %s line(s), none from this run (other sessions; warning only):\n' "$warn"
+  printf '%s\n' "$new" | head -n 5 | cut -c1-200 | sed 's/^/         /'
 }
