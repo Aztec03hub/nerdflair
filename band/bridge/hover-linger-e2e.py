@@ -20,7 +20,6 @@ import leakcheck  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = "nf-linger"
-ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-linger.errlog"))
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
@@ -103,9 +102,11 @@ EXPECT = {"direct": (0.0, 1.0), "crossed": (0.0, 1.0), "typing": (0.0, 1.0),
 
 
 def main():
+    global ERRLOG
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     leakcheck.install()
+    ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-linger.errlog"))   # made after the tmux check: no dir leaks on an early exit
     fails = 0
     try:
         os.unlink(ERRLOG)

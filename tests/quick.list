@@ -20,7 +20,7 @@ bash tests/empty-home.sh   # 0.0s
 bash tests/payloads-fresh.sh   # 1.1s, generates into a temp dir and diffs against tests/payloads (never rewrites the checkout)
 bash tests/install-rc.sh   # 2.3s
 bash tests/json-isolation.sh   # 0.0s
-bash tests/ledger-big.sh   # 1.4s
+bash tests/ledger-big.sh   # 2.3s wall; budgets CPU time (user+sys: rust 0.1 s, bash 0.8 s), so load cannot fail it
 bash tests/ledger-concurrency.sh   # 4.4s
 bash tests/ledger-uncovered-dedupe.sh   # 0.5s
 bash tests/ledger-widen.sh   # 0.1s

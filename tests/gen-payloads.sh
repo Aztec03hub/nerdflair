@@ -14,7 +14,8 @@
 # NOW offsets always end in +30s so the integer-minute countdown produced by
 # _fmt_countdown is stable across the two invocations (see worklog).
 set -euo pipefail
-OUT="${OUT:-$(cd "$(dirname "$0")" && pwd)/payloads}"   # OUT=<dir> writes elsewhere (payloads-fresh.sh)
+NF_PAYLOADS_OUT="${NF_PAYLOADS_OUT:-$(cd "$(dirname "$0")" && pwd)/payloads}"   # NF_PAYLOADS_OUT=<dir> writes elsewhere (payloads-fresh.sh)
+OUT="$NF_PAYLOADS_OUT"; mkdir -p "$OUT"
 rm -f "$OUT"/*.json "$OUT"/*.txt "$OUT"/*.env 2>/dev/null || true
 mkdir -p "$OUT"
 

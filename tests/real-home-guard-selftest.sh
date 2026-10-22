@@ -27,4 +27,12 @@ runr() { # appended-text -> status of rhg_check with HOME=<empty temp> and NF_RE
 }
 seed; check "NF_REAL_HOME: a panic in the fake real home fails though HOME is a temp dir" 1 "$(runr '2026-10-22T01:00:00Z 999 panic: boom')"
 seed; check "NF_REAL_HOME: an unrelated line passes" 0 "$(runr '2026-10-22T01:00:00Z 999 git-untracked-read: x')"
+# The report names every appended line and marks the matching one, so a live session's line is told apart from a test's.
+out() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%b\n' "$1" >> "$L"; rhg_check ); }
+seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x\n2026-10-22T01:00:01Z 999 panic: boom')
+[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic: boom'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session: x'* && "$o" != *'>> 2026-10-22T01:00:00Z 777'* ]] \
+  && check "FAIL output lists the live session's line unmarked and the panic line marked" ok ok || check "FAIL output lists appended lines with a match marker" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x')
+[[ "$o" == *'other-session: x'* ]] && check "PASS output names the appended line" ok ok || check "PASS output names the appended line" ok "$o"
+rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
 exit $fail
