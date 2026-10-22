@@ -166,7 +166,7 @@ Run the appropriate command based on what the user asked for. After running it, 
 
 ### Examples
 
-Check the install (read only; exit 1 when something is BROKEN). Show the table as printed, then offer to run each `fix:` line it names:
+Check the install (read only; exit 1 when something is BROKEN). Show the table as printed, then offer to run each `fix:` line it names. The first line, `checkout:`, says which tree was checked; through the plugin that is the cached snapshot, so on a dev machine run `bash <your checkout>/scripts/nerdflair.sh doctor` from the dev checkout instead:
 ```bash
 bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" doctor
 ```

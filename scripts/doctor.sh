@@ -12,6 +12,7 @@ export LC_ALL=C   # byte-order globbing: the source hash must list files exactly
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 json=0; [[ "${1:-}" == "--json" ]] && json=1
+(( json )) || echo "checkout: $REPO"
 command -v jq >/dev/null || { echo "doctor: BROKEN: jq is not installed (nerdflair needs it); fix: sudo apt install jq" >&2; exit 1; }
 BIN="$HOME/.local/bin/nerdflair-statusline"
 SETTINGS="$HOME/.claude/settings.json"
@@ -22,7 +23,7 @@ rows=()   # status<TAB>check<TAB>detail<TAB>fix
 row() { rows+=("$1"$'\t'"$2"$'\t'"${3//$'\t'/ }"$'\t'"${4:-}"); }
 
 # 1. the installed renderer is this checkout's build
-# same order as rust/build.rs: every src/**/*.rs by sorted relative path, then Cargo.toml, Cargo.lock
+# same order as rust/build.rs (keep both byte-sorted; LC_ALL=C is exported above): every src/**/*.rs by sorted relative path, then Cargo.toml, Cargo.lock
 src_hash() { (cd "$REPO/rust" && { find src -type f -name '*.rs' | sort | xargs cat; cat Cargo.toml Cargo.lock; } | sha256sum | cut -c1-8); }
 want="$(src_hash)"
 if [[ ! -x "$BIN" ]]; then
@@ -82,6 +83,12 @@ else
   if [[ "$(readlink -f "$NF/hover" 2>/dev/null)" != "$(readlink -f "$REPO/band/bridge")" ]]; then
     bad+=("hover link -> $(readlink "$NF/hover" 2>/dev/null || echo missing)")
   fi
+  # the user unit install.sh copies (only when a systemd user manager exists); a changed unit is reinstalled by deploy
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    u="$HOME/.config/systemd/user/nf-tmux-watch.service"
+    if [[ ! -f "$u" ]]; then bad+=("nf-tmux-watch.service missing")
+    elif ! cmp -s "$REPO/band/hover/nf-tmux-watch.service" "$u"; then bad+=("nf-tmux-watch.service stale"); fi
+  fi
   if (( ${#bad[@]} )); then
     row BROKEN hover "$(IFS=';'; echo "${bad[*]}")" "bash $REPO/band/hover/install.sh"
   else
@@ -137,7 +144,9 @@ elif [[ ! -d "$cache" ]]; then row BROKEN cache "$cache is not a directory" "mv 
 else
   read -r own mode < <(stat -c '%u %a' "$cache")
   if [[ "$own" != "$(id -u)" ]]; then row BROKEN cache "$cache is owned by uid $own" "mv -- '$cache' '$cache.unsafe'"
-  elif [[ "$mode" != 700 ]]; then row BROKEN cache "$cache has mode $mode, not 700" "chmod 700 '$cache'"
+  elif (( 0$mode & 077 )); then   # group/other bits only, as util.rs: 0500 is fine, 0755 is open
+    if [[ -n "${NERDFLAIR_CACHE_DIR:-}" ]]; then row BROKEN cache "$cache has mode $mode: an explicit NERDFLAIR_CACHE_DIR is refused while group/other can reach it" "chmod 700 '$cache'"
+    else row warn cache "$cache has mode $mode: the renderer tightens it on the next render" "chmod 700 '$cache'"; fi
   else row ok cache "$cache (0700, yours)"; fi
 fi
 
@@ -145,7 +154,8 @@ fi
 if ! systemctl --user show-environment >/dev/null 2>&1; then
   row info units "no systemd user manager: skipped"
 else
-  for u in nf-tmux-watch.service claude-tmp-fix.timer; do
+  # claude-tmp-fix.timer is not installed or documented by this repo (added with no reason in 1ac67d0): not checked
+  for u in nf-tmux-watch.service; do
     st="$(systemctl --user is-active "$u" 2>/dev/null)"
     if [[ "$st" == active ]]; then row ok "$u" active
     else row warn "$u" "${st:-unknown}" "systemctl --user enable --now $u"; fi
@@ -204,7 +214,7 @@ if [[ -d "$cache" && ! -L "$cache" ]]; then
   while IFS= read -r -d '' f; do
     read -r _ s _ < "$f" 2>/dev/null || s="?"
     b="${f##*/}"; recs+=("${b:0:24}=${s:0:8}")
-  done < <(find "$cache" -maxdepth 1 -name 'rc-*' -type f -mmin -5 -print0 2>/dev/null)
+  done < <(find "$cache" -maxdepth 1 -name 'rc-*' -type f -mmin -5 ! -newermt now -print0 2>/dev/null)
 fi
 row info rc-records "${#recs[@]} newer than 5 min${recs:+: $(IFS=' '; echo "${recs[*]}")}"
 
