@@ -1,1 +1,1 @@
-rc: off and 121 s old (just past the bound): amber unknown
+rc: label with a character outside the allowed set: corrupt, amber unknown

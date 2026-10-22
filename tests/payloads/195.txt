@@ -1,1 +1,1 @@
-rc: off and exactly 120 s old: still grey off
+rc: off and 119 s old (last second inside the bound, 119 not 120 so a clock tick cannot flip it): still grey off
