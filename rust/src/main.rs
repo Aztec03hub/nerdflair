@@ -552,8 +552,8 @@ fn render_inner(input: &str) -> Result<String, String> {
             "git:inside-work-tree",
             &["not a git repository"],
         );
-        if ok {
-            git_dir = cwd.clone();
+        if ok || (proc::timed_out() && head_fallback_branch(&cwd).is_some()) {
+            git_dir = cwd.clone(); // hung git: still a repo on disk, the cache/HEAD fallback fills in
         } else {
             let mut subs: Vec<String> = Vec::new();
             let rd_res = std::fs::read_dir(&cwd);
@@ -2365,17 +2365,56 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
         },
     };
     let p = read_ifs_unit(&content, 8);
+    let mut branch = p[3].clone();
+    if branch.is_empty() {
+        // git hung, was skipped or is missing: the branch is still on disk.
+        if let Some(b) = head_fallback_branch(git_dir) {
+            errlog::note("git-branch-fallback", &format!("git gave no branch for {}; read .git/HEAD instead", git_dir));
+            branch = b;
+        }
+    }
     Some(GitCache {
         dirty: p[0].clone(),
         added: p[1].clone(),
         removed: p[2].clone(),
-        branch: p[3].clone(),
+        branch,
         remote: p[4].clone(),
         worktree: p[5].clone(),
         ahead: p[6].clone(),
         behind: p[7].clone(),
     }
 )
+}
+
+/// Branch name read straight from `.git/HEAD`, for when git itself is hung or
+/// missing. Walks up from `start` to the first `.git`; a linked worktree has a
+/// `.git` FILE holding `gitdir: <path>` (relative paths are relative to it).
+/// `ref: refs/heads/x` gives `x`, a bare 40/64 hex sha gives its first 7.
+fn head_fallback_branch(start: &str) -> Option<String> {
+    let mut d = PathBuf::from(start);
+    loop {
+        let dot = d.join(".git");
+        let gd = if dot.is_dir() {
+            Some(dot)
+        } else if dot.is_file() {
+            let t = std::fs::read_to_string(&dot).unwrap_or_default();
+            t.lines().next().and_then(|l| l.strip_prefix("gitdir: ")).map(|g| d.join(g.trim()))
+        } else {
+            None
+        };
+        if let Some(gd) = gd {
+            let t = std::fs::read_to_string(gd.join("HEAD")).unwrap_or_default();
+            let l = t.lines().next().unwrap_or("");
+            if let Some(b) = l.strip_prefix("ref: refs/heads/") {
+                return if b.is_empty() { None } else { Some(b.to_string()) };
+            }
+            let hex = (l.len() == 40 || l.len() == 64) && l.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            return if hex { Some(l[..7].to_string()) } else { None };
+        }
+        if !d.pop() {
+            return None;
+        }
+    }
 }
 
 /// What bash's `cd` needs: a directory we may search (execute bit), by EFFECTIVE ids like cd.

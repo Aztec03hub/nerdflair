@@ -377,6 +377,30 @@ OPT_BULLET="${DIM} ·${RESET}"
 # Sets one of: git_dir (cwd is a repo, or wraps exactly one), or
 # _multi_git_subs (cwd wraps 2+ repos → multi-branch summary). When git_dir is
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
+# Branch name read straight from .git/HEAD, for when git itself is hung or missing (twin of
+# head_fallback_branch). Walks up to the first .git; a linked worktree has a .git FILE with
+# "gitdir: <path>". "ref: refs/heads/x" -> x; a bare 40/64 hex sha -> its first 7. Sets _NF_HB.
+_nf_head_branch() {
+  local _d="$1" _dot _gd="" _l=""
+  _NF_HB=""
+  while :; do
+    _dot="$_d/.git"
+    if [[ -d "$_dot" ]]; then _gd="$_dot"
+    elif [[ -f "$_dot" ]]; then
+      IFS= read -r _l < "$_dot" || true
+      [[ "$_l" == "gitdir: "* ]] && { _gd="${_l#gitdir: }"; [[ "$_gd" == /* ]] || _gd="$_d/$_gd"; }
+    fi
+    if [[ -n "$_gd" ]]; then
+      _l=""; IFS= read -r _l < "$_gd/HEAD" || true
+      if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
+      elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
+      [[ -n "$_NF_HB" ]]; return
+    fi
+    [[ -z "$_d" || "$_d" == / ]] && return 1
+    _d="${_d%/*}"; _d="${_d:-/}"
+  done
+}
+
 git_dir=""
 _multi_git_subs=()
 _adopted_repo_name=""
@@ -389,8 +413,9 @@ fi
 if [[ -n "$cwd" && -n "${_cd_ok-1}" ]]; then
   # "not a git repository" is the normal answer for a plain directory: silent.
   # Any other failure (dubious ownership, corrupt repo) drops the whole git UI.
-  if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree; then
-    git_dir="$cwd"
+  if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree \
+     || { [[ -n "${_NF_GIT_TIMED_OUT:-}" ]] && _nf_head_branch "$cwd"; }; then
+    git_dir="$cwd"   # on a hung git: still a repo on disk, the cache/HEAD fallback fills in
   else
     # Look one level deep for git repos (wrapper folder pattern).
     git_subs=()
@@ -510,6 +535,11 @@ if [[ -n "$git_dir" ]]; then
     elif [[ -z "${_gc_computed:-}" ]]; then
       _nf_err git-cache-read "cannot read $_git_cache_file"
     fi
+  fi
+  # git hung, was skipped or is missing: the branch is still on disk.
+  if [[ -n "$git_dir" && -z "${_gc_branch:-}" ]] && _nf_head_branch "$git_dir"; then
+    _nf_err git-branch-fallback "git gave no branch for $git_dir; read .git/HEAD instead"
+    _gc_branch="$_NF_HB"
   fi
 fi
 
