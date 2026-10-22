@@ -27,6 +27,7 @@ fresh() { # a clean all-ok fake install, in a new dir each time (only $T itself 
   cp "$REPO/band/hover/claude-shim" "$H/.nerdflair/bin/claude"
   cp "$REPO/band/hover/nf-tmux-heal" "$REPO/band/hover/nf-tmux-watch" "$REPO/band/hover/nf-log.sh" "$H/.nerdflair/bin/"
   ln -s "$REPO/band/bridge" "$H/.nerdflair/hover"
+  mkdir -p "$H/.config/systemd/user"; cp "$REPO/band/hover/nf-tmux-watch.service" "$H/.config/systemd/user/"
   printf 'umask 022\n' > "$H/bashenv"
   python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$H/tmux.sock"
   # stub tmux: the server pid is the test's own process (umask 022) unless TMUX_PID says otherwise
@@ -117,10 +118,17 @@ expect "  ...fix names a tmux restart" 0 'fix: restart tmux'
 fresh; printf '%s' 'a-long-secret-value-0123456789' > "$S/env.CLAUDE_CODE_TMUX_TRUECOLOR"; doc
 printf '%s' "$out" | command grep -q 'long-secret' && bad "truecolor value printed" || ok "truecolor value is never printed, only set/unset"
 fresh; rmdir "$H/cache"; : > "$H/cache"; doc; expect "cache path is a file: BROKEN" 1 '^BROKEN  cache .*not a directory'
-fresh; chmod 755 "$H/cache"; doc; expect "cache dir 0755: BROKEN" 1 '^BROKEN  cache .*mode 755'
+fresh; chmod 755 "$H/cache"; doc; expect "explicit cache dir 0755: BROKEN" 1 '^BROKEN  cache .*mode 755'
+fresh; chmod 500 "$H/cache"; doc; expect "explicit cache dir 0500 (no group/other bits): ok" 0 '^ok      cache '
+dflt() { rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_PLUGIN_DEST="$H/plug" NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" \
+    bash "$REPO/scripts/nerdflair.sh" doctor 2>&1)" || rc=$?; }
+fresh; mkdir -p "$H/.cache/nerdflair"; chmod 755 "$H/.cache/nerdflair"; dflt; expect "default cache dir 0755: warn, exit 0" 0 '^warn    cache .*tightens it on the next render'
 fresh; mv "$H/cache" "$H/cache.gone"; mkdir -m 700 "$H/realcache"; ln -s "$H/realcache" "$H/cache"; doc; expect "cache dir a symlink: BROKEN" 1 '^BROKEN  cache .*symlink'
 
-fresh; echo failed > "$S/unit.claude-tmp-fix.timer"; doc; expect "unit inactive: warn" 0 '^warn    claude-tmp-fix.timer +failed'
+fresh; echo failed > "$S/unit.nf-tmux-watch.service"; doc; expect "unit inactive: warn" 0 '^warn    nf-tmux-watch.service +failed'
+fresh; echo '# edited' >> "$H/.config/systemd/user/nf-tmux-watch.service"; doc; expect "installed unit differs from band/hover: hover BROKEN" 1 '^BROKEN  hover .*nf-tmux-watch.service stale'
+fresh; rm "$H/.config/systemd/user/nf-tmux-watch.service"; doc; expect "installed unit missing: hover BROKEN" 1 '^BROKEN  hover .*nf-tmux-watch.service missing'
+fresh; doc; expect "doctor says which checkout it checked" 0 "^checkout: $REPO\$"
 fresh; touch "$S/systemd.down"; doc; expect "no systemd user manager: skipped cleanly" 0 '^info    units .*skipped'
 
 fresh; mkdir -p "$H/.local/state/nerdflair"
@@ -139,6 +147,8 @@ fresh; NFPTY=1 doc; expect "NFPTY exported: wrapper info row" 0 '^info    wrappe
 fresh; doc; expect "no NFPTY: wrapper info row" 0 '^info    wrapper .*not under'
 printf 'v1 on 1700000000 cli\n' > "$H/cache/rc-abc"; doc
 expect "rc record newer than 5 min is listed with its state" 0 '^info    rc-records +1 newer than 5 min: rc-abc=on'
+printf 'v1 on 1700000000 cli\n' > "$H/cache/rc-future"; touch -d '+1 hour' "$H/cache/rc-future"; doc
+expect "future-dated rc record is not listed as fresh" 0 '^info    rc-records +1 newer than 5 min: rc-abc=on$'
 
 echo "src hash:"
 fresh; printf '#!/bin/sh\necho "nerdflair-statusline 0.1.0 src:00000000"\n' > "$H/.local/bin/nerdflair-statusline"   # forces the "this checkout is src:X" line

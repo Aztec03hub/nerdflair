@@ -20,7 +20,7 @@ fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 fn main() {
     let mut files = Vec::new();
     walk(std::path::Path::new("src"), &mut files);
-    files.sort(); // relative paths, byte order: the same order as doctor.sh (find | sort under LC_ALL=C)
+    files.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str())); // by bytes, like doctor.sh's `find | sort` under LC_ALL=C: both must sort the same way
     files.push("Cargo.toml".into());
     files.push("Cargo.lock".into());
     let mut raw = Vec::new();
