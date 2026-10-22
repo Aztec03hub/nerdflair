@@ -1971,6 +1971,8 @@ fn render_inner(input: &str) -> Result<String, String> {
             chime_label = chime_style.clone();
         }
     }
+    // bash `_chime_label=$(_sanitize "$_chime_label")`: the $() also drops trailing newlines.
+    let chime_label = sanitize(&chime_label).trim_end_matches('\n').to_string();
     let mut chime_segment = String::new();
     if !chime_label.is_empty() && chime_style == "random" && formatted_cost == "0.00" {
         let vol_pct = fmtx::g(if vol_num.is_nan() { 100.0 } else { vol_num * 100.0 });

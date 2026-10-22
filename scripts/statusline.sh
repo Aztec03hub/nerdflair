@@ -140,7 +140,10 @@ _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
 # sequences (e.g. \033, \e, \x1b) into terminal control characters.
 # Applied to user-controlled values: branch names, directory names, MCP
 # server names, and model IDs.
-_sanitize() { printf '%s' "${1//\\/}"; }
+# Control bytes (C0 except newline, and DEL) go too, as upstream 43c42f5 does, so a
+# name from the filesystem or a repo .mcp.json can't inject escape sequences. Newline
+# stays: _multi_branch_list is one branch per line. Pure bash, no fork.
+_sanitize() { local LC_ALL=C _s="${1//\\/}"; printf '%s' "${_s//[$'\001'-$'\011'$'\013'-$'\037'$'\177']/}"; }
 
 # ── Extract fields from Claude Code JSON ──────────────────────────
 _nf_fields=$(printf '%s' "$input" | jq -r '[(.workspace.current_dir),(.workspace.project_dir),(if .model|type=="object" then (.model.display_name // .model.id // null) else (.model // null) end),(.worktree.branch),(.cost.total_cost_usd),(.cost.total_duration_ms),(.cost.total_api_duration_ms),(.output_style.name),(.effort.level),(.thinking.enabled),(.fast_mode),(.session_id),(.context_window.used_percentage),(.context_window.total_input_tokens),(.context_window.total_output_tokens),(.context_window.context_window_size),(.rate_limits.five_hour.used_percentage),(.rate_limits.five_hour.resets_at),(.rate_limits.seven_day.used_percentage),(.rate_limits.seven_day.resets_at)]|map(if .==null then "" else tostring end)|join("\u001f")' 2>"$_SL_BUF.err")

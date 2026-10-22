@@ -47,10 +47,12 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
-/// `_sanitize`: strip every backslash.
+/// `_sanitize`: strip every backslash and every control byte except newline
+/// (0x00-0x09, 0x0b-0x1f, 0x7f).
 pub fn sanitize(s: &str) -> String {
-    if s.contains('\\') {
-        s.chars().filter(|c| *c != '\\').collect()
+    let drop = |c: char| c == '\\' || (c < ' ' && c != '\n') || c == '\x7f';
+    if s.contains(drop) {
+        s.chars().filter(|c| !drop(*c)).collect()
     } else {
         s.to_string()
     }

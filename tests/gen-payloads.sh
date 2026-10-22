@@ -393,4 +393,9 @@ emit "mcpjson: settings.json enabledMcpjsonServers [beta]: beta only" "$PROJ_P" 
 emit "mcpjson: empty enabled list: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":[]}'
 emit "mcpjson: enabled list with a number: jq stops there, alpha kept, disabled list never read" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":["alpha",5,"beta"],"disabledMcpjsonServers":["alpha"]}'
 emit "mcpjson: enableAllProjectMcpServers false is still a policy: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_SETTINGS={"enableAllProjectMcpServers":false}'
+# ═══ 19. control bytes stripped by _sanitize (upstream 43c42f5) ════════════
+MJ_ESC='{"mcpServers":{"a\u001b[5mb\u0007c\rd\u007fe\tf\\\\g":{"command":"x"},"plain":{"command":"x"}}}'
+emit "sanitize: .mcp.json server name with ESC, BEL, CR, DEL, tab and a backslash" "$PROJ_P" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_MCPJSON=$MJ_ESC"
+emit "sanitize: session chime label with ESC and BEL (random style, no cost yet)" "$(mut '.cost.total_cost_usd=0')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_SESSION_CHIME=$(printf 'Ch\033[5mi\007me')"
+emit "sanitize: model display_name with ESC and a C1 CSI (C1 kept, as upstream)" "$(mut '.model.display_name="Op\u001b[31mus\u009b x" | .model.id="custom-\u001b[5m"')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"
