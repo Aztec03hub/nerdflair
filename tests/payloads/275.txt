@@ -1,0 +1,1 @@
+row1 right edge: bigdirty, long model + effort + thinking, COLUMNS=100

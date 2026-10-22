@@ -26,7 +26,7 @@ const GIT_CACHE_TTL: i64 = 3;
 const MIN_BRANCH_FIT: i64 = 15;
 const MULTI_SIDE_MIN: i64 = 5;
 const MULTI_SEP: &str = " \u{b7} ";
-const MULTI_SEP_W: i64 = 3;
+const MULTI_PEEK: i64 = 5;
 
 fn main() {
     errlog::install_panic_hook();
@@ -746,7 +746,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
         } else if multi_total_count > 0 {
             if multi_off_count > 0 {
-                branch = multi_branch_list.replace(", ", MULTI_SEP);
+                branch = fit_multi_branches(&multi_branch_list, i64::MAX / 4);
                 branch_is_multi = 1;
             } else {
                 branch = format!("{} repos", multi_total_count);
@@ -1159,6 +1159,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             effort_floor = min_model + effort_cost;
         }
     }
+    // Never let the effort floor starve path and branch below their 4-column minimums.
+    if !branch.is_empty() && text_budget - effort_floor < 8 {
+        effort_floor = (text_budget - 8).max(min_model);
+    }
     let mut model_budget = text_budget - path_branch_len;
     if model_budget < effort_floor {
         model_budget = effort_floor;
@@ -1169,29 +1173,42 @@ fn render_inner(input: &str) -> Result<String, String> {
         pb_budget = text_budget - model_budget;
     }
 
-    if branch_is_multi == 1 && path_len + branch_len > pb_budget {
-        let multi_min = MULTI_SIDE_MIN + 1 + MULTI_SIDE_MIN;
-        let mut model_reserve = min_model;
-        if effort_len > 0 {
-            let reserve_with_effort = min_model + effort_len + 2;
-            let mut target = text_budget - path_len - reserve_with_effort;
-            if target < multi_min {
-                target = multi_min;
-            }
-            if !fit_multi_branches(&multi_branch_list, target).is_empty() {
-                model_reserve = reserve_with_effort;
-            }
-        }
-        let mut branch_target = text_budget - path_len - model_reserve;
-        if branch_target < multi_min {
-            branch_target = multi_min;
-        }
-        let fitted = fit_multi_branches(&multi_branch_list, branch_target);
-        branch = if !fitted.is_empty() {
-            fitted
+    // Several repos: the model keeps ALL its suffixes (effort, thinking, style, fast) and the
+    // branch summary takes what is left: the first entry shrunk, then the peek dropped, then
+    // "N branches". Only if even "N branches" plus the whole model can't fit does the older
+    // rule below apply (list over effort).
+    if branch_is_multi == 1 && path_len + branch_len + model_text_len > text_budget {
+        let full_target = text_budget - path_len - model_text_len;
+        let fitted_full = fit_multi_branches(&multi_branch_list, full_target);
+        let nb = format!("{} branches", multi_off_count);
+        if !fitted_full.is_empty() {
+            branch = fitted_full;
+        } else if (char_len(&nb) as i64) <= full_target {
+            branch = nb;
         } else {
-            format!("{} branches", multi_off_count)
-        };
+            let multi_min = MULTI_SIDE_MIN + 1 + MULTI_SIDE_MIN;
+            let mut model_reserve = min_model;
+            if effort_len > 0 {
+                let reserve_with_effort = min_model + effort_len + 2;
+                let mut target = text_budget - path_len - reserve_with_effort;
+                if target < multi_min {
+                    target = multi_min;
+                }
+                if !fit_multi_branches(&multi_branch_list, target).is_empty() {
+                    model_reserve = reserve_with_effort;
+                }
+            }
+            let mut branch_target = text_budget - path_len - model_reserve;
+            if branch_target < multi_min {
+                branch_target = multi_min;
+            }
+            let fitted = fit_multi_branches(&multi_branch_list, branch_target);
+            branch = if !fitted.is_empty() {
+                fitted
+            } else {
+                format!("{} branches", multi_off_count)
+            };
+        }
         branch_is_multi = 0;
         branch_len = vis_len(&branch) as i64;
         path_branch_len = path_len + branch_len;
@@ -1282,55 +1299,101 @@ fn render_inner(input: &str) -> Result<String, String> {
     let _ = fast_suffix;
 
     // ── Assemble row 1 ───────────────────────────────────────────
-    let mut folder_segment = String::new();
-    if is_home {
-        if !branch.is_empty() {
-            folder_segment = format!(
-                "{}{} {}{}{} {}{}",
-                pal.blue, HOME_ICON, sep_bullet, pal.magenta, BRANCH_ICON, branch, RESET
-            );
-        } else {
-            folder_segment = format!("{}{} {}", pal.blue, HOME_ICON, RESET);
+    // Up to five passes. When the right readout exists and the left plus a 2-column
+    // gap would push it past row_width (past the bar's right edge), pass N shrinks one
+    // more thing: folder, branch, the model suffixes, then the model name. Never the
+    // right readout.
+    let mut folder_segment;
+    let mut model_segment;
+    let mut pass = 0;
+    let mut row1_left = loop {
+        folder_segment = String::new();
+        if is_home {
+            if !branch.is_empty() {
+                folder_segment = format!(
+                    "{}{} {}{}{} {}{}",
+                    pal.blue, HOME_ICON, sep_bullet, pal.magenta, BRANCH_ICON, branch, RESET
+                );
+            } else {
+                folder_segment = format!("{}{} {}", pal.blue, HOME_ICON, RESET);
+            }
+        } else if !folder_name.is_empty() {
+            if !branch.is_empty() {
+                folder_segment = format!(
+                    "{}{} {}{}{}{} {}{}",
+                    pal.blue, folder_icon, folder_name, sep_bullet, pal.magenta, BRANCH_ICON, branch, RESET
+                );
+            } else {
+                folder_segment = format!("{}{} {}{}", pal.blue, folder_icon, folder_name, RESET);
+            }
         }
-    } else if !folder_name.is_empty() {
-        if !branch.is_empty() {
-            folder_segment = format!(
-                "{}{} {}{}{}{} {}{}",
-                pal.blue, folder_icon, folder_name, sep_bullet, pal.magenta, BRANCH_ICON, branch, RESET
-            );
-        } else {
-            folder_segment = format!("{}{} {}{}", pal.blue, folder_icon, folder_name, RESET);
-        }
-    }
 
-    let mut model_segment = String::new();
-    if !model_text.is_empty() {
-        model_segment = format!("{}{} {}{}", pal.cyan, MODEL_ICON, model_text, RESET);
-        if !(effort_colored.is_empty()
-            && state_colored.is_empty()
-            && style_suffix.is_empty()
-            && fast_colored.is_empty())
-        {
-            model_segment.push_str(&opt_bullet);
+        model_segment = String::new();
+        if !model_text.is_empty() {
+            model_segment = format!("{}{} {}{}", pal.cyan, MODEL_ICON, model_text, RESET);
+            if !(effort_colored.is_empty()
+                && state_colored.is_empty()
+                && style_suffix.is_empty()
+                && fast_colored.is_empty())
+            {
+                model_segment.push_str(&opt_bullet);
+            }
+            model_segment.push_str(&effort_colored);
+            model_segment.push_str(&state_colored);
+            model_segment.push_str(pal.state_color);
+            model_segment.push_str(&style_suffix);
+            model_segment.push_str(RESET);
+            model_segment.push_str(&fast_colored);
         }
-        model_segment.push_str(&effort_colored);
-        model_segment.push_str(&state_colored);
-        model_segment.push_str(pal.state_color);
-        model_segment.push_str(&style_suffix);
-        model_segment.push_str(RESET);
-        model_segment.push_str(&fast_colored);
-    }
 
-    let mut row1_left = String::from(RESET);
-    if !folder_segment.is_empty() {
-        row1_left.push_str(&folder_segment);
-    }
-    if !model_segment.is_empty() {
+        let mut row1_left = String::from(RESET);
         if !folder_segment.is_empty() {
-            row1_left.push_str(&sep_bullet);
+            row1_left.push_str(&folder_segment);
         }
-        row1_left.push_str(&model_segment);
-    }
+        if !model_segment.is_empty() {
+            if !folder_segment.is_empty() {
+                row1_left.push_str(&sep_bullet);
+            }
+            row1_left.push_str(&model_segment);
+        }
+        if right_width == 0 || sl_mode == "minimal" || pass >= 4 {
+            break row1_left;
+        }
+        let over = vis_len(&row1_left) as i64 + 2 + right_width - row_width;
+        if over <= 0 {
+            break row1_left;
+        }
+        match pass {
+            0 => {
+                let n = char_len(&folder_name) as i64;
+                if !is_home && n > 2 {
+                    let nl = (n - over).max(2);
+                    folder_name = format!("{}{}", ELLIPSIS, char_from(&folder_name, (n - nl + 1) as usize));
+                }
+            }
+            1 => {
+                let n = char_len(&branch) as i64;
+                if n > 2 {
+                    let nl = (n - over).max(2);
+                    branch = format!("{}{}", char_slice(&branch, 0, (nl - 1) as usize), ELLIPSIS);
+                }
+            }
+            2 => {
+                effort_colored.clear();
+                state_colored.clear();
+                fast_colored.clear();
+                style_suffix.clear();
+            }
+            _ => {
+                let n = char_len(&model_text) as i64;
+                if n > 2 {
+                    let nl = (n - over).max(2);
+                    model_text = format!("{}{}", char_slice(&model_text, 0, (nl - 1) as usize), ELLIPSIS);
+                }
+            }
+        }
+        pass += 1;
+    };
 
     if sl_mode != "minimal" {
         out.push_str(&justified_row(row_width, 0, &row1_left, &row1_right));
@@ -2565,75 +2628,43 @@ fn render_multi_entry(e: &str, width: i64) -> String {
     format!("{}:{}", repo_out, br_out)
 }
 
+/// Row 1 multi-repo readout: the first entry, then (if a second exists) MULTI_SEP and
+/// the second entry's first MULTI_PEEK chars plus ELLIPSIS. Nothing after that.
+/// A first entry too long for `target` shrinks via render_multi_entry; if it can't
+/// fit with the peek, the peek goes; if it can't fit alone, "" (caller: "N branches").
 fn fit_multi_branches(list: &str, target: i64) -> String {
-    let entries: Vec<String> = {
-        let mut v = Vec::new();
-        let mut rest = list.to_string();
-        while let Some(i) = rest.find(", ") {
-            v.push(rest[..i].to_string());
-            rest = rest[i + 2..].to_string();
-        }
-        v.push(rest);
-        v
+    let entries: Vec<&str> = list.split(", ").collect();
+    let e1 = entries[0];
+    let e1len = char_len(e1) as i64;
+    let (rp, bp) = match e1.find(':') {
+        Some(i) => (&e1[..i], &e1[i + 1..]),
+        None => (e1, ""),
     };
-    let n = entries.len() as i64;
-    let sep_cost = (n - 1) * MULTI_SEP_W;
-    let content_budget = target - sep_cost;
-
-    let full: i64 = entries.iter().map(|e| char_len(e) as i64).sum();
-    if full <= content_budget {
-        return entries.join(MULTI_SEP);
+    let side = |n: usize| -> i64 {
+        let n = n as i64;
+        if n > MULTI_SIDE_MIN { MULTI_SIDE_MIN + 1 } else { n }
+    };
+    let floor = (side(char_len(rp)) + 1 + side(char_len(bp))).min(e1len);
+    let mut peek = String::new();
+    if entries.len() > 1 {
+        let e2 = entries[1];
+        // exactly two entries and a short second one: whole, no ellipsis. Never end on the colon.
+        if entries.len() == 2 && (char_len(e2) as i64) <= MULTI_PEEK {
+            peek = format!("{}{}", MULTI_SEP, e2);
+        } else {
+            let cut = char_slice(e2, 0, MULTI_PEEK as usize);
+            peek = format!("{}{}{}", MULTI_SEP, cut.strip_suffix(':').unwrap_or(&cut), ELLIPSIS);
+        }
     }
-
-    let mut floor = Vec::with_capacity(entries.len());
-    let mut alloc = Vec::with_capacity(entries.len());
-    for e in &entries {
-        let elen = char_len(e) as i64;
-        let (rp, bp) = match e.find(':') {
-            Some(i) => (&e[..i], &e[i + 1..]),
-            None => (e.as_str(), ""),
-        };
-        let mut rmin = char_len(rp) as i64;
-        let mut bmin = char_len(bp) as i64;
-        if rmin > MULTI_SIDE_MIN {
-            rmin = MULTI_SIDE_MIN + 1;
-        }
-        if bmin > MULTI_SIDE_MIN {
-            bmin = MULTI_SIDE_MIN + 1;
-        }
-        let mut fl = rmin + 1 + bmin;
-        if fl > elen {
-            fl = elen;
-        }
-        floor.push(fl);
-        alloc.push(elen);
+    let peek_w = vis_len(&peek) as i64;
+    let w = target - peek_w;
+    if !peek.is_empty() && w >= floor {
+        return format!("{}{}", render_multi_entry(e1, w), peek);
     }
-    let floor_sum: i64 = floor.iter().sum();
-    if floor_sum > content_budget {
-        return String::new();
+    if target >= floor {
+        return render_multi_entry(e1, target);
     }
-    let mut total: i64 = alloc.iter().sum();
-    while total > content_budget {
-        let mut longest: i64 = -1;
-        let mut longest_len: i64 = -1;
-        for i in 0..entries.len() {
-            if alloc[i] > floor[i] && alloc[i] > longest_len {
-                longest_len = alloc[i];
-                longest = i as i64;
-            }
-        }
-        if longest < 0 {
-            break;
-        }
-        alloc[longest as usize] -= 1;
-        total -= 1;
-    }
-    entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| render_multi_entry(e, alloc[i]))
-        .collect::<Vec<_>>()
-        .join(MULTI_SEP)
+    String::new()
 }
 
 /// A payload field that bash arithmetic would reject. The renderer's VALUE

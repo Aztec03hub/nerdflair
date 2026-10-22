@@ -1,0 +1,1 @@
+row1 right edge: longdiv, long model + effort + thinking, COLUMNS=50
