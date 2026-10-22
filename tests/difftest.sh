@@ -13,6 +13,7 @@
 #   ./difftest.sh --bash-rev 18b1887       pin side A to a git revision
 #   ./difftest.sh --only 42                run a single case
 #   ./difftest.sh --only 40-60             run a range
+#   ./difftest.sh --only 138-141,145,162   run a comma list of ids and ranges
 #   ./difftest.sh --verbose                show a diff for every case, not just failures
 #   ./difftest.sh --list                   print the corpus index and exit
 #   ./difftest.sh --normalize-countdown    mask rate-limit countdowns before comparing
@@ -34,7 +35,7 @@ BASH_IMPL="$REPO_ROOT/scripts/statusline.sh"
 BASH_IMPL_B=""                       # optional second bash impl (A/B mode)
 BASH_REV=""                          # git rev to extract side A from
 RUST_IMPL="$REPO_ROOT/rust/target/release/nerdflair-statusline"
-ONLY=""
+ONLY=""; ONLY_SET=0
 VERBOSE=0
 LIST_ONLY=0
 NORMALIZE_COUNTDOWN=0
@@ -48,7 +49,7 @@ while (( $# )); do
     --bash)  BASH_IMPL_B="$2"; shift 2 ;;
     --bash-rev) BASH_REV="$2"; shift 2 ;;
     --bash-a) BASH_IMPL="$2"; shift 2 ;;
-    --only)  ONLY="$2"; shift 2 ;;
+    --only)  ONLY="$2"; ONLY_SET=1; shift 2 ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --list)  LIST_ONLY=1; shift ;;
     --normalize-countdown) NORMALIZE_COUNTDOWN=1; shift ;;
@@ -60,6 +61,14 @@ while (( $# )); do
     *) printf 'difftest: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+# --only takes a comma list of ids and ranges: 138-141,145,162. Anything else is an error (exit 2),
+# never "run everything".
+if (( ONLY_SET )); then
+  [[ "$ONLY" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
+    || { echo "difftest: --only '$ONLY' is not a list of ids/ranges like 138-141,145,162" >&2; exit 2; }
+fi
+
 
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { printf 'difftest: -j needs a positive integer\n' >&2; exit 2; }
 
@@ -284,14 +293,17 @@ if (( LIST_ONLY )); then
 fi
 
 _selected() {
-  local id="$1"
+  local id="$1" item
   [[ -z "$ONLY" ]] && return 0
   local n=$((10#$id))
-  if [[ "$ONLY" == *-* ]]; then
-    (( n >= 10#${ONLY%%-*} && n <= 10#${ONLY##*-} )) && return 0
-  else
-    (( n == 10#$ONLY )) && return 0
-  fi
+  local IFS=,
+  for item in $ONLY; do
+    if [[ "$item" == *-* ]]; then
+      (( n >= 10#${item%%-*} && n <= 10#${item##*-} )) && return 0
+    else
+      (( n == 10#$item )) && return 0
+    fi
+  done
   return 1
 }
 
@@ -638,6 +650,7 @@ for id in "${CASES[@]}"; do
   _selected "$id" && SEL+=("$id") || SKIPPED=$((SKIPPED+1))
 done
 TOTAL=${#SEL[@]}
+(( TOTAL )) || { echo "difftest: --only '$ONLY' matches no case in the corpus" >&2; exit 2; }
 if (( JOBS == 1 )); then
   for id in "${SEL[@]}"; do run_case "$id"; done
 else
