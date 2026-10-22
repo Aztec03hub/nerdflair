@@ -6,6 +6,8 @@ the demo writes to /dev/tty while the wrapper writes into the stream it is
 already relaying to the real terminal.
 """
 
+from mklayout import cells
+
 ESC = "\033"
 RESET = f"{ESC}[0m"
 
@@ -17,6 +19,29 @@ FPS = 28
 # Frames the panel rests, lit but still, between sweeps.
 REST = 26
 FRAME = 1.0 / FPS
+
+
+def _cut(s, n):
+    """The longest prefix of `s` that fits in n screen cells."""
+    k = len(s)
+    while k and cells(s[:k]) > n:
+        k -= 1
+    return s[:k]
+
+
+def _wrap(line, n):
+    """Greedy word wrap by screen cells. A word wider than n stays whole (the
+    caller clips it); a blank line stays one blank line."""
+    if cells(line) <= n:
+        return [line]
+    out, cur = [], ""
+    for word in line.split():
+        if cur and cells(cur) + 1 + cells(word) > n:
+            out.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    return out + [cur] if cur else [""]
 
 
 def rgb(c):
@@ -78,7 +103,7 @@ class Panel:
         The title sits IN the top rule, so its characters are part of run A
         and the glint passes over the lettering instead of stopping dead at
         it."""
-        top = "╭─ " + title + " " + "─" * max(0, w - len(title) - 5) + "╮"
+        top = "╭─ " + title + " " + "─" * max(0, w - cells(title) - 5) + "╮"
         bottom = "╰" + "─" * (w - 2) + "╯"
 
         a = [(y, x + i, ch) for i, ch in enumerate(top)]
@@ -98,16 +123,30 @@ class Panel:
         `anchor_col` but kept on screen."""
         if self.shown == sid and self.rect:
             return                        # already up, let it shine
+        # Word-wrap to the card's widest possible interior (in screen cells, the
+        # way tmux draws them: live readout text can hold CJK and emoji); only a
+        # single word wider than that is clipped (and logged) below.
+        avail = max(12, self.cols - 4) - 4
+        body = [ln for b in body for ln in _wrap(b, avail)]
+        clipped = False
+        # Tall cards: keep the body within the larger side of the anchor row, so
+        # the card never scrolls the screen nor covers the hovered row.
+        room = max(anchor_row - 1, self.rows - anchor_row)
+        cap = max(1, room - 2)
+        if len(body) > cap:
+            body = body[:cap]
+            body[-1] = _cut(body[-1], avail - 1) + "…"
+            clipped = True
         w = min(self.cols - 4,
-                max(len(title) + 6, max(len(b) for b in body) + 4))
+                max(cells(title) + 6, max(cells(b) for b in body) + 4))
         w = max(w, 12)
         # Clipped to the card, not left to run over its right edge: on a
         # terminal narrower than the text the border would otherwise break.
-        if len(title) > max(1, w - 6) or any(len(b) > w - 4 for b in body):
+        if clipped or cells(title) > max(1, w - 6) or any(cells(b) > w - 4 for b in body):
             self.warn("card-clipped", f"card '{sid}' clipped to {w} columns (terminal is {self.cols} wide): "
                                       "some of its text is cut off")
-        title = title[:max(1, w - 6)]
-        body = [b[:w - 4] for b in body]
+        title = _cut(title, max(1, w - 6))
+        body = [_cut(b, w - 4) for b in body]
         h = len(body) + 2
         x = max(1, min(anchor_col - 2, self.cols - w - 1))
         y = anchor_row - h
@@ -152,7 +191,7 @@ class Panel:
         out = [f"{ESC}[s", f"{ESC}[?25l"]
         for i, line in enumerate(self.body):
             out.append(f"{ESC}[{y+1+i};{x}H{acc}│{RESET} "
-                       f"{line:<{w-4}} {acc}│{RESET}")
+                       f"{line}{" " * (w - 4 - cells(line))} {acc}│{RESET}")
         out.append(self._border(full=True))
         out += [self._show_cursor(), f"{ESC}[u"]
         self.write("".join(out))
@@ -351,6 +390,39 @@ def demo():
     assert tx + tw - 1 <= 30 and ty >= 1 and ty + th - 1 <= 20, t.rect
     assert all(len(line) <= tw - 4 for line in t.body), t.body
     assert len(t.title) <= tw - 6, t.title
+    # A long line wraps at word breaks instead of clipping; only one word
+    # wider than the terminal still clips, and says so.
+    warned = []
+    wr = Panel(lambda *a, **k: None, rows=50, cols=120)
+    wr.warn = lambda *a: warned.append(a)
+    line = " ".join(["word"] * 24)[:121].rstrip()
+    line = line + "x" * (121 - len(line))
+    assert len(line) == 121 and " " in line
+    wr.show("w", "T", [line], (1, 2, 3), 10, 40)
+    assert not warned and len(wr.body) == 2 and "".join(wr.body).replace(" ", "") == line.replace(" ", ""), (warned, wr.body)
+    assert wr.rect[2] <= 120, wr.rect
+    wr.reset()
+    wr.show("w2", "T", ["y" * 130], (1, 2, 3), 10, 40)
+    assert [a[0] for a in warned] == ["card-clipped"] and len(wr.body[0]) == wr.rect[2] - 4, (warned, wr.body)
+    # Tall card: capped, last line ends "...", logged, and clear of the anchor row.
+    warned.clear()
+    tl = Panel(lambda *a, **k: None, rows=24, cols=30)
+    tl.warn = lambda *a: warned.append(a)
+    tl.show("t", "T", ["word " * 200], (1, 2, 3), 5, 24)
+    tx, ty, tw, th = tl.rect
+    assert th <= 23 and ty >= 1 and ty + th - 1 < 24, tl.rect
+    assert tl.body[-1].endswith("…") and [a[0] for a in warned] == ["card-clipped"], (warned, tl.body[-1])
+    # Wide text: CJK and emoji are counted in cells, so every row is exactly w-4 wide.
+    from mklayout import cells as true_cells
+    wide = []
+    cj = Panel(wide.append, rows=50, cols=40)
+    cj.show("c", "T", ["\u6f22\u5b57" * 8 + " \U0001f600 end", "\U0001f600" * 20], (1, 2, 3), 5, 30)
+    assert all(true_cells(b) <= cj.rect[2] - 4 for b in cj.body), cj.body
+    assert all(true_cells(ln.split("│")[1]) == cj.rect[2] - 2 for ln in wide[-1].split("\033[") if "│" in ln and ln.count("│") == 2), wide[-1]
+    # A long whitespace-only line stays one blank line.
+    ws = Panel(lambda *a, **k: None, rows=50, cols=40)
+    ws.show("s", "T", [" " * 90], (1, 2, 3), 5, 30)
+    assert ws.body == [" " * 90][:0] + [ws.body[0]] and ws.body[0].strip() == "", ws.body
     # Reset forgets without painting, and a later show starts clean.
     before = len(nb)
     t.reset()

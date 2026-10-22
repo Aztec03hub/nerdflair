@@ -530,9 +530,11 @@ def real_spans():
                     check(f"{label}: {text!r} is drawn where the renderer's row says (cols {col}..{col + w - 1})", False, repr(drawn))
                     continue
                 r.hover(col + w // 2, r0 + i, 0.5)
-                during = r.rowat_like(r0 + i, base)
-                lit_at = lit_idx(during)
                 want = list(range(col - 1, col - 1 + w))
+                # the shadow can take a cool-down to sync on a loaded box: wait for the mark, bounded
+                during = until(lambda: (lambda d: d if lit_idx(d) == want else None)(r.rowat_like(r0 + i, base)), deadline=6.0, gap=0.2) \
+                    or r.rowat_like(r0 + i, base)
+                lit_at = lit_idx(during)
                 check(f"{label}: {text!r} lit cells {col}..{col + w - 1} (the whole readout)", lit_at == want,
                       f"lit {lit_at[:1]}..{lit_at[-1:]} want {want[0]}..{want[-1]}")
                 check(f"{label}: {text!r} no other cell changed", len(during) == len(base) and all(a == b for j, (a, b) in enumerate(zip(during, base)) if j not in want),
@@ -719,8 +721,13 @@ def alt_screen(mode="altswitch"):
     print(f"the engine switches to the alt screen and back while a card is up ({mode}): nothing stays lit")
     r = Run("alt")
     try:
-        base = r.row()
-        col, w, _ = pieces_of(base)[1]
+        # the status line may not be drawn yet on a loaded box: wait for the pieces this scenario needs
+        got = until(lambda: (lambda row: (row, pieces_of(row)) if len(pieces_of(row)) >= 2 else None)(r.row()), deadline=10.0, gap=0.2)
+        if not got:
+            check("the status line drew two pieces within 10 s", False, str(pieces_of(r.row())))
+            return
+        base, pcs = got
+        col, w, _ = pcs[1]
         r.hover(col + w // 2)
         check("highlight on", bool(lit_idx(r.row())))
         r.mode(mode)
