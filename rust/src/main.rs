@@ -2817,7 +2817,7 @@ struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 /// per-session and account-wide state file alone (sample ring, ledger, repo-cost
 /// stamp, limits-last), or it corrupts what the real status line measured.
 fn json_mode() -> bool {
-    std::env::args().any(|a| a == "--json")
+    std::env::args_os().any(|a| a == "--json")
 }
 
 /// Account-wide last-known rate limits, in the private cache dir. One line:
