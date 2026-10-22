@@ -175,6 +175,12 @@ class Run:
                   f"python3 {HERE}/nfpty.py {self.fake} {self.flag} {self.rown}")
         self.tmux("set", "-g", "remain-on-exit", "on")
         time.sleep(2)
+        # On a loaded machine the stand-in engine may not have drawn its status row yet: wait for it (bounded)
+        # instead of letting the scenario read an empty row and crash on an IndexError.
+        for _ in range(100):
+            if len(pieces_of(self.row())) >= 2:
+                break
+            time.sleep(0.2)
 
     def tmux(self, *a):
         return subprocess.run(["tmux", "-L", self.sock, *a], capture_output=True, text=True).stdout
