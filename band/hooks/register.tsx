@@ -1,5 +1,19 @@
 import type { Hook, Register } from 'claude-code'
 
+// THE CODE SWITCH FOR THE BAND ROW (the AbovePrompt row this file draws).
+//
+// The row is OFF by default. It is kept in code for debugging and iteration, not as a feature:
+// the Remote Control readout it used to carry now lives on the main status line.
+// The row is drawn only if this constant is true OR the runtime debug flag is on
+// (NERDFLAIR_BAND_DEBUG=1, or the file ~/.claude/nerdflair/band-debug; `--rc-sync` reports it as `debug=1`).
+// Flip it to true to draw the row always; leave it false and touch the flag to draw it on demand.
+// Hidden does NOT mean idle: the plugin still runs the Remote Control sync and writes the rc-<session>
+// state file the main status line reads. A sync failure while hidden is logged (debug log) and not drawn:
+// the main line's RC readout turns amber "unknown" by itself when the record goes stale, which is where
+// a user would look. After editing this file run band/sync-local-plugin.sh, then /reload-plugins.
+const BAND_ROW_ENABLED = false
+let bandRowEnabled = BAND_ROW_ENABLED // module state like the rest, so resetStateForTests() can restore it
+
 // The nerdflair status line, drawn as a tree instead of a line of text, so
 // each readout can light under the pointer and explain itself.
 //
@@ -343,24 +357,24 @@ const RC_FAIL_MS = 5000
 const RC_TICK_MS = 5000
 const RC_ABORT_MS = 500
 let rcDebug = false // the last answer: draw the band row?
-// A sync that fails draws the band too: its red row is where the fault is explained, and hiding the
-// row would hide the one thing that says the record (and so the status line chip) is not being kept.
-let rcFault = false
-let rcError = '' // why, for the band row; cleared by the next good sync
+// A sync that fails does NOT force the row open: it is logged by note(), and the main line's chip
+// goes amber "unknown" when the record stops being refreshed. With the row on (constant or flag) the
+// fault shows in it as before (rcError).
+let rcError = '' // why, for the band row (when drawn); cleared by the next good sync
 let rcNextAt = 0
 let rcInflight: Promise<void> | null = null
 
 // Returns whether the band row is to be drawn.
 async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
-  if (!HOME) return true // no renderer path: the band is where that is reported
-  if (now < rcNextAt) return rcDebug || rcFault
+  const draw = () => bandRowEnabled || rcDebug
+  if (!HOME) return draw() // no renderer path: reported (lookupHome) to the log, and to the row if it is drawn
+  if (now < rcNextAt) return draw()
   await (rcInflight ??= (async () => {
     try {
       const sid = await $.session.id()
       if (!sid) {
         // No session id, no file: a record under a guessed name would be read by another session.
         rcError = note($, 'rc sync', 'session id unknown: the remote control record is not written')
-        rcFault = true
         rcNextAt = now + RC_FAIL_MS
         return
       }
@@ -369,12 +383,10 @@ async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
       const m = /^debug=([01])$/m.exec(r.stdout)
       if (r.exitCode !== 0 || !m) {
         rcError = note($, 'rc sync failed', `exit ${r.exitCode}: ${(r.stderr || r.stdout || '(no output)').trim().slice(0, 160)}`)
-        rcFault = true
         rcNextAt = now + RC_FAIL_MS
         return
       }
       rcDebug = m[1] === '1'
-      rcFault = false
       rcError = ''
       rcNextAt = now + RC_SYNC_MS
     } catch (err) {
@@ -385,13 +397,12 @@ async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
         return
       }
       rcError = note($, 'rc sync failed', err)
-      rcFault = true
       rcNextAt = now + RC_FAIL_MS
     }
   })().finally(() => {
     rcInflight = null
   }))
-  return rcDebug || rcFault
+  return draw()
 }
 
 async function rcTick($: RenderArgs[0]): Promise<boolean> {
@@ -418,10 +429,10 @@ export function resetStateForTests(): void {
   rcSeen = []
   rcSinceGuess = false
   rcDebug = false
-  rcFault = false
   rcError = ''
   rcNextAt = 0
   rcInflight = null
+  bandRowEnabled = BAND_ROW_ENABLED
 }
 
 export const register: Register = on => {
