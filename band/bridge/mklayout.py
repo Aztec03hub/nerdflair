@@ -109,6 +109,7 @@ CARDS = [
     ("throughput", "\U000f04c5", "Token throughput", (96, 165, 250), [
         "output tokens per second over the current turn",
         "from the transcript's usage and timing, not an estimate",
+        "dim --/s = no rate measured yet (first response of the session)",
     ]),
     ("api_time", "", "Time in the API", (163, 163, 163), [
         "total_api_duration_ms: time spent waiting on the model",
@@ -117,14 +118,17 @@ CARDS = [
     ("repo_cost", "", "Repo spend", (74, 222, 128), [
         "everything spent in this repo across sessions",
         "summed from the usage ledger, positive increments only",
+        "dim $-- = the ledger has nothing for this repo yet",
+        "~$ = the ledger is over its tail cap, so this is a lower bound",
     ]),
     ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
     ]),
-    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
+    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%|(?<!\S)--(?!\S)", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
         "read from the payload, else the newest usage line in the transcript",
         "compaction triggers near the top; the ETA reads off the same series",
+        "-- = no figure yet (the payload has none and there is no transcript usage line)",
     ]),
     ("effort", r"\b(minimal|low|medium|high|xhigh|max)\b", "Effort",
      (196, 181, 253), [
@@ -135,10 +139,11 @@ CARDS = [
         "else the config files: what is CONFIGURED, not what connected",
         "cached 300s, refreshed by one locked background job",
     ]),
-    ("compact_eta", r"^\W*~[<>]?\d", "Compaction ETA", (163, 163, 163), [
+    ("compact_eta", r"^\W*~(?:[<>]?\d|--)", "Compaction ETA", (163, 163, 163), [
         "when the context window is projected to fill",
         "Theil-Sen slope over a 16-sample ring, idle gaps excluded",
         "measured ~68% median error, so it is rounded and always ~",
+        "dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known",
     ]),
 ]
 
@@ -357,6 +362,12 @@ def selfcheck():
         assert hit and hit.group(0) == label, (label, hit and hit.group(0))
         assert bar_label(bar) == (22, cells(label), label), bar_label(bar)
     assert re.search(r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "200k/1M 20%").group(0) == "0k/1M 20%"
+    # The gauge with no source says "--": still the context readout, and nothing else is mistaken for it.
+    bar = "\ue0b6" + " " * 20 + "--" + " " * 30 + "\ue0b4"
+    assert bar_label(bar) == (22, 2, "--") and CONTEXT_ROW.search(bar).group(0) == "--", bar_label(bar)
+    assert classify("--")[0] == "context", classify("--")
+    for other in ("\U000f04c5 --/s", "~--", "$--", "a--b"):
+        assert not CONTEXT_ROW.search(other), other
     # The halves of a row are justified with at least TWO spaces: two readouts, not one. The chime's own
     # two spaces (volume icon, style) stay inside its readout.
     tight = " 2 MCP   main · 5h 2%"
@@ -407,6 +418,7 @@ def selfcheck():
                 raise AssertionError(f"rc_drift must see {old_s!r} -> {new_s!r} in {rel}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    placeholder_drift(os.path.join(here, "..", ".."))
     text_drift(os.path.join(here, "..", ".."))     # the card TEXTS of limits, block and chime match register.tsx (colours: band_drift)
     assert band_drift(tsx) == [], band_drift(tsx)
     assert band_drift(tsx.replace("color: '#60a5fa'", "color: '#60a5fb'")) != [], "drift guard must see a changed colour"
@@ -534,6 +546,29 @@ def text_drift(root):
         assert lines == mk[4], f"card {cid}: lines drifted between register.tsx and mklayout.py:\n  tsx: {lines}\n  py:  {mk[4]}"
 
 
+PLACEHOLDER_LINES = {
+    "compact_eta": ["dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known"],
+    "throughput": ["dim --/s = no rate measured yet (first response of the session)"],
+    "repo_cost": ["dim $-- = the ledger has nothing for this repo yet",
+                  "~$ = the ledger is over its tail cap, so this is a lower bound"],
+}
+
+
+def placeholder_drift(root):
+    """Each placeholder readout (`--/s`, `$--`, `~$`, `~--`) is explained on its hover card, in the bridge
+    (CARDS here) and in the band plugin (register.tsx), word for word. The gauge's `--` card line exists
+    only here: the plugin has no context card."""
+    with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
+        tsx = fh.read()
+    for cid, want in PLACEHOLDER_LINES.items():
+        mk = next(c for c in CARDS if c[0] == cid)
+        for line in want:
+            assert line in mk[4], f"card {cid}: mklayout.py lacks {line!r}"
+            assert f"'{line}'" in tsx, f"card {cid}: register.tsx lacks {line!r}"
+    ctx = next(c for c in CARDS if c[0] == "context")
+    assert any(l.startswith("-- = no figure yet") for l in ctx[4]), "context card does not explain the -- gauge"
+
+
 def rc_drift(root):
     """The Remote Control look exists three times: register.tsx (the band chip), rc.rs (the status
     line) and RC_STATES here (the hover card and highlight). Colours, glyphs and shared card lines
@@ -575,7 +610,7 @@ def bar_label(line):
     """The context readout of a gauge row: the one run of text sitting inside the bar, between the
     bar's cap glyphs and spaces. (col, width, text), or None when the row has no such label."""
     runs = list(re.finditer(r"[^\s\ue0b4\ue0b6]+(?: [^\s\ue0b4\ue0b6]+)*", line))
-    if len(runs) != 1 or "/" not in runs[0].group(0) or "%" not in runs[0].group(0):
+    if len(runs) != 1 or not (("/" in runs[0].group(0) and "%" in runs[0].group(0)) or runs[0].group(0) == "--"):
         return None
     return cells(line[:runs[0].start()]) + 1, cells(runs[0].group(0)), runs[0].group(0)
 
@@ -660,7 +695,8 @@ def corpus_env(cdir, pane, style, vol, cols="250"):
                    "chime_events": "Notification,PermissionRequest,Stop",
                    "color": "vibrant", "last_session": "", "chime_recent_styles": []}, fh)
     return dict(os.environ, HOME=home, COLUMNS=cols, TMUX="x,1,0", TMUX_PANE=pane, NERDFLAIR_CACHE_DIR=cdir,
-                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999", NERDFLAIR_MCP_CACHE="")
+                NERDFLAIR_MCP_HEALTH="1", NERDFLAIR_MCP_HEALTH_TTL="999999999",
+                NERDFLAIR_MCP_CACHE=os.path.join(cdir, f"nerdflair-mcphealth-{os.getuid()}"))  # the default is per project now
 
 
 def _cards_check_body(root, binary, pane, cdir, style, vol, widths=("250",)):

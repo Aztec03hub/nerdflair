@@ -119,12 +119,17 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
       'when the context window is projected to fill',
       'Theil-Sen slope over a 16-sample ring, idle gaps excluded',
       'measured ~68% median error, so it is rounded and always ~',
+      'dim ~-- = no estimate yet (under 5% used, or too few samples); used% is known',
     ],
   },
   throughput: {
     title: 'Token throughput',
     color: '#60a5fa',
-    lines: ['output tokens per second of API time', 'from the delta between two samples, not a lifetime average'],
+    lines: [
+      'output tokens per second of API time',
+      'from the delta between two samples, not a lifetime average',
+      'dim --/s = no rate measured yet (first response of the session)',
+    ],
   },
   api_time: {
     title: 'API duration',
@@ -153,7 +158,12 @@ const CARDS: Record<string, { title: string; lines: string[]; color: string }> =
   repo_cost: {
     title: 'Repo total',
     color: '#4ade80',
-    lines: ['everything this repo has cost over 30 days', 'max cumulative cost per session, summed'],
+    lines: [
+      'everything this repo has cost over 30 days',
+      'max cumulative cost per session, summed',
+      'dim $-- = the ledger has nothing for this repo yet',
+      '~$ = the ledger is over its tail cap, so this is a lower bound',
+    ],
   },
   session_cost: {
     title: 'Session cost',
