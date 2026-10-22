@@ -19,13 +19,15 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leakcheck  # noqa: E402
 import mklayout  # noqa: E402
 import nflog  # noqa: E402
 import nfpty  # noqa: E402
 import panel as panel_mod  # noqa: E402
 import shadow as shadow_mod  # noqa: E402
 
-TMP = tempfile.mkdtemp(prefix="nf-logcheck-")
+leakcheck.install()    # TMP goes away on every exit path, incl. SIGTERM and a crash
+TMP = leakcheck.mkdtemp("nf-logcheck-")
 LOG = os.path.join(TMP, "err.log")
 nflog.ERRLOG = LOG
 fails = 0

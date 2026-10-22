@@ -14,9 +14,12 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leakcheck  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = "nf-linger"
-ERRLOG = "/tmp/nf-linger.errlog"
+ERRLOG = leakcheck.file("/tmp/nf-linger.errlog")
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
@@ -89,7 +92,7 @@ def scenario(name):
         return ">8s (still open)"
     finally:
         tmux("kill-window", "-t", target)
-        os.unlink(fake.name)
+        leakcheck.file(fake.name)    # SystemExit mid-scenario still removes it
 
 
 # (scenario, min seconds, max seconds) from "pointer far away" to "card gone";
@@ -101,6 +104,7 @@ EXPECT = {"direct": (0.0, 1.0), "crossed": (0.0, 1.0), "typing": (0.0, 1.0),
 def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
+    leakcheck.install()
     fails = 0
     try:
         os.unlink(ERRLOG)

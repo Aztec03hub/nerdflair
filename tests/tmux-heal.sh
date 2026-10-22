@@ -18,6 +18,25 @@ export TMUX_TMPDIR="$ROOT"
 unset TMUX
 export NF_STATE_DIR="$ROOT/state"   # heal logs failures here, never the real ~/.local/state
 fail=0
+ROOT2="" ROOT3=""
+stop_under() { # dir: kill the tmux servers whose socket lives under it
+  local p
+  for p in $(ss -xlnp 2>/dev/null | grep -F "$1" | grep -o 'pid=[0-9]*' | cut -d= -f2); do
+    [[ "$(cat "/proc/$p/comm" 2>/dev/null)" == "tmux: server" ]] && kill "$p"
+  done
+}
+cleanup() {   # every exit path: kill the scratch servers, remove ONLY the dirs mktemp made
+  trap - EXIT
+  local d
+  for d in "$ROOT" "$ROOT2" "$ROOT3"; do [[ -n "$d" ]] && stop_under "$d"; done
+  sleep 0.3
+  for d in "$ROOT" "$ROOT2" "$ROOT3"; do
+    [[ -n "$d" && -d "$d" && ! -L "$d" && ( "$d" == "${TMPDIR:-/tmp}"/nf-heal-* || "$d" == "${TMPDIR:-/tmp}"/nf-heal2-* || "$d" == "${TMPDIR:-/tmp}/nf heal3-"* ) ]] && rm -rf -- "$d"
+  done
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
 # SIGUSR1 makes the server recreate its socket asynchronously, so "reachable
@@ -52,13 +71,6 @@ mv "$ROOT/removed2" "$ROOT/tmux-$(id -u)"
 
 # kill-server needs a reachable socket, so a failed run would leave the
 # scratch server behind; take it down by the pid the kernel reports for it.
-stop_under() { # dir: kill the tmux servers whose socket lives under it
-  local p
-  for p in $(ss -xlnp 2>/dev/null | grep -F "$1" | grep -o 'pid=[0-9]*' | cut -d= -f2); do
-    [[ "$(cat "/proc/$p/comm" 2>/dev/null)" == "tmux: server" ]] && kill "$p"
-  done
-}
-
 # Two servers, only one with its socket gone. Heal must signal ONLY that one:
 # SIGUSR1 makes a server recreate its socket, so a signalled healthy server
 # shows a new socket inode. The healthy one must keep pid, inode and session.
@@ -81,19 +93,6 @@ check "spaced path: server unreachable" 1 "$(TMUX_TMPDIR="$ROOT3" tmux ls >/dev/
 "$HEAL" 2>/dev/null
 check "spaced path: healed" 0 "$(TMUX_TMPDIR="$ROOT3" reach tmux)"
 
-tmux kill-server 2>/dev/null
-stop_under "$ROOT"; stop_under "$ROOT2"; stop_under "$ROOT3"
-sleep 0.3
-# Remove only the three directories mktemp made, each checked to be a real
-# directory (not a symlink) with the expected prefix: no glob, no guesswork.
-python3 - "$ROOT" "$ROOT2" "$ROOT3" <<'PY'
-import os, shutil, sys, tempfile
-for d in sys.argv[1:]:
-    assert os.path.isdir(d) and not os.path.islink(d), d
-    assert os.path.basename(d).startswith(("nf-heal-", "nf-heal2-", "nf heal3-")), d
-    assert os.path.dirname(d) == os.path.realpath(os.environ.get("TMPDIR") or "/tmp") or os.path.dirname(d) == (os.environ.get("TMPDIR") or "/tmp"), d
-    shutil.rmtree(d)
-PY
 printf '\n'
 (( fail )) && { echo "tmux-heal: FAIL"; exit 1; }
 echo "tmux-heal: PASS"
