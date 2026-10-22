@@ -13,6 +13,7 @@
 #   ./difftest.sh --bash-rev 18b1887       pin side A to a git revision
 #   ./difftest.sh --only 42                run a single case
 #   ./difftest.sh --only 40-60             run a range
+#   ./difftest.sh --only 138-141,145,162   run a comma list of ids and ranges
 #   ./difftest.sh --verbose                show a diff for every case, not just failures
 #   ./difftest.sh --list                   print the corpus index and exit
 #   ./difftest.sh --normalize-countdown    mask rate-limit countdowns before comparing
@@ -34,7 +35,7 @@ BASH_IMPL="$REPO_ROOT/scripts/statusline.sh"
 BASH_IMPL_B=""                       # optional second bash impl (A/B mode)
 BASH_REV=""                          # git rev to extract side A from
 RUST_IMPL="$REPO_ROOT/rust/target/release/nerdflair-statusline"
-ONLY=""
+ONLY=""; ONLY_SET=0
 VERBOSE=0
 LIST_ONLY=0
 NORMALIZE_COUNTDOWN=0
@@ -48,7 +49,7 @@ while (( $# )); do
     --bash)  BASH_IMPL_B="$2"; shift 2 ;;
     --bash-rev) BASH_REV="$2"; shift 2 ;;
     --bash-a) BASH_IMPL="$2"; shift 2 ;;
-    --only)  ONLY="$2"; shift 2 ;;
+    --only)  ONLY="$2"; ONLY_SET=1; shift 2 ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --list)  LIST_ONLY=1; shift ;;
     --normalize-countdown) NORMALIZE_COUNTDOWN=1; shift ;;
@@ -60,6 +61,51 @@ while (( $# )); do
     *) printf 'difftest: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+# --only takes a comma list of ids and ranges: 138-141,145,162. Anything else is an error (exit 2),
+# never "run everything".
+if (( ONLY_SET )); then
+  [[ "$ONLY" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
+    || { echo "difftest: --only '$ONLY' is not a list of ids/ranges like 138-141,145,162" >&2; exit 2; }
+  _r=${ONLY//,/ }
+  for _it in $_r; do
+    [[ "$_it" == *-* ]] && (( 10#${_it%%-*} > 10#${_it##*-} )) \
+      && { echo "difftest: --only range '$_it' is reversed (first id is larger than the last)" >&2; exit 2; }
+  done
+fi
+
+_selected() {
+  local id="$1" item
+  [[ -z "$ONLY" ]] && return 0
+  local n=$((10#$id))
+  local IFS=,
+  for item in $ONLY; do
+    if [[ "$item" == *-* ]]; then
+      (( n >= 10#${item%%-*} && n <= 10#${item##*-} )) && return 0
+    else
+      (( n == 10#$item )) && return 0
+    fi
+  done
+  return 1
+}
+
+# Selection is decided here, before the run dir, the fixtures or any process is started.
+SEL=(); SKIPPED=0
+for _f in "$PAYLOAD_DIR"/*.json; do
+  [[ -e $_f ]] || continue
+  _id=$(basename "$_f" .json)
+  _selected "$_id" && SEL+=("$_id") || SKIPPED=$((SKIPPED+1))
+done
+(( ${#SEL[@]} )) || { echo "difftest: --only '$ONLY' matches no case in the corpus" >&2; exit 2; }
+# Seeding (MCP health, RC records) asks the Rust binary for the cache file names: without it both sides would run unseeded and pass vacuously.
+if [[ ! -x "$RUST_IMPL" ]]; then
+  for _id in "${SEL[@]}"; do
+    if [[ -f "$PAYLOAD_DIR/$_id.env" ]] && rg -q "^CASE_SEED_(MCPHEALTH|RC)='[^']" "$PAYLOAD_DIR/$_id.env"; then
+      echo "difftest: case $_id seeds through the renderer, but RUST_IMPL is not executable: $RUST_IMPL (build it, pass --rust, or select other cases)" >&2; exit 2
+    fi
+  done
+fi
+
 
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { printf 'difftest: -j needs a positive integer\n' >&2; exit 2; }
 
@@ -91,10 +137,9 @@ fi
 [[ -x "$SIDE_A" ]] || { printf 'difftest: side A not executable: %s\n' "$SIDE_A" >&2; exit 2; }
 [[ -x "$SIDE_B" ]] || { printf 'difftest: side B not executable: %s\n' "$SIDE_B" >&2; exit 2; }
 
-# ── Serialise concurrent difftest runs (shared /tmp cache paths) ─────────────
-LOCKFILE="/tmp/nerdflair-difftest.lock"
-exec 9>"$LOCKFILE"
-flock -w 300 9 || { echo "difftest: another run holds the lock" >&2; exit 2; }
+# ponytail: no global run lock. The /tmp/nerdflair-ccusage-UID file is retired (no renderer reads it); the seeded
+# cases only guard that a stray file is ignored, and cases inside one run are serialised by $RUN_DIR/ccusage.lock.
+# Two concurrent runs can clear each other's stray file, which weakens that guard but never fails a case.
 
 # ── Shared /tmp caches the script hard-codes: snapshot and restore ───────────
 # The (retired) ccusage cache is a hard-coded /tmp path. It is Phil's LIVE cache. Save them now, restore on
@@ -283,18 +328,6 @@ if (( LIST_ONLY )); then
   exit 0
 fi
 
-_selected() {
-  local id="$1"
-  [[ -z "$ONLY" ]] && return 0
-  local n=$((10#$id))
-  if [[ "$ONLY" == *-* ]]; then
-    (( n >= 10#${ONLY%%-*} && n <= 10#${ONLY##*-} )) && return 0
-  else
-    (( n == 10#$ONLY )) && return 0
-  fi
-  return 1
-}
-
 # ═════════════════════════════════════════════════════════════════════════════
 # Sandbox construction
 # ═════════════════════════════════════════════════════════════════════════════
@@ -458,7 +491,7 @@ run_side() {
   # repo's status into the output. Pin cwd to an empty non-git directory.
   ( cd "$sbox/neutral" && exec env "${envargs[@]}" "$impl" \
       < "$outdir/payload.json" \
-      > "$outdir/$tag.out" 2> "$outdir/$tag.err" )
+      > "$outdir/$tag.out" 2> "$outdir/$tag.err" {lk}>&- )   # the ccusage lock fd stays in this shell only
   printf '%s' "$?" > "$outdir/$tag.rc"
   exec {lk}>&-
 
@@ -485,7 +518,7 @@ maybe_normalize() {
 # the whole run: a corpus-wide epoch decays as the run proceeds and eventually
 # lets a rate-limit countdown tick over a minute boundary BETWEEN the two sides.
 PINNED_NOW=$EPOCHSECONDS
-TOTAL=0; SAME=0; FAILED=(); NOISY=(); UNSTABLE=(); SKIPPED=0; BOTHFAIL=()
+TOTAL=0; SAME=0; FAILED=(); NOISY=(); UNSTABLE=(); BOTHFAIL=()
 
 printf '%s╭─ difftest: %s%s\n' "$C_DIM" "$MODE" "$C_RST"
 printf '%s│  A = %s%s\n' "$C_DIM" "$SIDE_A" "$C_RST"
@@ -633,10 +666,6 @@ export -f run_case run_side mcp_json_for maybe_normalize resolve_repo
 export JOBS RUN_DIR PAYLOAD_DIR SIDE_A SIDE_B SIDE_A_NAME SIDE_B_NAME RUST_IMPL NORMALIZE_COUNTDOWN VERBOSE \
   FIXROOT FIX_UNICODE NORM_SED C_RED C_GRN C_YEL C_DIM C_RST
 
-SEL=()
-for id in "${CASES[@]}"; do
-  _selected "$id" && SEL+=("$id") || SKIPPED=$((SKIPPED+1))
-done
 TOTAL=${#SEL[@]}
 if (( JOBS == 1 )); then
   for id in "${SEL[@]}"; do run_case "$id"; done
@@ -646,9 +675,8 @@ else
   export TOTAL
   printf '%s\n' "${SEL[@]}" | xargs -P "$JOBS" -I{} bash -c \
     'run_case "$1" > "$RUN_DIR/$1.report" 2>&1; echo "$1" >> "$RUN_DIR/progress"; printf "difftest: %s/%s cases done\n" "$(wc -l < "$RUN_DIR/progress")" "$TOTAL" >&2' _ {}
-  XARGS_RC=$?
   for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report" 2>/dev/null; done
-  (( XARGS_RC )) && printf 'difftest: xargs exited %d (a case crashed)\n' "$XARGS_RC" >&2
+  # a crashed case is caught below by its missing `done` marker (xargs' own status is the last printf's, always 0)
 fi
 for id in "${SEL[@]}"; do
   if [[ -e "$RUN_DIR/$id/fail" || ! -e "$RUN_DIR/$id/done" ]]; then FAILED+=("$id"); KEEP=1; else SAME=$((SAME+1)); fi

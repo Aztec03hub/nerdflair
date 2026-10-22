@@ -1,32 +1,56 @@
 # Checks that finish well under 15 s. One command per line, run from the repo root by tests/quick.sh.
-# The comment after "   #" is the measured wall time (2026-10-23, nice 19 / ionice idle, shared machine, warm cargo target).
+# The comment after "   #" is the measured wall time (2026-10-22, nice 19 / ionice idle, shared machine, warm cargo target).
 # Anything measured over ~10 s lives in heavy.list instead, so a busy machine doesn't turn it into a TIMEOUT.
 python3 band/bridge/mklayout.py --selfcheck   # 0.1s
 python3 band/bridge/nfpty.py --nfpty-selfcheck   # 0.1s
 python3 band/bridge/cells-table.py   # 0.3s
 python3 band/bridge/shadow.py --selfcheck   # 0.1s
+python3 band/bridge/panel.py   # 0.0s, one of bridge-selfchecks.sh's pieces
+python3 band/bridge/logcheck.py   # 0.4s, one of bridge-selfchecks.sh's pieces; mklayout.py --cards-check (11.7s) stays heavy-only
+python3 tests/check-256-safe.py   # 1.3s
 python3 tests/price-recount.py --selfcheck   # 0.0s
 cargo test --release --manifest-path rust/Cargo.toml   # 0.0s warm (a cold build of the test harness is heavy)
 claude plugin test band   # 2.1s
 bash tests/band-switch.sh   # 1.8s
 bash tests/burn-block-golden.sh   # 0.2s
+bash tests/cache-prune.sh   # 0.2s
+bash tests/doctor.sh   # 6.4s, builds fake HOMEs; quick.sh builds the release binary first
 bash tests/difftest-unstable-guard.sh   # 1.0s
 bash tests/empty-home.sh   # 0.0s
-bash tests/gen-payloads.sh   # 1.1s
+bash tests/payloads-fresh.sh   # 1.1s, generates into a temp dir and diffs against tests/payloads (never rewrites the checkout)
 bash tests/install-rc.sh   # 2.3s
 bash tests/json-isolation.sh   # 0.0s
 bash tests/ledger-big.sh   # 1.4s
 bash tests/ledger-concurrency.sh   # 4.4s
+bash tests/ledger-uncovered-dedupe.sh   # 0.5s
 bash tests/ledger-widen.sh   # 0.1s
 bash tests/limits-costless.sh   # 1.3s
 bash tests/mcp-cap.sh   # 0.3s
 bash tests/mcp-per-project.sh   # 4.0s
+bash tests/nonutf8-args.sh   # 0.0s
 bash tests/placeholders.sh   # 1.0s
 bash tests/plugin-sync.sh   # 0.7s
 bash tests/popup-errors.sh   # 0.0s
 bash tests/rc-sync.sh   # 0.2s
+bash tests/real-home-guard-selftest.sh   # 0.1s
 bash tests/row3-gap.sh   # 0.6s
+bash tests/state-tmp-sweep.sh   # 0.1s
 bash tests/tmux-heal.sh   # 0.7s, private TMUX_TMPDIR server
 bash tests/transcript-tail.sh   # 0.9s
+bash tests/untracked-dir.sh   # 0.2s
 bash tests/validate-ledger.sh   # 0.0s, exits 77 (SKIP) without a ledger and the built binary
+bash tests/silent-failures.sh --part 1/10   # 3.9s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 2/10   # 2.4s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 3/10   # 2.9s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 4/10   # 2.5s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 5/10   # 5.2s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 6/10   # 3.4s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 7/10   # 2.7s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 8/10   # 3.7s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 9/10   # 4.4s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/silent-failures.sh --part 10/10   # 2.4s at load1 ~13 (slowest part < 7 s; cargo-test is not in any part, heavy.list runs it)
+bash tests/git-head-fallback.sh --part 1/4   # 4.6s at load1 ~13
+bash tests/git-head-fallback.sh --part 2/4   # 4.0s at load1 ~13
+bash tests/git-head-fallback.sh --part 3/4   # 3.9s at load1 ~13
+bash tests/git-head-fallback.sh --part 4/4   # 4.7s at load1 ~13
 bash tests/difftest.sh --only 1-12 -j 4   # 1.0s

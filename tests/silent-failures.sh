@@ -17,7 +17,42 @@
 #
 # The panic case needs NERDFLAIR_TEST_PANIC=1, a TEST-ONLY switch in the Rust
 # build: there is no natural way to make the renderer panic.
+#
+# Usage: silent-failures.sh [--part N/M] [--list]
+#   no argument   run every case (the default; what the full gate runs)
+#   --part N/M    run the units whose position (1-based, in script order) satisfies (pos-1) % M == N-1,
+#                 so --part 1/2 and --part 2/2 together run every unit exactly once, each in about half the time
+#   --list        print the unit names (one per line, with --part: only that part's) and run nothing.
+#                 `cargo-test` is listed and run only without --part (see cargo_test_on); parts + cargo-test == the plain --list
 set -uo pipefail
+PART_N=1; PART_M=1; LIST=0
+while (( $# )); do
+  case "$1" in
+    --part) [[ "${2:-}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) \
+              || { echo "silent-failures: --part wants N/M with 1 <= N <= M, got '${2:-}'" >&2; exit 2; }
+            PART_N=${BASH_REMATCH[1]}; PART_M=${BASH_REMATCH[2]}; shift 2 ;;
+    --list) LIST=1; shift ;;
+    *) echo "silent-failures: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
+(( LIST )) && exec 3>&1 1>/dev/null   # --list: unit names go to fd 3, the script's own chatter is dropped
+UNIT_POS=0
+unit_on() { # name -> true when this part runs the unit; --list prints it instead
+  UNIT_POS=$((UNIT_POS + 1))
+  (( (UNIT_POS - 1) % PART_M == PART_N - 1 )) || return 1
+  if (( LIST )); then printf '%s\n' "$1" >&3; return 1; fi
+  [[ -z "${SF_TIMES:-}" ]] || printf '  [t=%s] %s\n' "$(date +%s.%N)" "$1" >&2
+  return 0
+}
+# cargo-test is a build that runs as a test, so it is NOT a unit of any --part (it blows 15 s after a Rust edit):
+# only the no-argument run (PART_M == 1, heavy.list) runs it, and --list prints it only then. The coverage proof is:
+# (union of every --part N/M --list) + cargo-test == the no-argument --list.
+cargo_test_on() {
+  (( PART_M == 1 )) || return 1
+  if (( LIST )); then printf 'cargo-test\n' >&3; return 1; fi
+  [[ -z "${SF_TIMES:-}" ]] || printf '  [t=%s] cargo-test\n' "$(date +%s.%N)" >&2
+  return 0
+}
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SH="$REPO/scripts/statusline.sh"
@@ -57,34 +92,30 @@ PY
 trap cleanup EXIT
 
 fail=0
+SKIPS=0
 check() { # label want got
   if [[ "$3" == "$2" ]]; then printf '  PASS  %s\n' "$1"
   else printf '  FAIL  %s\n        want: %s\n        got:  %s\n' "$1" "$2" "$3"; fail=1; fi
 }
 
-# A tools dir holding every binary except git, for the "git is not installed" case.
+# Tools dirs of symlinks to every binary except git (NOGIT: "git is not installed") or except
+# timeout/gtimeout (NOTMO: "no timeout(1)"). Built on first use: a part that has neither case skips ~1.5 s.
+tools_dir() { # dir excluded-name-glob...
+  local dir=$1 d f n x skip; shift
+  [[ -d "$dir" ]] && return 0
+  mkdir -p "$dir"
+  for d in /usr/bin /bin; do
+    [[ -d "$d" ]] || continue
+    for f in "$d"/*; do
+      n="${f##*/}"; skip=0
+      for x in "$@"; do [[ "$n" == $x ]] && skip=1; done
+      (( skip )) && continue
+      [[ -e "$dir/$n" ]] || ln -s "$f" "$dir/$n" 2>/dev/null
+    done
+  done
+}
 NOGIT="$WORK/tools-nogit"
-mkdir -p "$NOGIT"
-for d in /usr/bin /bin; do
-  [[ -d "$d" ]] || continue
-  for f in "$d"/*; do
-    n="${f##*/}"
-    [[ "$n" == git* ]] && continue
-    [[ -e "$NOGIT/$n" ]] || ln -s "$f" "$NOGIT/$n" 2>/dev/null
-  done
-done
-
-# Every binary except timeout/gtimeout, for the "no timeout(1)" case.
 NOTMO="$WORK/tools-notimeout"
-mkdir -p "$NOTMO"
-for d in /usr/bin /bin; do
-  [[ -d "$d" ]] || continue
-  for f in "$d"/*; do
-    n="${f##*/}"
-    [[ "$n" == timeout || "$n" == gtimeout ]] && continue
-    [[ -e "$NOTMO/$n" ]] || ln -s "$f" "$NOTMO/$n" 2>/dev/null
-  done
-done
 
 # ── harness ───────────────────────────────────────────────────────
 CASE_DIR=""
@@ -146,6 +177,7 @@ setup_dirs() { # name impl
 #   KEY "-" means: assert the whole log is empty (a NOISE case).
 run_case() {
   local name=$1 key=$2 want=$3 setup=$4 chk=${5:-} impl n got
+  unit_on "$name" || { WAIT_FOR_LOG=0; return 0; }
   KEY="$key"
   for impl in $IMPLS; do
     setup_dirs "$name" "$impl"
@@ -251,7 +283,7 @@ s_git_dubious() {   # git refusing the repo, as it does for a safe.directory / o
   printf '#!/bin/sh\necho "fatal: detected dubious ownership in repository at '"'"'$PWD'"'"'" >&2\nexit 128\n' > "$CASE_DIR/bin/git"
   chmod +x "$CASE_DIR/bin/git"; CASE_PATH="$CASE_DIR/bin:$PATH"
 }
-s_git_missing() { CASE_PATH="$NOGIT"; }
+s_git_missing() { tools_dir "$NOGIT" "git*"; CASE_PATH="$NOGIT"; }
 s_git_hang() {
   printf '#!/bin/sh\nexec sleep 30\n' > "$CASE_DIR/bin/git"; chmod +x "$CASE_DIR/bin/git"
   CASE_PATH="$CASE_DIR/bin:$PATH"; CASE_ENV+=(NERDFLAIR_PROC_TIMEOUT_MS=300)
@@ -319,7 +351,7 @@ s_git_killed() {   # a git SIGKILLed long before the deadline: logged as an exte
   CASE_PATH="$CASE_DIR/bin:$PATH"; rm -f -- "$(git_cache_path)"
 }
 s_git_killed_notimeout() {   # no deadline exists, so a SIGKILL cannot be a deadline hit
-  s_git_killed; CASE_PATH="$CASE_DIR/bin:$NOTMO"
+  s_git_killed; tools_dir "$NOTMO" timeout gtimeout; CASE_PATH="$CASE_DIR/bin:$NOTMO"
 }
 chk_git_killed() {
   if [[ -e "$CASE_DIR/stamps/nerdflair-err-$(id -u)-git_hung" ]]; then printf '  FAIL  git-killed: the hang back-off was armed by an external kill\n'; fail=1
@@ -700,13 +732,16 @@ run_case cache-leaf-symlink       -  0 s_cache_leaf_link chk_cache_leaf_link
 
 # _nf_err's once-per-process memo must compare keys literally: 'spawn:*' is a new key
 # after 'spawn:abc', not a glob that matches it (nor may it silence later keys).
+if unit_on lib-nf-err-memo; then
 _memo_lines=$( ( export HOME="$WORK/memo-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/memo-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR"
   source "$REPO/scripts/lib.sh"; _nf_err 'spawn:abc' one; _nf_err 'spawn:*' two; _nf_err 'spawn:xyz' three
   wc -l < "$HOME/.claude/nerdflair-errors.log" ) 2>/dev/null )
 check "lib.sh _nf_err memo: keys with glob characters are literal (3 lines)" 3 "${_memo_lines//[[:space:]]/}"
+fi
 
 # hooks/bell.sh reads the same state file but not the renderer: a non-numeric chime_volume must be
 # defaulted and logged by lib.sh, or awk reads "loud" as 0 and the hook mutes itself silently.
+if unit_on bell-chime-volume; then
 BV="$WORK/bell-vol"; mkdir -p "$BV/home/.claude/nerdflair" "$BV/stamps" "$BV/work"
 printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_sound":"Glass","chime_volume":"loud","chime_style":"random","chime_events":"Notification,Stop","color":"vibrant","last_session":"","chime_recent_styles":[]}' > "$BV/home/.claude/nerdflair/state.json"
 ( cd "$BV/work" && printf '{"hook_event_name":"Stop","session_id":"%s-b"}' "$TAG" | timeout 20 env -i PATH="$PATH" HOME="$BV/home" TMPDIR="$BV" \
@@ -714,13 +749,16 @@ printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_
 check "bell.sh: a non-numeric chime_volume is logged by the hook (1 line)" 1 "$(rg -cF ' chime-volume: ' "$BV/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
 _bv=$( ( export HOME="$BV/home" NERDFLAIR_ERR_STAMP_DIR="$BV/stamps2"; mkdir -p "$NERDFLAIR_ERR_STAMP_DIR"; source "$REPO/scripts/lib.sh"; _nf_read_state; printf '%s' "$NF_CUR_CHIME_VOLUME" ) 2>/dev/null )
 check "lib.sh: a non-numeric chime_volume is defaulted to 1 for every consumer" 1 "$_bv"
+fi
 
 # _nf_cache_put leaves noclobber and umask as it found them.
+if unit_on cache-put-noclobber; then
 _ncs=$( ( export HOME="$WORK/nc-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/nc-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR" "$WORK/nc-c"
   source "$REPO/scripts/lib.sh"; umask 022
   _nf_cache_put "$WORK/nc-c/a" x; [[ -o noclobber ]] && printf 'on ' || printf 'off '
   set -o noclobber; _nf_cache_put "$WORK/nc-c/b" y; [[ -o noclobber ]] && printf 'on ' || printf 'off '; umask ) 2>/dev/null )
 check "lib.sh _nf_cache_put: restores noclobber (off, on) and umask 022" "off on 0022" "$(printf '%s' "$_ncs" | tr -s ' \n' ' ' | sed 's/ $//')"
+fi
 
 # A healthy _nf_cache_dir after a recovered failure must cost exactly what it costs with no
 # failure history (no extra fork): counted in a private pid namespace, where pids are exact.
@@ -736,24 +774,30 @@ _forks() { # dir mode(clean|recovered) -> forks one _nf_cache_dir call costs
   unshare -U --map-user="$(id -u)" -pf --mount-proc env -i PATH="$PATH" HOME="$d/h" NERDFLAIR_ERR_STAMP_DIR="$d/st" NERDFLAIR_CACHE_DIR="$d/c" \
     bash -c 'source "$1/scripts/lib.sh"; a=$(echo $BASHPID); _nf_cache_dir; b=$(echo $BASHPID); echo $((b-a-1))' _ "$REPO" 2>/dev/null
 }
+if unit_on cache-dir-fork-count; then
 _f_clean=$(_forks "$WORK/fk-clean" clean); _f_rec=$(_forks "$WORK/fk-rec" recovered)
-SKIPS=0
 if [[ -z "$_f_clean" ]]; then
   if [[ "${NF_ALLOW_SKIP_NS:-0}" == 1 ]]; then printf '  SKIP  fork count (no user/pid namespaces here; NF_ALLOW_SKIP_NS=1)\n'; SKIPS=$((SKIPS + 1))
   else printf '  FAIL  fork count: user+pid namespaces are unavailable (set NF_ALLOW_SKIP_NS=1 to skip it on purpose)\n'; fail=1; fi
 else check "lib.sh _nf_cache_dir: a healthy call after a recovered failure forks no more than a clean one" "$_f_clean" "$_f_rec"; fi
+fi
 
 # The Rust unit tests (util::tests, the chmod fallback) run here, because this script already needs the build.
-SKIPS=${SKIPS:-0}
 if command -v cargo >/dev/null; then
+  if cargo_test_on; then
   check "cargo test --release: the Rust unit tests pass" ok "$(cargo test --release --manifest-path "$REPO/rust/Cargo.toml" >"$WORK/cargo-test.out" 2>&1 && echo ok || { tail -n 5 "$WORK/cargo-test.out" >&2; echo fail; })"
+  fi
+  if unit_on log-sanitizers; then
   bash "$REPO/tests/log-sanitizers.sh" >"$WORK/sanitizers.out" 2>&1; _san=$?
   if (( _san == 0 )); then printf '  PASS  log-sanitizers.sh: the five filter copies agree on every case\n'
   else printf '  FAIL  log-sanitizers.sh (rc %s)\n' "$_san"; rg '^  FAIL|log-sanitizers:' "$WORK/sanitizers.out" | head -n 12 | sed 's/^/        /'; fail=1; fi
-elif [[ "${NF_ALLOW_SKIP_CARGO:-0}" == 1 ]]; then
-  printf '  SKIP  cargo test and log-sanitizers (cargo not found; NF_ALLOW_SKIP_CARGO=1)\n'; SKIPS=$((SKIPS + 1))
-else
-  printf '  FAIL  cargo not found: the Rust unit tests cannot run (set NF_ALLOW_SKIP_CARGO=1 to skip them on purpose)\n'; fail=1
+  fi
+elif unit_on log-sanitizers; then   # no cargo: report once (in the part that owns log-sanitizers), not in every part
+  if [[ "${NF_ALLOW_SKIP_CARGO:-0}" == 1 ]]; then
+    printf '  SKIP  cargo test and log-sanitizers (cargo not found; NF_ALLOW_SKIP_CARGO=1)\n'; SKIPS=$((SKIPS + 1))
+  else
+    printf '  FAIL  cargo not found: the Rust unit tests cannot run (set NF_ALLOW_SKIP_CARGO=1 to skip them on purpose)\n'; fail=1
+  fi
 fi
 
 echo
@@ -762,6 +806,7 @@ run_case noise-lock-contention    -  0 s_noise_lock chk_noise_lock
 run_case noise-baseline-not-a-repo-missing-optional-files - 0 s_none
 
 echo
+(( LIST )) && exit 0
 rhg_check || fail=1
 (( fail )) && { echo "silent-failures: FAIL"; exit 1; }
 # A skipped check is not a pass: 77 is the convention for "could not run" (see ledger-concurrency.sh).

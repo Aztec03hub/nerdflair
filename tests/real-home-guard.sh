@@ -2,14 +2,15 @@
 # real-home-guard.sh - sourced by test scripts. A test run must not put ITS OWN failures into the
 # REAL $HOME/.claude/nerdflair-errors.log (a panic in an un-isolated call once did: U6). Real
 # sessions append to the same file while a suite runs, so the line count alone proves nothing.
-#   rhg_snapshot   at the top, before any temp HOME is exported
+#   rhg_snapshot   at the top, before any temp HOME is exported. quick.sh / full.sh run each check under a temp
+#                  HOME and export NF_REAL_HOME (the HOME they started with); the guard watches that one.
 #   rhg_check      at the end; returns 1 only if a line appended since the snapshot contains
 #                  `panic`, this suite's temp prefix (${TMPDIR:-/tmp}/nf-) or this script's pid.
 #                  Other appended lines are a printed warning count. If the log shrank or its last
 #                  line changed (trimmed/rotated) the check is skipped with a note.
 # Read-only on the real HOME; skipped when the log does not exist.
 rhg_snapshot() {
-  RHG_LOG="${HOME:-/nonexistent}/.claude/nerdflair-errors.log"
+  RHG_LOG="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.claude/nerdflair-errors.log"
   RHG_PID=$$
   RHG_SIZE=-1
   [[ -f "$RHG_LOG" ]] || return 0

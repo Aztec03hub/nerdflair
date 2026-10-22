@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# no-leaks.sh - the tmux e2e scripts must leave nothing behind: no nf-* temp dir, no tmux socket, no live server.
-#
-# Runs logcheck.py, cells-table.py and one short hover-highlight scenario (resized, about 5 s) with TMPDIR and TMUX_TMPDIR pointed at
-# ONE scratch dir, so "what is left" is exactly what those runs created (the shared /tmp has other sessions'
-# files in it). Afterwards that dir must hold no nf-* entry and no socket. Whatever a leaky script left is killed
-# (by socket path) and removed before this script exits, so a FAIL does not itself leak.
+# no-leaks.sh - four things must leave nothing behind: band/bridge/logcheck.py, band/bridge/cells-table.py,
+# the hover-highlight-e2e `resized` scenario and tests/tmux-heal.sh. After each: no nf-* entry, no tmux socket file and
+# no live tmux server (one whose socket file was deleted counts) under that run's scratch dir.
+# Each runs with TMPDIR and TMUX_TMPDIR pointed at ONE scratch dir per run (about 5 s for the e2e, the rest less), so "what is left" is exactly
+# what that run created (the shared /tmp has other sessions' files in it). Whatever a leaky script left is killed
+# (by socket path, or by pid for a server whose socket was deleted) and removed before this script exits, so a FAIL does not itself leak.
+# NOT covered: hover-covered/linger/stale-e2e (they need the ambient tmux, so they are run by hand; they now keep their
+# flags, error logs and fake scripts in $NF_E2E_TMP or a leakcheck.mkdtemp dir).
 # Never touches the ambient tmux: TMUX is unset and every run has its own TMUX_TMPDIR.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,8 +35,14 @@ run() {   # label, command...: run with a private TMPDIR/TMUX_TMPDIR, no ambient
   else
     printf '  FAIL  %s exited non-zero (%s)\n' "$label" "$?"; tail -5 "$D.out" | sed 's/^/      /'; fail=1
   fi
-  local left
+  local left live
   left=$(find "$R" -mindepth 1 \( -name 'nf-*' -o -name 'nf heal*' -o -type s \) 2>/dev/null | sed "s|^$R/||" | head -5 | tr '\n' ' ')
+  # a live server whose socket file was deleted is invisible to find: ss still lists its path (the tmux-heal scenario)
+  live=$(ss -xlnpH 2>/dev/null | rg -F " $R/" | rg -o 'pid=[0-9]+' | sort -u | tr '\n' ' ')
+  if [[ -n "$live" ]]; then
+    left="$left live-server($live)"
+    for p in ${live//pid=/}; do kill "$p" 2>/dev/null; done    # the exact pids ss listed under our own scratch dir
+  fi
   if [[ -z "$left" ]]; then printf '  PASS  %s left no nf-* dir and no tmux socket\n' "$label"
   else printf '  FAIL  %s LEAKED: %s\n' "$label" "$left"; fail=1
     find "$R" -type s -print0 2>/dev/null | while IFS= read -r -d '' s; do tmux -S "$s" kill-server 2>/dev/null; done

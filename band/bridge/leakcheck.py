@@ -8,6 +8,7 @@ atexit run). Cleanup is idempotent. At exit it asserts none of ITS OWN names rem
 """
 import atexit
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,6 +27,18 @@ def mkdtemp(prefix):
     d = tempfile.mkdtemp(prefix=prefix)
     _dirs.append(d)
     return d
+
+
+_e2e_tmp = None
+
+
+def e2e_tmp():
+    """Scratch dir for an e2e script's flags, error logs and fake scripts: $NF_E2E_TMP (the caller owns it), else a
+    private mkdtemp that cleanup removes. Never the shared /tmp, never the real ~/.claude."""
+    global _e2e_tmp
+    if _e2e_tmp is None:
+        _e2e_tmp = os.environ.get("NF_E2E_TMP") or mkdtemp("nf-e2e-")
+    return _e2e_tmp
 
 
 def file(path):
@@ -64,13 +77,37 @@ def _own_sockets():
     return out
 
 
+def server_pids(sock):
+    """PIDs listening on the unix socket path `sock`, even when its file was deleted (the kernel keeps the name)."""
+    try:
+        out = subprocess.run(["ss", "-xlnpH"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids = []
+    for line in out.splitlines():
+        if f" {sock} " in line:
+            pids += [int(x) for x in re.findall(r"pid=(\d+)", line)]
+    return pids
+
+
+def _kill_orphans(sock):
+    """A server whose socket file is gone cannot be reached by `tmux kill-server`: kill the PID that still holds the name."""
+    for pid in server_pids(sock):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
 def cleanup():
     """Kill our servers, remove their sockets and our dirs. Returns the own names still present."""
     for s in _own_sockets():
         if os.path.exists(s):
             _kill("-S", s)
     for n in _L:
-        if os.path.exists(_sockpath(n)):
+        if not os.path.exists(_sockpath(n)):
+            _kill_orphans(_sockpath(n))    # the socket file was deleted but the server may still run
+        else:
             _kill("-L", n)
             try:
                 os.unlink(_sockpath(n))    # a SIGKILLed server leaves the file behind

@@ -14,6 +14,7 @@ sees, bytes on the pty, is the same.
 """
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -23,12 +24,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import leakcheck  # noqa: E402
 WIN = "nf-covered"
-ERRLOG = leakcheck.file("/tmp/nf-covered.errlog")
+ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-covered.errlog"))
 
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
-F, G = "/tmp/nf-covered.flag", "\U000f024b"
+F, G = os.environ["NF_FLAG"], "\U000f024b"   # the runner passes the flag path in the environment
 def status():
     sys.stdout.write("\033[2J\033[48;1H  " + G + " nerdflair · \U000f062c main · x")
     sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h"); sys.stdout.flush()
@@ -57,7 +58,7 @@ def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
     leakcheck.install()
-    flag = leakcheck.file("/tmp/nf-covered.flag")
+    flag = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-covered.flag"))
     try:
         os.unlink(ERRLOG)
     except FileNotFoundError:
@@ -65,13 +66,13 @@ def main():
     with open(flag, "w") as f:
         f.write("status")
     fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
-                                       dir=os.path.expanduser("~/.claude"))
+                                       dir=leakcheck.e2e_tmp())
     leakcheck.file(fake.name)
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)
     tmux("new-window", "-d", "-n", WIN,
-         f"NFPTY_ERRLOG={ERRLOG} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+         f"NF_FLAG={shlex.quote(os.path.join(leakcheck.e2e_tmp(), 'nf-covered.flag'))} NFPTY_ERRLOG={shlex.quote(ERRLOG)} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     fails = 0
 

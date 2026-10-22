@@ -9,6 +9,7 @@ from "pointer moved far away" until the card is gone (capped at 8 s):
 """
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ import leakcheck  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = "nf-linger"
-ERRLOG = leakcheck.file("/tmp/nf-linger.errlog")
+ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-linger.errlog"))
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
@@ -57,11 +58,11 @@ def hover(target, col, row):
 
 
 def scenario(name):
-    fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=os.path.expanduser("~/.claude"))
+    fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=leakcheck.e2e_tmp())
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)
-    tmux("new-window", "-d", "-n", WIN, f"NFPTY_ERRLOG={ERRLOG} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+    tmux("new-window", "-d", "-n", WIN, f"NFPTY_ERRLOG={shlex.quote(ERRLOG)} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     try:
         time.sleep(2)
