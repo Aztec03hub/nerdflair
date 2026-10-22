@@ -11,7 +11,7 @@
 //! Twin of the rc block in statusline.sh; same grammar, same wording.
 //!
 //! No file at all = the plugin is not loaded: show nothing, invent nothing.
-//! A corrupt file, or an "on" nobody has refreshed for 120 s (the plugin writes
+//! A corrupt file, or an "on" or "off" nobody has refreshed for 120 s (the plugin writes
 //! at least every 30 s), is shown as UNKNOWN (amber) and logged once.
 
 use crate::colors::RESET;
@@ -132,8 +132,8 @@ pub fn segment(session: &str) -> String {
         errlog::note("rc", &format!("{} is corrupt; remote control state unknown", p.display()));
         return draw(St::Unknown, "");
     };
-    if rec.state == St::On && file_age(&p) > STALE_SECS {
-        errlog::note("rc-stale", &format!("{} is over {} s old while on; the band plugin is not refreshing it, remote control state unknown", p.display(), STALE_SECS));
+    if rec.state != St::Unknown && file_age(&p) > STALE_SECS {
+        errlog::note("rc-stale", &format!("{} is over {} s old; the band plugin is not refreshing it, remote control state unknown", p.display(), STALE_SECS));
         return draw(St::Unknown, "");
     }
     draw(rec.state, &rec.label)

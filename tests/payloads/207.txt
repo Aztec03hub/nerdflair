@@ -1,1 +1,1 @@
-row3 gap: COLUMNS=60 MCP=none with the RC chip
+rc: session id a_b does not read the record of a/b (no collision): no readout

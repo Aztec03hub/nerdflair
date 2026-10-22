@@ -1,1 +1,1 @@
-row3 gap: COLUMNS=200 MCP=none
+row3 gap: COLUMNS=150 MCP=none with the RC chip

@@ -1,1 +1,1 @@
-row3 gap: COLUMNS=60 MCP=none
+rc: session id a/b finds its own record

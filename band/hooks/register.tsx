@@ -1,5 +1,21 @@
 import type { Hook, Register } from 'claude-code'
 
+// THE CODE SWITCH FOR THE BAND ROW (the AbovePrompt row this file draws).
+//
+// The row is OFF by default. It is kept in code for debugging and iteration, not as a feature:
+// the Remote Control readout it used to carry now lives on the main status line.
+// The row is drawn only if this constant is true OR the runtime debug flag is on
+// (NERDFLAIR_BAND_DEBUG=1, or the file ~/.claude/nerdflair/band-debug; `--rc-sync` reports it as `debug=1`).
+// Flip it to true to draw the row always; leave it false and touch the flag to draw it on demand.
+// Hidden does NOT mean idle: the plugin still runs the Remote Control sync and writes the rc-<session>
+// state file the main status line reads. A fault (HOME lookup, no session id, a failing sync, an old binary
+// with no debug= line) forces the row open, showing the error, ONLY while no record has been written
+// successfully in this plugin instance: until then the main line shows nothing at all, which looks the
+// same as "plugin not installed", so the fault would be invisible. Once one sync has succeeded, later
+// faults are log-only: the record stops being refreshed and the main line goes amber "unknown" after 120 s. After editing this file run band/sync-local-plugin.sh, then /reload-plugins.
+const BAND_ROW_ENABLED = false
+let bandRowEnabled = BAND_ROW_ENABLED // module state like the rest, so resetStateForTests() can restore it
+
 // The nerdflair status line, drawn as a tree instead of a line of text, so
 // each readout can light under the pointer and explain itself.
 //
@@ -343,17 +359,22 @@ const RC_FAIL_MS = 5000
 const RC_TICK_MS = 5000
 const RC_ABORT_MS = 500
 let rcDebug = false // the last answer: draw the band row?
-// A sync that fails draws the band too: its red row is where the fault is explained, and hiding the
-// row would hide the one thing that says the record (and so the status line chip) is not being kept.
+// rcEverWrote: a sync has succeeded, so a record exists and the main line can age it into amber unknown.
+// rcFault: a fault is outstanding (cleared by the next good sync or HOME lookup). While no record has
+// ever been written it opens the row (this also covers a first failing sync with the flag on: the
+// flag is only learned from a good answer, so the fault itself must open the row).
+let rcEverWrote = false
 let rcFault = false
-let rcError = '' // why, for the band row; cleared by the next good sync
+let homeFault = false // the HOME lookup is failing: nothing can be synced until it works
+let rcError = '' // why, for the band row (when drawn); cleared by the next good sync
 let rcNextAt = 0
 let rcInflight: Promise<void> | null = null
 
 // Returns whether the band row is to be drawn.
 async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
-  if (!HOME) return true // no renderer path: the band is where that is reported
-  if (now < rcNextAt) return rcDebug || rcFault
+  const draw = () => bandRowEnabled || rcDebug || (!rcEverWrote && (rcFault || homeFault))
+  if (!HOME) return draw() // no renderer path: reported (lookupHome) to the log, and to the row if it is drawn
+  if (now < rcNextAt) return draw()
   await (rcInflight ??= (async () => {
     try {
       const sid = await $.session.id()
@@ -374,6 +395,7 @@ async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
         return
       }
       rcDebug = m[1] === '1'
+      rcEverWrote = true
       rcFault = false
       rcError = ''
       rcNextAt = now + RC_SYNC_MS
@@ -391,7 +413,7 @@ async function rcSync($: RenderArgs[0], now: number): Promise<boolean> {
   })().finally(() => {
     rcInflight = null
   }))
-  return rcDebug || rcFault
+  return draw()
 }
 
 async function rcTick($: RenderArgs[0]): Promise<boolean> {
@@ -418,11 +440,17 @@ export function resetStateForTests(): void {
   rcSeen = []
   rcSinceGuess = false
   rcDebug = false
+  rcEverWrote = false
   rcFault = false
+  homeFault = false
   rcError = ''
   rcNextAt = 0
   rcInflight = null
+  bandRowEnabled = BAND_ROW_ENABLED
 }
+
+// Test seam: the engine never calls this. It reads the committed default; a test pins it to false.
+export const bandRowDefaultForTests = (): boolean => BAND_ROW_ENABLED
 
 export const register: Register = on => {
   // The record must not depend on the band being drawn.
@@ -497,6 +525,14 @@ async function lookupHome($: RenderArgs[0], now: number): Promise<void> {
       try {
         const h = await $.process.run(['printenv', 'HOME'], { timeoutMs: 2000 })
         HOME = h.exitCode === 0 ? h.stdout.trim() : ''
+        if (HOME) {
+          // F4: a HOME fault that has healed must not be drawn later as a stale marker.
+          homeFault = false
+          if (lastError.startsWith('HOME lookup:')) {
+            seen.delete(lastError)
+            lastError = ''
+          }
+        }
         if (!HOME) why = `printenv HOME exit ${h.exitCode}, ${h.stdout.trim() ? 'output unusable' : 'empty'}: ${h.stderr || '(no stderr)'}`
         if (homeAbortStreak >= ABORT_REPORT_AFTER) note($, 'HOME lookup', `recovered after ${homeAbortStreak} aborted renders`)
         homeAbortStreak = 0
@@ -510,7 +546,10 @@ async function lookupHome($: RenderArgs[0], now: number): Promise<void> {
           why = `printenv HOME failed: ${err}`
         }
       }
-      if (!HOME && why) report($, 'HOME lookup', why)
+      if (!HOME && why) {
+        report($, 'HOME lookup', why)
+        homeFault = true
+      }
     })().finally(() => {
       homeLookup = null
     })
@@ -797,6 +836,7 @@ async function band($: RenderArgs[0], e: RenderArgs[1]) {
         'the renderer did not say whether Remote Control is on',
         rcRaw === undefined ? 'no remote_control segment in its output' : `it sent "${rcRaw.slice(0, 40)}"`,
         'the binary may be out of step with this plugin; see the debug log',
+        'the main line also reads unknown when its record is over 120 s old (on or off) or corrupt; see the error log',
       ]
     : rcOn
     ? [
