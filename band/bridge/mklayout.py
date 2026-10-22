@@ -67,7 +67,7 @@ CARDS = [
         "workspace.project_dir, else current_dir",
     ]),
     ("branch", "\U000f062c|^[A-Za-z][\\w.-]*:[\\w/.…-]+$", "Branch", (125, 211, 252), [
-        "branch from `git rev-parse --abbrev-ref HEAD`, cached 5s",
+        "branch from `git rev-parse --abbrev-ref HEAD`, cached 3s",
         "a worktree branch in the payload wins over git",
     ]),
     ("dirty", "|" + r"\[\+\d","Working tree and divergence", (251, 191, 36), [

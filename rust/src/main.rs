@@ -49,7 +49,11 @@ fn main() {
         errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
     }
     let input = String::from_utf8_lossy(&buf).into_owned();
-    let out = render(&input);
+    let mut out = render(&input);
+    // --json is the band plugin's call: its `ansi` field is never drawn, so leave it untouched.
+    if colors::clamp256_active() && !json_mode() {
+        out = colors::safe256_sgr(&out);
+    }
     let mut so = std::io::stdout().lock();
     // EPIPE means the host went away (it kills slow renderers); that is not a
     // renderer fault and stdout is no place to report it. Anything else is.
@@ -1474,9 +1478,10 @@ fn render_inner(input: &str) -> Result<String, String> {
         // spend is simply missing, and an undercount looks like a real figure.
         let covered = !ledger_cut || (oldest > 0 && oldest <= now - win);
         if !covered {
-            errlog::note(
+            errlog::note_every(
                 "ledger-uncovered",
                 &format!("tail cap {} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                86_400,
             );
         }
         if span > 0 && span >= min_span && spent > 0.0 && covered && now - newest <= stale_after {
@@ -1595,9 +1600,10 @@ fn render_inner(input: &str) -> Result<String, String> {
                 // read as fact.
                 let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
                 if !covered {
-                    errlog::note(
+                    errlog::note_every(
                         "ledger-uncovered",
                         &format!("tail cap {} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                        86400,
                     );
                 }
                 block_segment = if !covered {
@@ -1722,7 +1728,8 @@ fn render_inner(input: &str) -> Result<String, String> {
         }
     }
     // No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
-    if compact_segment.is_empty() && used10.is_some() {
+    // Not in --json: the band's payload never has samples, so it would always show the placeholder.
+    if compact_segment.is_empty() && used10.is_some() && !json_mode() {
         compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
@@ -2301,6 +2308,10 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
                 if ucount > 100 {
                     break;
                 }
+                // A nested worktree or repo is listed as a directory: no lines to count.
+                if d.join(file).is_dir() {
+                    continue;
+                }
                 match std::fs::read(d.join(file)) {
                     Ok(bytes) => added += bytes.iter().filter(|b| **b == b'\n').count() as i64,
                     // A file listed then gone (a race) is normal; anything else
@@ -2811,7 +2822,7 @@ struct Sample { epoch: i64, used10: i64, api_ms: i64 }
 /// per-session and account-wide state file alone (sample ring, ledger, repo-cost
 /// stamp, limits-last), or it corrupts what the real status line measured.
 fn json_mode() -> bool {
-    std::env::args().any(|a| a == "--json")
+    std::env::args_os().any(|a| a == "--json")
 }
 
 /// Account-wide last-known rate limits, in the private cache dir. One line:
@@ -3007,7 +3018,8 @@ fn norm_key_dir(s: &str) -> String {
 
 /// At most once a day, delete per-project probe files (`nerdflair-mcphealth-UID-<crc>` and its siblings) whose
 /// mtime is 14+ days old: a probe touches its cache every few minutes while the project is in use, so these
-/// are projects nobody has opened. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
+/// are projects nobody has opened. The same pass drops per-session repo-cost stamps and orphan
+/// `nerdflair-*.tmp.*` files as old as the MCP files. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
 fn prune_mcp_caches(cache: &Path, uid: u32) {
     if json_mode() || std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
         return;
@@ -3023,12 +3035,18 @@ fn prune_mcp_caches(cache: &Path, uid: u32) {
     let prefix = format!("nerdflair-mcphealth-{}-", uid);
     let max_age = env_int("NERDFLAIR_MCP_PRUNE_DAYS", 14) * 86400;
     let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let rc_prefix = format!("nerdflair-repocost-{}-", uid); // per-session stamps (not the -total- memo)
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // Symlinks are skipped (never aged, never removed), like bash. The old shared file
-        // `nerdflair-mcphealth-UID` (never read since the per-project change) is pruned too.
+        // Symlinks and directories are skipped (never aged, never removed), like bash. Also pruned at the
+        // same age: the old shared file `nerdflair-mcphealth-UID`, per-session repo-cost stamps and
+        // orphan `nerdflair-*.tmp.<pid>` files (a writer killed between create and rename).
         let is_link = e.file_type().map_or(true, |t| t.is_symlink());
-        if !is_link && (name.starts_with(&prefix) || name == format!("nerdflair-mcphealth-{}", uid)) && file_age(&e.path()) >= max_age {
+        let swept = !is_link
+            && (name.starts_with(&rc_prefix) || (name.starts_with("nerdflair-") && name.contains(".tmp.")))
+            && e.metadata().ok().map_or(false, |m| m.is_file())
+            && file_age(&e.path()) >= max_age;
+        if swept || (!is_link && (name.starts_with(&prefix) || name == format!("nerdflair-mcphealth-{}", uid)) && file_age(&e.path()) >= max_age) {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
             }

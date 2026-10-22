@@ -22,6 +22,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mklayout  # noqa: E402
+import leakcheck  # noqa: E402
 
 ROW = 48
 ROOT = os.path.join(HERE, "..", "..")
@@ -171,8 +172,8 @@ class Run:
 
     def __init__(self, name, env="", count=False, rows=50, row=ROW):
         self.rows, self.rown = rows, row
-        self.sock = f"nf-hl-{name}-{os.getpid()}"
-        self.dir = tempfile.mkdtemp(prefix="nf-hl-")
+        self.sock = leakcheck.tmux_L(f"nf-hl-{name}-{os.getpid()}")
+        self.dir = leakcheck.mkdtemp("nf-hl-")
         self.flag = os.path.join(self.dir, "flag")
         self.errlog = os.path.join(self.dir, "err.log")
         self.fake = os.path.join(self.dir, "fake.py")
@@ -484,7 +485,7 @@ def real_pick():
     80 columns) the halves of a row only two spaces apart. [(label, ansi rows, [(row index, col, width, text)])];
     the spans are the TRUE ones, from the renderer's own segment texts and the gauge's lone label."""
     import shutil
-    cdir, base = tempfile.mkdtemp(prefix="nf-hl-real-"), tempfile.mkdtemp(prefix="nf-hl-real-fx-")
+    cdir, base = leakcheck.mkdtemp("nf-hl-real-"), leakcheck.mkdtemp("nf-hl-real-fx-")
     picked, seen = [], set()
     try:
         fx = mklayout._cards_fixtures(base)
@@ -876,5 +877,5 @@ def main():
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    leakcheck.install()    # SIGINT/SIGTERM unwind through finally + atexit; SIG_DFL here used to skip all cleanup
     main()

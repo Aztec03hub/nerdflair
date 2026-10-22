@@ -14,7 +14,37 @@ if ! _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX" 2>/dev/null); then
   _SL_BUF="${HOME:-}/.claude/.nerdflair-sl.$$"
 fi
 exec 3>&1 1>"$_SL_BUF"
-trap '_nf_rc=$?; cat "$_SL_BUF" >&3; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
+# Claude Code clamps its output to 256 colours when $TMUX is set and
+# CLAUDE_CODE_TMUX_TRUECOLOR is empty (chalk level 2, ansi-styles
+# rgbToAnsi256). Schemes remap indices 16 and 17 (Catppuccin Mocha: peach,
+# rosewater), so near-black colours that land there would show orange. In that
+# mode _nf_flush sends every 38;2/48;2 colour through _nf_safe256, which swaps
+# a would-be 16/17 for a grey on the 232-255 ramp. Twin of colors::safe256 /
+# safe256_sgr in rust/src/colors.rs; both must agree byte for byte.
+_nf_safe256() { # r g b -> sets _s256 to "r;g;b"
+  local r=$((10#$1)) g=$((10#$2)) b=$((10#$3)) l
+  if (( r == g && g == b ? r < 8 : (r <= 25 && g <= 25 && b <= 76) )); then
+    l=$(( (299*r + 587*g + 114*b + 500) / 1000 )); (( l < 8 )) && l=8
+    _s256="$l;$l;$l"
+  else
+    _s256="$1;$2;$3"
+  fi
+}
+_nf_flush() {
+  if [[ -z "${TMUX:-}" || -n "${CLAUDE_CODE_TMUX_TRUECOLOR:-}" ]]; then
+    cat "$_SL_BUF" >&3; return
+  fi
+  local rest out="" re='[[;]([34]8);2;([0-9]+);([0-9]+);([0-9]+)' _s256
+  IFS= read -r -d '' rest < "$_SL_BUF"
+  while [[ $rest =~ $re ]]; do
+    out+="${rest%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[0]:0:1}${BASH_REMATCH[1]};2;"
+    _nf_safe256 "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    out+="$_s256"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  printf '%s' "$out$rest" >&3
+}
+trap '_nf_rc=$?; _nf_flush; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
 
 # ── Shared library ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -509,6 +539,7 @@ if [[ -n "$git_dir" ]]; then
         [[ -z "$ufile" ]] && continue
         (( _ucount++ ))
         (( _ucount > 100 )) && break
+        [[ -d "$ufile" ]] && continue   # a nested worktree or repo is listed as a directory
         # a file listed then gone is a race and normal; unreadable is not
         if [[ -e "$ufile" && ! -r "$ufile" ]]; then _nf_err git-untracked-read "cannot read $ufile"; fi
         ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
@@ -1693,6 +1724,13 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
           [[ -L "$_pr_f" || ! -e "$_pr_f" ]] && continue
           (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
+        # Same pass, same age (NERDFLAIR_MCP_PRUNE_DAYS): per-session repo-cost stamps (not the -total-
+        # memo) and orphan `nerdflair-*.tmp.*` files (a writer killed between create and rename).
+        # Symlinks and directories are skipped entirely, like the rest of this prune.
+        for _pr_f in "${_mh_cache%/*}/nerdflair-repocost-${UID}-"* "${_mh_cache%/*}/nerdflair-"*.tmp.*; do
+          [[ -f "$_pr_f" && ! -L "$_pr_f" ]] || continue
+          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        done
       else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
     fi
   fi
@@ -2077,7 +2115,7 @@ if [[ -n "$_ledger" ]]; then
   # is simply missing, and an undercount looks like a real figure.
   _bcov=1
   (( _ledger_cut == 1 )) && { (( _bold > 0 && _bold <= EPOCHSECONDS - _bw )) || _bcov=0; }
-  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
   if (( _bspan > 0 && _bspan >= _bmin && _bcov == 1 && EPOCHSECONDS - _bnew <= _bstale )) 2>/dev/null; then
     _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>"$_SL_BUF.err") \
       || _nf_err burn-awk "awk burn rate failed: $(head -n 1 "$_SL_BUF.err")"
@@ -2198,7 +2236,7 @@ elif [[ -n "$_ledger" && -n "${_rl_blk_reset:-}" ]]; then
       # absolute amount of money, and a quietly low one is read as fact.
       _kcov=1
       (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
-      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
       if (( _kcov == 1 )); then
         _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>"$_SL_BUF.err") \
           || _nf_err burn-awk "awk billing block failed: $(head -n 1 "$_SL_BUF.err")"
