@@ -1682,6 +1682,13 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
           [[ -e "$_pr_f" ]] || continue
           (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
+        # Same pass, 14+ days old: per-session repo-cost stamps (not the -total- memo) and orphan
+        # `*.tmp.*` files (a writer killed between create and rename). stat without -L judges a
+        # symlink itself; a link is removed, never followed; directories are skipped.
+        for _pr_f in "${_mh_cache%/*}/nerdflair-repocost-${UID}-"* "${_mh_cache%/*}/"*.tmp.*; do
+          [[ -f "$_pr_f" || -L "$_pr_f" ]] || continue
+          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= 1209600 )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        done
       else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
     fi
   fi
