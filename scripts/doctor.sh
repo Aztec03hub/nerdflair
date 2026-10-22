@@ -12,6 +12,7 @@ export LC_ALL=C   # byte-order globbing: the source hash must list files exactly
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 json=0; [[ "${1:-}" == "--json" ]] && json=1
+command -v jq >/dev/null || { echo "doctor: BROKEN: jq is not installed (nerdflair needs it); fix: sudo apt install jq" >&2; exit 1; }
 BIN="$HOME/.local/bin/nerdflair-statusline"
 SETTINGS="$HOME/.claude/settings.json"
 NF="$HOME/.nerdflair"
@@ -59,7 +60,7 @@ fi
 if out="$(bash "$REPO/band/sync-local-plugin.sh" --check 2>&1)"; then
   row ok plugin "${out#nerdflair-band: }"
 else
-  row BROKEN plugin "$(printf '%s' "$out" | sed -n 's/^nerdflair-band: //; s/ Run band.*//; p' | paste -sd ';' -)" \
+  row BROKEN plugin "$(printf '%s' "$out" | sed -n 's/^nerdflair-band: //; s/ Run band.*//; p' | paste -sd '|' - | sed 's/|/; /g')" \
     "bash $REPO/band/sync-local-plugin.sh   # then /reload-plugins in every session"
 fi
 

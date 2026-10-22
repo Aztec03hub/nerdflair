@@ -136,5 +136,8 @@ expect "names /reload-plugins as a follow-up" 0 '/reload-plugins'
 fresh; rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" NERDFLAIR_PLUGIN_DEST="$H/plug" \
   NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run 2>&1)" || rc=$?
 expect "nothing to do when everything matches" 0 'nothing to do'
+fresh; echo '# edited' >> "$H/.nerdflair/bin/claude"; rc=0; out="$(env -i HOME="$H" PATH="$H/.nerdflair/bin:$S:/usr/bin:/bin" NERDFLAIR_CACHE_DIR="$H/cache" \
+  NERDFLAIR_PLUGIN_DEST="$H/plug" NERDFLAIR_INSTALLED_PLUGINS="$H/installed.json" bash "$REPO/scripts/deploy.sh" --dry-run 2>&1)" || rc=$?
+expect "plans hover/install.sh for a stale shim, and new shells" 0 'open new shells'
 
 (( fail == 0 )) && echo "doctor: all passed" || { echo "doctor: FAILURES"; exit 1; }
