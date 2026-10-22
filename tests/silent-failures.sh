@@ -171,11 +171,14 @@ run_case() {
   done
   # Logging must never change what is printed: the twins agree byte for byte.
   if [[ "$IMPLS" == "rust bash" ]]; then
-    if cmp -s "$WORK/$name-rust/out.$RENDERS" "$WORK/$name-bash/out.$RENDERS"; then
+    # The rate-limit countdown ("/2h13m") is masked: the two renders run a moment apart and a minute boundary
+    # between them is not a renderer difference (limits-costless and the difftest cover the countdown text).
+    mask_cd() { sed -E 's#/[0-9]+h[0-9][0-9]m#/CD#g; s#/[0-9]+[dm]#/CD#g' "$1"; }
+    if cmp -s <(mask_cd "$WORK/$name-rust/out.$RENDERS") <(mask_cd "$WORK/$name-bash/out.$RENDERS"); then
       printf '  PASS  %s: stdout byte-identical (rust vs bash)\n' "$name"
     else
       printf '  FAIL  %s: stdout differs (rust vs bash)\n' "$name"; fail=1
-      diff <(cat -v "$WORK/$name-rust/out.$RENDERS") <(cat -v "$WORK/$name-bash/out.$RENDERS") | head -6 | sed 's/^/        /'
+      diff <(mask_cd "$WORK/$name-rust/out.$RENDERS" | cat -v) <(mask_cd "$WORK/$name-bash/out.$RENDERS" | cat -v) | head -6 | sed 's/^/        /'
     fi
   fi
   WAIT_FOR_LOG=0

@@ -121,8 +121,7 @@ pub fn render_bar(
     }
 
     // Logo shows only on a completely empty bar.
-    // (A "--" label is the gauge with no source: the label shows instead of the logo.)
-    let logo_on = pct == 0 && label != "--";
+    let logo_on = pct == 0;
     let logo_len = LOGO_ICONS.len() as i64;
     let mut logo_start = 0i64;
     let mut logo_end = 0i64;
