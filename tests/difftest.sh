@@ -391,7 +391,7 @@ run_side() {
   if [[ -n "${CASE_SEED_MCPHEALTH:-}" ]]; then
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"
     printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}"
-    extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
+    extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999" "NERDFLAIR_MCP_CACHE=$CACHE_DIR/nerdflair-mcphealth-${UID}")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")
   fi

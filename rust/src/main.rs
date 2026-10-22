@@ -505,7 +505,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
         // No cache dir: no probe cache either (already logged as cache-dir).
-        let mh = mcp_cache_path(uid);
+        let mh = mcp_cache_path(uid, if project_dir.is_empty() { &cwd } else { &project_dir });
         match mh.as_ref().map(std::fs::read_to_string) {
             None => {}
             Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
@@ -1329,7 +1329,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
 
     // ── MCP health ───────────────────────────────────────────────
-    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now);
+    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, if project_dir.is_empty() { &cwd } else { &project_dir });
 
     // ── Time, cost, speed ────────────────────────────────────────
     let mut api_fmt = String::new();
@@ -2574,7 +2574,7 @@ fn shq_bare(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
+fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, String) {
     let ttl = env_int("NERDFLAIR_MCP_HEALTH_TTL", 300);
     let mut ok = String::new();
     let mut bad = String::new();
@@ -2588,7 +2588,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
         errlog::note("mcp-no-claude", "claude is not on PATH; MCP health probe disabled");
         return (ok, bad, warn, names);
     }
-    let Some(cache) = mcp_cache_path(uid) else {
+    let Some(cache) = mcp_cache_path(uid, key_dir) else {
         return (ok, bad, warn, names); // no cache dir: no probe (already logged as cache-dir)
     };
     let lock = PathBuf::from(format!("{}.lock", cache.display()));
@@ -2640,7 +2640,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     };
     if !fresh && idle {
         let script = format!(
-            "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
+            "{cd}exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
              _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 2>\"$_ef\"); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
@@ -2670,6 +2670,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
                || printf '%s %s mcp-probe-write: cannot update %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" {cache} >> {log}; \
              else touch {cache} 2>/dev/null; fi",
             tmo = env_int("NERDFLAIR_MCP_PROBE_TIMEOUT", 30).clamp(1, 600),
+            cd = if key_dir.is_empty() { String::new() } else { format!("cd {} 2>/dev/null; ", shq(key_dir)) },
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
             // Empty when no safe stamp directory exists: the script then logs without a rate limit.
@@ -2881,10 +2882,14 @@ fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
 /// `NERDFLAIR_MCP_CACHE` exists so a test can own its cache. Without it the
 /// path is a single shared /tmp file that a test run cannot isolate, and
 /// running the suite spawns a real probe against every configured server.
-fn mcp_cache_path(uid: u32) -> Option<PathBuf> {
+///
+/// The default file is keyed by the project dir (cksum, like the git cache):
+/// `claude mcp list` is cwd-dependent, so one shared file let a 11/11 from one
+/// project show in another. The probe also runs from that dir.
+fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
     match std::env::var("NERDFLAIR_MCP_CACHE") {
         Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
-        _ => cache_path(&format!("nerdflair-mcphealth-{}", uid)),
+        _ => cache_path(&format!("nerdflair-mcphealth-{}-{}", uid, cksum(key_dir.as_bytes()))),
     }
 }
 

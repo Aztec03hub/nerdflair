@@ -264,7 +264,13 @@ _mcp_probe_names=""
 # exactly the disagreement between the two that the probe exists to prevent.
 # Empty when there is no private cache dir (then no probe cache and no probe).
 if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _MCP_CACHE="$NERDFLAIR_MCP_CACHE"
-else _nf_cache_path "nerdflair-mcphealth-${UID}"; _MCP_CACHE="$_NF_CP"; fi
+else
+  # Keyed by the project dir (cksum, like the git cache): `claude mcp list` is cwd-dependent, so one shared
+  # file let a 11/11 from one project show in another. The probe also runs from this dir.
+  _mcp_key_dir="${project_dir:-$cwd}"
+  _mcp_key_crc=$(printf '%s' "$_mcp_key_dir" | cksum | cut -d' ' -f1)
+  _nf_cache_path "nerdflair-mcphealth-${UID}-${_mcp_key_crc}"; _MCP_CACHE="$_NF_CP"
+fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
   # `read` exits 1 at EOF without a trailing newline and the probe writes none:
   # the variables ARE set, so the `|| true` is correct, not an absorbed error.
@@ -1635,6 +1641,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
   # runs forever.
   if [[ "$_mh_fresh" == "false" ]]; then
     (
+      [[ -n "${_mcp_key_dir:-}" ]] && { cd "$_mcp_key_dir" 2>/dev/null || true; }
       exec 9>>"$_mh_lock" 2>/dev/null \
         || { _nf_err flock-open "cannot open MCP probe lock $_mh_lock; probe never runs"; exit 0; }
       flock -n 9 || exit 0   # a probe already running: normal, silent
