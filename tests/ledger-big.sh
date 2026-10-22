@@ -31,7 +31,7 @@ render() { # impl -> prints "cpu_ms rssKB" then the output on later lines
   printf '{"session_id":"lb-%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":1.5,"total_duration_ms":600000,"total_api_duration_ms":240000},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":%s}}}' \
     "$RANDOM" "$W/work" "$W/work" "$((NOW + 9000))" > "$W/in.json"
   local t0=$SECONDS
-  /usr/bin/time -f '%M %U %S' -o "$W/rss" env -i PATH="$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
+  LC_ALL=C /usr/bin/time -f '%M %U %S' -o "$W/rss" env -i PATH="$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 \
     NERDFLAIR_CACHE_DIR="$d" NERDFLAIR_ERR_STAMP_DIR="$W/st-$RANDOM" NERDFLAIR_MCP_HEALTH=0 \
     NERDFLAIR_REPO_COST_FILE="$W/ledger.tsv" NERDFLAIR_REPO_COST_MAXBYTES=999999999 "${cmd[@]}" < "$W/in.json" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$W/out.txt"
   local rss u sy; read -r rss u sy < <(tail -n 1 "$W/rss")   # %U %S are seconds with two decimals, e.g. 0.12 0.03
