@@ -2065,7 +2065,7 @@ if [[ -n "$_ledger" ]]; then
   # is simply missing, and an undercount looks like a real figure.
   _bcov=1
   (( _ledger_cut == 1 )) && { (( _bold > 0 && _bold <= EPOCHSECONDS - _bw )) || _bcov=0; }
-  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+  (( _bcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
   if (( _bspan > 0 && _bspan >= _bmin && _bcov == 1 && EPOCHSECONDS - _bnew <= _bstale )) 2>/dev/null; then
     _burn_val=$(awk "BEGIN {s=${_bspent:-0}; if (s>0) printf \"%.2f\", s / (${_bspan} / 3600.0)}" 2>"$_SL_BUF.err") \
       || _nf_err burn-awk "awk burn rate failed: $(head -n 1 "$_SL_BUF.err")"
@@ -2186,7 +2186,7 @@ elif [[ -n "$_ledger" && -n "${_rl_blk_reset:-}" ]]; then
       # absolute amount of money, and a quietly low one is read as fact.
       _kcov=1
       (( _ledger_cut == 1 )) && { (( _kold > 0 && _kold <= _blk_start )) || _kcov=0; }
-      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)"
+      (( _kcov == 0 )) && _nf_err ledger-uncovered "tail cap ${_LEDGER_CAP} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)" 86400
       if (( _kcov == 1 )); then
         _kfmt=$(awk "BEGIN {s=${_kspent:-0}; if (s>0) printf \"%.2f\", s}" 2>"$_SL_BUF.err") \
           || _nf_err burn-awk "awk billing block failed: $(head -n 1 "$_SL_BUF.err")"

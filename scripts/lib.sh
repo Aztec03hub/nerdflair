@@ -156,13 +156,13 @@ _nf_log_line() {
   printf 'nerdflair: cannot write %s | %s: %s\n' "$NF_ERR_LOG" "$_k" "$_r" >&2
   return 1
 }
-_nf_err() {
+_nf_err() {   # KEY REASON [SECS: rate limit, default 3600; twin of errlog::note_every]
   local _k="$1" _st
   [[ "$_NF_MEM" == *" $_k "* ]] && return 0    # once per process whatever the stamp says
   _NF_MEM+="${_k} "
   _nf_stamp "$_k"
   _st="$_NF_STAMP"
-  if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < 3600 )); then return 0; fi
+  if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < ${3:-3600} )); then return 0; fi
   # Log, then stamp whether or not the append worked: an unwritable log would
   # otherwise make every render retry and write to stderr.
   _nf_log_line "$_k" "${2:-}" || true   # 1 = fell back to stderr: still not an error for the caller

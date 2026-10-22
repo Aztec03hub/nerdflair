@@ -1478,9 +1478,10 @@ fn render_inner(input: &str) -> Result<String, String> {
         // spend is simply missing, and an undercount looks like a real figure.
         let covered = !ledger_cut || (oldest > 0 && oldest <= now - win);
         if !covered {
-            errlog::note(
+            errlog::note_every(
                 "ledger-uncovered",
                 &format!("tail cap {} bytes does not reach the burn window start; burn hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                86_400,
             );
         }
         if span > 0 && span >= min_span && spent > 0.0 && covered && now - newest <= stale_after {
@@ -1599,9 +1600,10 @@ fn render_inner(input: &str) -> Result<String, String> {
                 // read as fact.
                 let covered = !ledger_cut || (oldest > 0 && oldest <= block_start);
                 if !covered {
-                    errlog::note(
+                    errlog::note_every(
                         "ledger-uncovered",
                         &format!("tail cap {} bytes does not reach the billing block start; block hidden (raise NERDFLAIR_LEDGER_TAIL_BYTES)", ledger_cap),
+                        86400,
                     );
                 }
                 block_segment = if !covered {
