@@ -222,9 +222,29 @@ fn write_state(path: &Path, s: &State) {
     atomic_write(path, &jqx::pretty(&Value::Object(obj)));
 }
 
+/// Delete `<state file>.tmp.*` regular files older than an hour: a kill between creating the
+/// temp and the rename leaves one behind for good. Twin of lib.sh `_nf_state_heal`.
+fn sweep_stale_tmp(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
+    let prefix = format!("{}.tmp.", name.to_string_lossy());
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        if !e.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let stale = e.metadata().ok().filter(|m| m.is_file()) // symlink_metadata: DirEntry does not follow
+            .and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok())
+            .map_or(false, |a| a.as_secs() > 3600);
+        if stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// Write via temp + rename. Failure is logged (key `state-write`) and the
 /// orphan temp removed; the return value tells the caller whether it landed.
 fn atomic_write(path: &Path, contents: &str) -> bool {
+    sweep_stale_tmp(path);
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let res = std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path));
     match res {

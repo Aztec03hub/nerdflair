@@ -23,6 +23,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SH="$REPO/scripts/statusline.sh"
 BIN="$REPO/rust/target/release/nerdflair-statusline"
 [[ -x "$BIN" ]] || { echo "silent-failures: not built: $BIN" >&2; exit 2; }
+. "$REPO/tests/real-home-guard.sh"; rhg_snapshot
 BASH_BIN="$(command -v bash)"
 RENDERS=4
 NOW=$(date +%s)
@@ -761,6 +762,7 @@ run_case noise-lock-contention    -  0 s_noise_lock chk_noise_lock
 run_case noise-baseline-not-a-repo-missing-optional-files - 0 s_none
 
 echo
+rhg_check || fail=1
 (( fail )) && { echo "silent-failures: FAIL"; exit 1; }
 # A skipped check is not a pass: 77 is the convention for "could not run" (see ledger-concurrency.sh).
 if (( ${SKIPS:-0} )); then echo "silent-failures: PASS ($SKIPS SKIPPED on purpose: NF_ALLOW_SKIP_NS / NF_ALLOW_SKIP_CARGO)"; exit 77; fi
