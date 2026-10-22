@@ -261,19 +261,29 @@ bash "$INSTALL" install >/dev/null 2>&1 || true
 out=$(bash "$INSTALL" uninstall 2>&1); rc=$?
 check "uninstall: a never-installed watcher unit is not a failure (exit 0)" 0 "$rc"
 check "uninstall: and it prints no warning for it" 0 "$(grep -c 'could not stop' <<<"$out")"
-# enable --now never restarts a running service: install restarts it only when the installed watcher or unit changed.
-printf '#!/bin/sh\necho "$*" >> "$SC_LOG"\nexit 0\n' > "$ROOT/stub/systemctl"
-export SC_LOG="$ROOT/systemctl.log"
+# enable --now never restarts a running service: install restarts it only when it was running and the installed watcher or
+# unit changed. The stub answers is-active from $SC_ACTIVE, so "was it running" is under the test's control.
+export SC_LOG="$ROOT/systemctl.log" SC_ACTIVE="$ROOT/unit-active"
+printf '#!/bin/sh\ncase "$*" in *is-active*) [ -f "$SC_ACTIVE" ]; exit $? ;; esac\necho "$*" >> "$SC_LOG"\nexit 0\n' > "$ROOT/stub/systemctl"
 restarts() { grep -c 'try-restart nf-tmux-watch' "$SC_LOG" 2>/dev/null || true; }
-: > "$SC_LOG"; bash "$INSTALL" uninstall >/dev/null 2>&1; : > "$SC_LOG"
+: > "$SC_LOG"; rm -f "$SC_ACTIVE"; bash "$INSTALL" uninstall >/dev/null 2>&1; : > "$SC_LOG"
 bash "$INSTALL" install >/dev/null 2>&1
-check "install: new watcher files restart the service" 1 "$(restarts)"
+check "install: new files, unit was not running (enable --now started it): no restart" 0 "$(restarts)"
+: > "$SC_ACTIVE"
+W="$HOME/.nerdflair/bin/nf-tmux-watch"; U="$HOME/.config/systemd/user/nf-tmux-watch.service"
+touch -d @1000000000 "$W" "$U"
 bash "$INSTALL" install >/dev/null 2>&1
-check "reinstall: nothing changed, no restart" 1 "$(restarts)"
-echo '# edited' >> "$HOME/.nerdflair/bin/nf-tmux-watch"; bash "$INSTALL" install >/dev/null 2>&1
-check "reinstall: installed watcher differed, restarted" 2 "$(restarts)"
-echo '# edited' >> "$HOME/.config/systemd/user/nf-tmux-watch.service"; bash "$INSTALL" install >/dev/null 2>&1
-check "reinstall: installed unit differed, restarted" 3 "$(restarts)"
+check "reinstall: nothing changed, no restart" 0 "$(restarts)"
+check "reinstall: nothing changed, the watcher's mtime is untouched (doctor compares it with the service start)" 1000000000 "$(stat -c %Y "$W")"
+check "reinstall: nothing changed, the unit's mtime is untouched" 1000000000 "$(stat -c %Y "$U")"
+echo '# edited' >> "$W"; bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: installed watcher differed, running unit restarted" 1 "$(restarts)"
+check "reinstall: ...and the watcher is back to the source" 0 "$(cmp -s "$W" "$REPO/band/hover/nf-tmux-watch"; echo $?)"
+echo '# edited' >> "$U"; bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: installed unit differed, running unit restarted" 2 "$(restarts)"
+rm -f "$SC_ACTIVE"; echo '# edited' >> "$W"; bash "$INSTALL" install >/dev/null 2>&1
+check "reinstall: changed watcher but the unit was not running: no restart" 2 "$(restarts)"
+check "the unit lets a heal child outlive a restart (KillMode=process)" 1 "$(grep -c '^KillMode=process$' "$U")"
 bash "$INSTALL" uninstall >/dev/null 2>&1
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
 

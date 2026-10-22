@@ -34,6 +34,7 @@ cleanup() {   # every exit path: kill the scratch servers, remove ONLY the dirs 
   for d in "$ROOT" "$ROOT2" "$ROOT3"; do
     [[ -n "$d" && -d "$d" && ! -L "$d" && ( "$d" == "${TMPDIR:-/tmp}"/nf-heal-* || "$d" == "${TMPDIR:-/tmp}"/nf-heal2-* || "$d" == "${TMPDIR:-/tmp}/nf heal3-"* ) ]] && rm -rf -- "$d"
   done
+  rhg_done
 }
 trap cleanup EXIT
 trap 'exit 143' TERM

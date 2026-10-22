@@ -33,6 +33,9 @@ HEAVY="${NF_HEAVY:-$(command -v heavy || true)}"
 # The build log lives in it too: a fixed /tmp name could be a planted symlink.
 R=$(mktemp -d) || exit 2
 trap 'rm -rf "$R"' EXIT
+# This run's own scratch root: every check inherits it (mktemp, python tempfile), and tests/real-home-guard.sh blames a log
+# line on this run only if it names this exact dir, never another session's /tmp/nf-* or /tmp/tmp.*.
+export TMPDIR="$R"
 # shellcheck disable=SC2086
 # the test profile is built too, so quick.list's `cargo test --release` doesn't compile under its 15 s cap
 for sub in "build --release" "test --release --no-run"; do

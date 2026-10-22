@@ -162,19 +162,24 @@ case "${1:-install}" in
     watch_changed=0; unit_changed=0
     cmp -s "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch" || watch_changed=1
     cmp -s "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service" || unit_changed=1
-    install -m 755 "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch"
+    # Copy only when the content differs: install(1) bumps the mtime of an identical file, and doctor reads "file newer than
+    # the running service" as "running older code".
+    (( watch_changed )) && install -m 755 "$HERE/nf-tmux-watch" "$NF/bin/nf-tmux-watch"
     install -m 644 "$HERE/nf-log.sh" "$NF/bin/nf-log.sh"
     # A user service that notices a deleted tmux socket the moment it happens,
     # logs what was running, and repairs it. No systemd user manager is not an
     # error (everything else works without it) but it is said, not skipped quietly.
     if systemctl --user show-environment >/dev/null 2>&1; then
       mkdir -p "$HOME/.config/systemd/user"
-      install -m 644 "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service"
+      (( unit_changed )) && install -m 644 "$HERE/nf-tmux-watch.service" "$HOME/.config/systemd/user/nf-tmux-watch.service"
       # A flaky user manager must not abort the rest, but must not be hidden either.
       out=$(systemctl --user daemon-reload 2>&1) || warn "install: WARNING systemctl daemon-reload failed: ${out//$'\n'/ }"
+      # enable --now starts a stopped unit on the new code already; only a unit that was running needs the restart (and a
+      # needless one counts toward StartLimitBurst).
+      was_active=0; systemctl --user is-active --quiet nf-tmux-watch.service 2>/dev/null && was_active=1
       if out=$(systemctl --user enable --now nf-tmux-watch.service 2>&1); then
         echo "  tmux socket watcher running"
-        if (( watch_changed || unit_changed )); then
+        if (( was_active && (watch_changed || unit_changed) )); then
           out=$(systemctl --user try-restart nf-tmux-watch.service 2>&1) \
             && echo "  tmux socket watcher restarted on the new code" \
             || warn "install: WARNING tmux socket watcher not restarted: ${out//$'\n'/ }"

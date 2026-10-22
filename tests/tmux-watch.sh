@@ -24,6 +24,7 @@ cleanup() {   # every exit path: kill our scratch server and watcher, remove ONL
   stop_scratch
   sleep 0.3
   if [[ -d "$ROOT" && ! -L "$ROOT" && "$ROOT" == "${TMPDIR:-/tmp}"/nf-watch-* ]]; then rm -rf -- "$ROOT"; fi
+  rhg_done
 }
 trap cleanup EXIT
 trap 'exit 143' TERM

@@ -53,6 +53,9 @@ HEALS_PER_HOUR = 6
 # $XDG_RUNTIME_DIR/tmux-UID of the service's own environment. Any other tmux-UID dir (tests, throwaway
 # TMUX_TMPDIRs under /tmp/x, /var/tmp, /dev/shm...) is scratch: logging it makes every test run an incident.
 # The watcher's own tests set NF_TMUX_WATCH_SCRATCH=1 to watch their scratch servers.
+# NOTE: this allow-list sees only the SERVICE's environment (systemd's user manager: HOME, PATH, XDG_RUNTIME_DIR), never
+# the login shell's. A TMUX_TMPDIR set only in a shell leaves that server's socket outside the list, unwatched; put it
+# in the unit's Environment= (and reinstall) if you ever set one.
 WATCH_SCRATCH = os.environ.get("NF_TMUX_WATCH_SCRATCH") == "1"
 
 

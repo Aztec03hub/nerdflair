@@ -157,8 +157,13 @@ else
   # claude-tmp-fix.timer is not installed or documented by this repo (added with no reason in 1ac67d0): not checked
   for u in nf-tmux-watch.service; do
     st="$(systemctl --user is-active "$u" 2>/dev/null)"
-    started="$(systemctl --user show -p ActiveEnterTimestamp --value "$u" 2>/dev/null)"   # date -d "" would mean midnight
-    [[ -n "$started" ]] && started="$(date -d "$started" +%s 2>/dev/null)"
+    # Start time = now - the main process's age. ActiveEnterTimestamp would need `date -d` on a timezone abbreviation
+    # (CDT, AEDT, IST...), which date rejects or reads by its own rule.
+    started=""; mpid="$(systemctl --user show -p MainPID --value "$u" 2>/dev/null)"
+    if [[ "$mpid" =~ ^[1-9][0-9]*$ ]]; then
+      age="$(ps -o etimes= -p "$mpid" 2>/dev/null | tr -d ' ')"
+      [[ "$age" =~ ^[0-9]+$ ]] && started=$(( $(date +%s) - age ))
+    fi
     mt="$(stat -c %Y "$NF/bin/nf-tmux-watch" 2>/dev/null)"
     if [[ "$st" == active && -n "$started" && -n "$mt" ]] && (( started < mt )); then
       row warn "$u" "active but started before $NF/bin/nf-tmux-watch was installed (running older code)" "systemctl --user restart $u"
@@ -187,8 +192,7 @@ for path in sys.argv[1:]:
     for ln in lines:
         m = re.match(r"(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(Z|[+-]\d{4})?\s+(.*)", ln)
         if not m:
-            # nfpty.degrade() logs a timestamped "failed, hover disabled" line, then a bare traceback: that is a hover crash.
-            # (The launcher is shell and nf-tmux-watch's crashes go to the journal, so only nfpty-error.log can hold one.)
+            # A bare traceback after an in-window line is a crash too (the "failed, hover disabled" header below is the primary signal).
             if recent and ln.startswith("Traceback (most recent call last)"): panic = True
             continue
         d, t, z, rest = m.groups()
@@ -207,6 +211,9 @@ for path in sys.argv[1:]:
         k = k.group(0) if k else "?"
         # a process-snapshot line (nf-tmux-watch lists what ran: "pid=N ppid=N ...") is another program's text, never ours
         if "panic" in ln and not re.match(r"pid=\d+ ppid=\d+ age=", rest): panic = True
+        # nfpty.degrade() (reached only through Guard._fail, an unexpected exception in decoration code) writes this header
+        # and switches hover off for that session: a hover bug. Only nfpty writes it, so the header is the structured signal.
+        if re.search(r"\bfailed, hover disabled\b", rest): panic = True
         c, newest = keys.get(k, (0, 0)); keys[k] = (c + 1, max(newest, ts))
     if not keys:
         print(f"ok\t{name}\tnothing in 24 h"); continue

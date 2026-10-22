@@ -11,9 +11,9 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 B="$HERE/band/bridge"
+. "$HERE/tests/real-home-guard.sh"; rhg_snapshot   # first: it may make this run's TMPDIR, which D must live under
 D=$(mktemp -d "${TMPDIR:-/tmp}/nf-noleaks-XXXXXX") || exit 1
 fail=0
-. "$HERE/tests/real-home-guard.sh"; rhg_snapshot
 
 cleanup() {   # only the dir mktemp made; live servers found under it are killed by their exact socket path first
   trap - EXIT
@@ -23,6 +23,7 @@ cleanup() {   # only the dir mktemp made; live servers found under it are killed
     rm -rf -- "$D"
     rm -f -- "$D.out"
   fi
+  rhg_done
 }
 trap cleanup EXIT
 trap 'exit 143' TERM

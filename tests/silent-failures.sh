@@ -88,6 +88,7 @@ for n in os.listdir("/tmp"):
         try: os.remove(os.path.join("/tmp", n))
         except OSError: pass
 PY
+  rhg_done
 }
 trap cleanup EXIT
 
