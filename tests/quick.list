@@ -29,4 +29,12 @@ bash tests/row3-gap.sh   # 0.6s
 bash tests/tmux-heal.sh   # 0.7s, private TMUX_TMPDIR server
 bash tests/transcript-tail.sh   # 0.9s
 bash tests/validate-ledger.sh   # 0.0s, exits 77 (SKIP) without a ledger and the built binary
+bash tests/silent-failures.sh --part 1/5   # 7.1s; the 5 parts together run every case once (full form in heavy.list)
+bash tests/silent-failures.sh --part 2/5   # 8.8s; the 5 parts together run every case once (full form in heavy.list)
+bash tests/silent-failures.sh --part 3/5   # 5.8s; the 5 parts together run every case once (full form in heavy.list)
+bash tests/silent-failures.sh --part 4/5   # 7.5s; the 5 parts together run every case once (full form in heavy.list)
+bash tests/silent-failures.sh --part 5/5   # 9.0s; the 5 parts together run every case once (full form in heavy.list)
+bash tests/git-head-fallback.sh --part 1/3   # 5.9s; the 3 parts together run every case once (full form in heavy.list)
+bash tests/git-head-fallback.sh --part 2/3   # 5.4s; the 3 parts together run every case once (full form in heavy.list)
+bash tests/git-head-fallback.sh --part 3/3   # 6.1s; the 3 parts together run every case once (full form in heavy.list)
 bash tests/difftest.sh --only 1-12 -j 4   # 1.0s

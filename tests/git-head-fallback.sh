@@ -2,7 +2,30 @@
 # git-head-fallback.sh - when git hangs (or is missing) the branch still shows, read from
 # .git/HEAD: plain repo, subdirectory, linked worktree (.git is a file), detached HEAD.
 # A fake `git` that sleeps stands in for a hung filesystem. Both renderers.
+#
+# Usage: git-head-fallback.sh [--part N/M] [--list]
+#   no argument   run every case (the default)
+#   --part N/M    run the cases whose position (1-based, script order) satisfies (pos-1) % M == N-1; the M parts
+#                 together run every case exactly once. Most of the time is renders waiting out the 300 ms hung git.
+#   --list        print the case names (with --part: only that part's) and run nothing
 set -uo pipefail
+PART_N=1; PART_M=1; LIST=0
+while (( $# )); do
+  case "$1" in
+    --part) [[ "${2:-}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) \
+              || { echo "git-head-fallback: --part wants N/M with 1 <= N <= M, got '${2:-}'" >&2; exit 2; }
+            PART_N=${BASH_REMATCH[1]}; PART_M=${BASH_REMATCH[2]}; shift 2 ;;
+    --list) LIST=1; shift ;;
+    *) echo "git-head-fallback: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
+UNIT_POS=0
+unit_on() { # name -> true when this part runs the case; --list prints it instead
+  UNIT_POS=$((UNIT_POS + 1))
+  (( (UNIT_POS - 1) % PART_M == PART_N - 1 )) || return 1
+  if (( LIST )); then printf '%s\n' "$1"; return 1; fi
+  return 0
+}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${NF_BIN:-$REPO/rust/target/release/nerdflair-statusline}"; SH="${NF_SH:-$REPO/scripts/statusline.sh}"
 [[ -x "$BIN" ]] || { echo "git-head-fallback: not built: $BIN" >&2; exit 2; }
@@ -27,6 +50,7 @@ render() { # impl dir
 }
 for impl in rust bash; do
   while IFS='|' read -r label dir want; do
+    unit_on "$impl $label" || continue
     out=$(render "$impl" "$dir" | head -n 1)
     [[ "$out" == *"$want"* ]] || { echo "FAIL $impl $label: want '$want' in: $out"; fail=1; }
   done <<EOF
@@ -44,7 +68,9 @@ n=0
 mkcase() { # label head-bytes(printf format) want -> creates $W/h$n/.git/HEAD; prints the dir
   local d="$W/hc$RANDOM$RANDOM"; mkdir -p "$d/.git/refs"; printf "$2" > "$d/.git/HEAD"; echo "$d"
 }
+UNIT_ON=0
 check_pair() { # label dir want
+  UNIT_ON=0; unit_on "$1" || return 0; UNIT_ON=1
   local r b; r=$(render rust "$2" | head -n 1); b=$(render bash "$2" | head -n 1)
   [[ "$r" == *"$3"* ]] || { echo "FAIL rust $1: want '$3' in: $r"; fail=1; }
   [[ "$b" == *"$3"* ]] || { echo "FAIL bash $1: want '$3' in: $b"; fail=1; }
@@ -78,9 +104,10 @@ t0=$EPOCHREALTIME; check_pair "huge HEAD" "$d" 'xxxx'; t1=$EPOCHREALTIME
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs" "$d/inner.git/refs"
 printf 'ref: refs/heads/outer-branch\n' > "$d/.git/HEAD"; printf 'ref: refs/heads/inner-branch\n' > "$d/inner.git/HEAD"
 check_pair "nested bare repo" "$d/inner.git" 'inner-branch'
-r=$(render rust "$d/inner.git" | head -n 1); [[ "$r" != *outer-branch* ]] || { echo "FAIL nested bare repo: outer branch shown"; fail=1; }
+(( UNIT_ON )) && { r=$(render rust "$d/inner.git" | head -n 1); [[ "$r" != *outer-branch* ]] || { echo "FAIL nested bare repo: outer branch shown"; fail=1; }; }
 # without a working iconv bash must not silently show nothing: printable ASCII, and the cause is logged
 mkdir -p "$W/noiconv"; printf '#!/bin/sh\nexit 127\n' > "$W/noiconv/iconv"; chmod +x "$W/noiconv/iconv"
+if unit_on "no iconv: ASCII branch and logged cause"; then
 d=$(mkcase x 'ref: refs/heads/feat\303\251x\n')
 cmd=(bash "$SH"); [[ -x "$BIN" ]] || true
 nd="$W/c-noiconv"; mkdir -m 700 "$nd"; rm -f "$W/home/.claude/nerdflair-errors.log"
@@ -89,12 +116,17 @@ o=$(printf '{"session_id":"ni","workspace":{"current_dir":"%s","project_dir":"%s
     NERDFLAIR_ERR_STAMP_DIR="$W/st-noiconv" NERDFLAIR_PROC_TIMEOUT_MS=300 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -n 1)
 [[ "$o" == *featx* ]] || { echo "FAIL no iconv: want the ASCII branch 'featx' in: $o"; fail=1; }
 rg -q 'git-branch-fallback-noiconv' "$W/home/.claude/nerdflair-errors.log" 2>/dev/null || { echo "FAIL no iconv: the cause was not logged"; fail=1; }
+fi
 # no iconv: the ASCII-only cut applies to the branch, not to the gitdir path (a non-ASCII worktree path keeps its branch)
+if unit_on "no iconv: non-ASCII gitdir path keeps its branch"; then
+nd="$W/c-noiconv2"; mkdir -m 700 "$nd"
 d="$W/wt-é"; mkdir -p "$d/real.git/refs" "$d/wt"; printf 'ref: refs/heads/wtbranch\n' > "$d/real.git/HEAD"
 printf 'gitdir: %s/real.git\n' "$d" > "$d/wt/.git"
 o=$(printf '{"session_id":"ni2","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"}}' "$d/wt" "$d/wt" |
   env -i PATH="$W/noiconv:$W/hang:$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 NERDFLAIR_CACHE_DIR="$nd" \
     NERDFLAIR_ERR_STAMP_DIR="$W/st-noiconv2" NERDFLAIR_PROC_TIMEOUT_MS=300 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST=0 bash "$SH" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -n 1)
 [[ "$o" == *wtbranch* ]] || { echo "FAIL no iconv: non-ASCII gitdir path lost its branch: $o"; fail=1; }
+fi
+(( LIST )) && exit 0
 (( fail )) && exit 1
 echo "git-head-fallback: ok"

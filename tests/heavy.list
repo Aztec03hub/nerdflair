@@ -2,8 +2,8 @@
 # One command per line, run from the repo root by tests/full.sh. The comment is the measured or estimated time.
 bash tests/difftest.sh -j 4   # estimate: minutes at -j 1 (whole corpus), not measured
 bash tests/difftest-repeat.sh   # TIMEOUT at 15 s (it runs difftest 20 times), not measured to the end
-bash tests/silent-failures.sh   # TIMEOUT at 15 s, not measured to the end
-bash tests/git-head-fallback.sh   # TIMEOUT at 15 s (16.1s), not measured to the end
+bash tests/silent-failures.sh   # ~34 s whole (loaded machine); its 5 parts run in quick.list
+bash tests/git-head-fallback.sh   # ~16 s whole; its 3 parts run in quick.list
 bash tests/launcher-logging.sh   # 11.8s measured, near the limit so heavy
 bash tests/log-sanitizers.sh   # 12.9s measured, near the limit so heavy
 bash tests/bridge-selfchecks.sh   # 14.2s measured; its parts run singly in quick.list
