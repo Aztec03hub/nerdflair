@@ -1,0 +1,1 @@
+mcpjson: project enabledMcpjsonServers [alpha]: alpha only

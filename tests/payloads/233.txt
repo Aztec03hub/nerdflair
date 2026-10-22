@@ -1,0 +1,1 @@
+mcpjson: enableAllProjectMcpServers false is still a policy: none approved

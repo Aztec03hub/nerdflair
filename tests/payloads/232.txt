@@ -1,0 +1,1 @@
+mcpjson: enabled list with a number: jq stops there, alpha kept, disabled list never read

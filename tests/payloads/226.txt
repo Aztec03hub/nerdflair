@@ -1,0 +1,1 @@
+mcpjson: no approval data anywhere: every .mcp.json server listed, read once

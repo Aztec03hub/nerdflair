@@ -348,6 +348,13 @@ run_side() {
 
   local pdir; pdir=$(jq -r '.workspace.project_dir // empty' "$outdir/payload.json")
   mcp_json_for "${CASE_MCP:-none}" "$pdir" > "$sbox/.claude.json"
+  # CASE_CLAUDE_PROJ: a JSON object merged into ~/.claude.json .projects[project_dir]
+  # (the .mcp.json approval keys). CASE_SETTINGS: the whole ~/.claude/settings.json.
+  if [[ -n "${CASE_CLAUDE_PROJ:-}" ]]; then
+    jq -c --arg p "$pdir" --argjson o "$CASE_CLAUDE_PROJ" '.projects[$p] = ((.projects[$p] // {}) + $o)' \
+      "$sbox/.claude.json" > "$sbox/.claude.json.new" && mv "$sbox/.claude.json.new" "$sbox/.claude.json"
+  fi
+  [[ -n "${CASE_SETTINGS:-}" ]] && printf '%s' "$CASE_SETTINGS" > "$sbox/.claude/settings.json"
 
   if [[ -n "${CASE_SESSION_CHIME:-}" ]]; then
     local sid; sid=$(jq -r '.session_id // empty' "$outdir/payload.json")
@@ -513,6 +520,7 @@ for id in "${CASES[@]}"; do
   CASE_STATE=""; CASE_COLUMNS=""; CASE_TMUX=""; CASE_MCP=""
   CASE_SEED_CCUSAGE=""; CASE_SEED_MCPHEALTH=""; CASE_SEED_TMUX=""
   CASE_SEED_REPOCOST=""; CASE_SESSION_CHIME=""; CASE_EXTRA_ENV=""; CASE_SEED_LIMITS=""; CASE_SEED_RC=""; CASE_SEED_RC_AGE=""; CASE_SEED_RC_ID=""
+  CASE_MCPJSON=""; CASE_CLAUDE_PROJ=""; CASE_SETTINGS=""
   # shellcheck disable=SC1090
   [[ -s "$PAYLOAD_DIR/$id.env" ]] && source "$PAYLOAD_DIR/$id.env"
 
@@ -525,6 +533,13 @@ for id in "${CASES[@]}"; do
       payload="${payload//@@REPO:${rname}@@/$(resolve_repo "$rname")}"
     done
     payload="${payload//@@HOME@@/$OUTDIR/home-A}"   # placeholder, fixed below
+    # @@PROJ@@: a fresh non-git project dir private to this case, holding
+    # CASE_MCPJSON as its .mcp.json when the case sets one.
+    if [[ "$payload" == *@@PROJ@@* ]]; then
+      mkdir -p "$OUTDIR/proj"
+      [[ -n "$CASE_MCPJSON" ]] && printf '%s' "$CASE_MCPJSON" > "$OUTDIR/proj/.mcp.json"
+      payload="${payload//@@PROJ@@/$OUTDIR/proj}"
+    fi
     # @@NOW+N@@ / @@NOW-N@@ — pinned to one epoch read for the whole run
     while [[ "$payload" =~ @@NOW([+-])([0-9]+)@@ ]]; do
       sign="${BASH_REMATCH[1]}"; off="${BASH_REMATCH[2]}"

@@ -202,6 +202,57 @@ fn extract(root: &Value) -> Fields {
 /// `.projects[<project_dir>]` entry, which is ~4x cheaper than materialising
 /// the whole document as a Value tree. The result is shaped like the original
 /// document so downstream lookups are unchanged.
+#[derive(Default)]
+struct McpjsonPolicy {
+    has_policy: bool,
+    all: bool,
+    enabled: Vec<String>,
+    disabled: Vec<String>,
+}
+
+impl McpjsonPolicy {
+    /// One jq pass in bash: POLICY, ALL, then EN:/DIS: lines. A jq error (a list
+    /// that isn't an array/object, or a member that isn't a string or null) ends
+    /// the stream, so everything after it is dropped, as in bash.
+    fn read(&mut self, v: &Value) {
+        let m = match v {
+            Value::Object(m) => m,
+            _ => return,
+        };
+        let keys = ["enableAllProjectMcpServers", "enabledMcpjsonServers", "disabledMcpjsonServers"];
+        if keys.iter().any(|k| m.contains_key(*k)) {
+            self.has_policy = true;
+        }
+        if m.get(keys[0]) == Some(&Value::Bool(true)) {
+            self.all = true;
+        }
+        // ponytail: a name holding a newline splits into two lines in bash; not mirrored.
+        for (key, dis) in [(keys[1], false), (keys[2], true)] {
+            let items: Vec<&Value> = match m.get(key) {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => continue,
+                Some(Value::Array(a)) => a.iter().collect(),
+                Some(Value::Object(o)) => o.values().collect(),
+                Some(_) => return,
+            };
+            for it in items {
+                let s = match it {
+                    Value::String(s) => s.clone(),
+                    Value::Null => String::new(),
+                    _ => return,
+                };
+                if dis { self.disabled.push(s) } else { self.enabled.push(s) }
+            }
+        }
+    }
+
+    fn approved(&self, n: &str) -> bool {
+        if self.disabled.iter().any(|e| e == n) {
+            return false;
+        }
+        !self.has_policy || self.all || self.enabled.iter().any(|e| e == n)
+    }
+}
+
 fn load_claude_json(path: &Path, project_dir: &str) -> Option<Value> {
     use serde_json::value::RawValue;
     let text = match std::fs::read_to_string(path) {
@@ -445,12 +496,37 @@ fn render_inner(input: &str) -> Result<String, String> {
             }
         }
     }
+    // Twin of statusline.sh `_read_mcpjson_policy` / `_mcpjson_approved`: project
+    // .mcp.json servers count only once Claude Code has approved them.
+    let mut pol = McpjsonPolicy::default();
+    if !project_dir.is_empty() {
+        if let Some(cr) = &claude_root {
+            if let Ok(v) = jqx::path(cr, &["projects", &project_dir]) {
+                pol.read(v);
+            }
+        }
+    }
+    if let Some(v) = std::fs::read_to_string(format!("{}/.claude/settings.json", home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    {
+        pol.read(&v);
+    }
     let mut mcp_names: Vec<String> = Vec::new();
-    let mcp_files: Vec<(PathBuf, bool)> = vec![
-        (claude_json.clone(), true),
-        (PathBuf::from(format!("{}/.mcp.json", project_dir)), false),
-        (PathBuf::from(format!("{}/.mcp.json", cwd)), false),
-    ];
+    let proj_mcp = PathBuf::from(format!("{}/.mcp.json", project_dir));
+    let cwd_mcp = PathBuf::from(format!("{}/.mcp.json", cwd));
+    let mut mcp_files: Vec<(PathBuf, bool)> = vec![(claude_json.clone(), true), (proj_mcp.clone(), false)];
+    // bash `[[ ! a -ef b ]]`: the same file (device + inode) is read only once.
+    let same_file = match (std::fs::metadata(&cwd_mcp), std::fs::metadata(&proj_mcp)) {
+        (Ok(a), Ok(b)) => {
+            use std::os::unix::fs::MetadataExt;
+            a.dev() == b.dev() && a.ino() == b.ino()
+        }
+        _ => false,
+    };
+    if !same_file {
+        mcp_files.push((cwd_mcp, false));
+    }
     for (path, is_claude_json) in &mcp_files {
         if !path.is_file() {
             continue;
@@ -484,6 +560,9 @@ fn render_inner(input: &str) -> Result<String, String> {
         };
         for name in jqx::mcp_server_names(v, &["mcpServers"]) {
             if *is_claude_json && proj_disabled.iter().any(|d| *d == name) {
+                continue;
+            }
+            if !*is_claude_json && !pol.approved(&name) {
                 continue;
             }
             mcp_names.push(sanitize(&name));

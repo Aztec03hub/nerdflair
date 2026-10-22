@@ -378,4 +378,19 @@ for w in 60 80 110 150 200; do
     emit "row3 gap: COLUMNS=$w MCP=$m with the RC chip" "$(mut '.')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w" "CASE_MCP=$m" "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_RC=$RCSEED"
   done
 done
+# ═══ 18. project .mcp.json approval (upstream 921835d) ═══════════════════
+# @@PROJ@@ is a fresh non-git dir per case; CASE_MCPJSON is its .mcp.json,
+# CASE_CLAUDE_PROJ is merged into ~/.claude.json .projects[project_dir],
+# CASE_SETTINGS is ~/.claude/settings.json.
+PROJ_P=$(mut '.workspace.current_dir="@@PROJ@@" | .workspace.project_dir="@@PROJ@@"')
+MJ='{"mcpServers":{"alpha":{"command":"x"},"beta":{"command":"x"}}}'
+E_MJ=("CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_MCP=one" "CASE_MCPJSON=$MJ")
+emit "mcpjson: no approval data anywhere: every .mcp.json server listed, read once" "$PROJ_P" "${E_MJ[@]}"
+emit "mcpjson: project enabledMcpjsonServers [alpha]: alpha only" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":["alpha"]}'
+emit "mcpjson: project disabledMcpjsonServers [beta] only: policy exists, nothing approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"disabledMcpjsonServers":["beta"]}'
+emit "mcpjson: enableAllProjectMcpServers with beta disabled: alpha only" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enableAllProjectMcpServers":true,"disabledMcpjsonServers":["beta"]}'
+emit "mcpjson: settings.json enabledMcpjsonServers [beta]: beta only" "$PROJ_P" "${E_MJ[@]}" 'CASE_SETTINGS={"enabledMcpjsonServers":["beta"]}'
+emit "mcpjson: empty enabled list: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":[]}'
+emit "mcpjson: enabled list with a number: jq stops there, alpha kept, disabled list never read" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":["alpha",5,"beta"],"disabledMcpjsonServers":["alpha"]}'
+emit "mcpjson: enableAllProjectMcpServers false is still a policy: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_SETTINGS={"enableAllProjectMcpServers":false}'
 echo "generated $N payloads in $OUT"
