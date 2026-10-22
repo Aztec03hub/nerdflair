@@ -11,6 +11,7 @@ line with the pointer still; the line shifting while the pointer rests; the
 shadow screen dying; a resize; SIGTERM; and NFPTY_SHADOW=0.
 """
 import glob
+import itertools
 import os
 import re
 import signal
@@ -167,12 +168,22 @@ def load1():
         return float(f.read().split()[0])
 
 
+_runs = itertools.count()
+
+
+def sock_name(name):
+    """A tmux -L name no earlier Run used. Reusing one right after kill-server races the dying server:
+    new-session then fails with "server exited unexpectedly", nothing is ever drawn, and the scenario sees
+    an empty row (altswitch then altsplit both used "alt" and hit this)."""
+    return f"nf-hl-{name}-{os.getpid()}-{next(_runs)}"
+
+
 class Run:
     """One nfpty + stand-in engine in its own private tmux server."""
 
     def __init__(self, name, env="", count=False, rows=50, row=ROW):
         self.rows, self.rown = rows, row
-        self.sock = leakcheck.tmux_L(f"nf-hl-{name}-{os.getpid()}")
+        self.sock = leakcheck.tmux_L(sock_name(name))
         self.dir = leakcheck.mkdtemp("nf-hl-")
         self.flag = os.path.join(self.dir, "flag")
         self.errlog = os.path.join(self.dir, "err.log")
@@ -191,6 +202,8 @@ class Run:
         self.tmux("new-session", "-d", "-x", "120", "-y", str(self.rows), "-s", "hl",
                   f"XDG_RUNTIME_DIR={self.dir} NFPTY_ERRLOG={self.errlog} {env} CLAUDE_BIN=/usr/bin/python3 "
                   f"python3 {HERE}/nfpty.py {self.fake} {self.flag} {self.rown}")
+        if subprocess.run(["tmux", "-L", self.sock, "has-session", "-t", "hl"], capture_output=True).returncode:
+            raise RuntimeError(f"tmux new-session failed on socket {self.sock}: the stand-in never started")
         self.tmux("set", "-g", "remain-on-exit", "on")
         time.sleep(2)
         # On a loaded machine the stand-in engine may not have drawn its status row yet: wait for it (bounded)
@@ -873,9 +886,15 @@ def no_shadow():
         r.close()
 
 
+def sock_selftest():
+    print("two Runs with the same name never share a tmux socket")
+    check("distinct socket names for the same scenario name", sock_name("alt") != sock_name("alt"))
+
+
 def main():
     print(f"load average at start: {open('/proc/loadavg').read().split()[0]}")
     stable_selftest()
+    sock_selftest()
     for t in (basic, real_spans, wide_span, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         if not sys.argv[1:] or t.__name__ in sys.argv[1:]:       # a scenario name runs just that one
             t()
