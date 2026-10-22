@@ -324,7 +324,7 @@ def t_panel():
     def clipped():
         p = panel_mod.Panel(lambda t, keep=False: None, 20, 30)
         p.warn = nflog.note_once
-        p.show("x", "Title", ["a body line that is far wider than the terminal can hold at all"], (1, 2, 3), 5, 10)
+        p.show("x", "Title", ["x" * 60], (1, 2, 3), 5, 10)
     expect_one("panel: clipped card is logged", clipped, "clipped to")
 
     def not_clipped():

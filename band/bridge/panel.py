@@ -6,6 +6,8 @@ the demo writes to /dev/tty while the wrapper writes into the stream it is
 already relaying to the real terminal.
 """
 
+import textwrap
+
 ESC = "\033"
 RESET = f"{ESC}[0m"
 
@@ -98,6 +100,10 @@ class Panel:
         `anchor_col` but kept on screen."""
         if self.shown == sid and self.rect:
             return                        # already up, let it shine
+        # Word-wrap to the card's widest possible interior; only a single
+        # word wider than that is clipped (and logged) below.
+        avail = max(12, self.cols - 4) - 4
+        body = [ln for b in body for ln in (textwrap.wrap(b, avail, break_long_words=False, break_on_hyphens=False) if len(b) > avail else [b])]
         w = min(self.cols - 4,
                 max(len(title) + 6, max(len(b) for b in body) + 4))
         w = max(w, 12)
@@ -351,6 +357,20 @@ def demo():
     assert tx + tw - 1 <= 30 and ty >= 1 and ty + th - 1 <= 20, t.rect
     assert all(len(line) <= tw - 4 for line in t.body), t.body
     assert len(t.title) <= tw - 6, t.title
+    # A long line wraps at word breaks instead of clipping; only one word
+    # wider than the terminal still clips, and says so.
+    warned = []
+    wr = Panel(lambda *a, **k: None, rows=50, cols=120)
+    wr.warn = lambda *a: warned.append(a)
+    line = " ".join(["word"] * 24)[:121].rstrip()
+    line = line + "x" * (121 - len(line))
+    assert len(line) == 121 and " " in line
+    wr.show("w", "T", [line], (1, 2, 3), 10, 40)
+    assert not warned and len(wr.body) == 2 and "".join(wr.body).replace(" ", "") == line.replace(" ", ""), (warned, wr.body)
+    assert wr.rect[2] <= 120, wr.rect
+    wr.reset()
+    wr.show("w2", "T", ["y" * 130], (1, 2, 3), 10, 40)
+    assert [a[0] for a in warned] == ["card-clipped"] and len(wr.body[0]) == wr.rect[2] - 4, (warned, wr.body)
     # Reset forgets without painting, and a later show starts clean.
     before = len(nb)
     t.reset()
