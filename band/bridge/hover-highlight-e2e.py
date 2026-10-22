@@ -178,12 +178,20 @@ def sock_name(name):
     return f"nf-hl-{name}-{os.getpid()}-{next(_runs)}"
 
 
+def new_sock(name):
+    """sock_name(), registered with leakcheck; refuses a name any earlier Run already registered."""
+    sock = sock_name(name)
+    if sock in leakcheck._L:
+        raise RuntimeError(f"tmux socket {sock} was already used by an earlier Run")
+    return leakcheck.tmux_L(sock)
+
+
 class Run:
     """One nfpty + stand-in engine in its own private tmux server."""
 
     def __init__(self, name, env="", count=False, rows=50, row=ROW):
         self.rows, self.rown = rows, row
-        self.sock = leakcheck.tmux_L(sock_name(name))
+        self.sock = new_sock(name)
         self.dir = leakcheck.mkdtemp("nf-hl-")
         self.flag = os.path.join(self.dir, "flag")
         self.errlog = os.path.join(self.dir, "err.log")
@@ -199,11 +207,12 @@ class Run:
             env += f" PATH={os.path.join(self.dir, 'shim')}:$PATH"
         with open(self.fake, "w") as f:
             f.write(FAKE)
-        self.tmux("new-session", "-d", "-x", "120", "-y", str(self.rows), "-s", "hl",
+        err = self.tmux_err("new-session", "-d", "-x", "120", "-y", str(self.rows), "-s", "hl",
                   f"XDG_RUNTIME_DIR={self.dir} NFPTY_ERRLOG={self.errlog} {env} CLAUDE_BIN=/usr/bin/python3 "
                   f"python3 {HERE}/nfpty.py {self.fake} {self.flag} {self.rown}")
-        if subprocess.run(["tmux", "-L", self.sock, "has-session", "-t", "hl"], capture_output=True).returncode:
-            raise RuntimeError(f"tmux new-session failed on socket {self.sock}: the stand-in never started")
+        if self.tmux_rc("has-session", "-t", "hl"):
+            self.close()
+            raise RuntimeError(f"tmux new-session failed on socket {self.sock}: the stand-in never started ({err.strip()})")
         self.tmux("set", "-g", "remain-on-exit", "on")
         time.sleep(2)
         # On a loaded machine the stand-in engine may not have drawn its status row yet: wait for it (bounded)
@@ -212,6 +221,12 @@ class Run:
             if len(pieces_of(self.row())) >= 2:
                 break
             time.sleep(0.2)
+
+    def tmux_err(self, *a):
+        return subprocess.run(["tmux", "-L", self.sock, *a], capture_output=True, text=True).stderr
+
+    def tmux_rc(self, *a):
+        return subprocess.run(["tmux", "-L", self.sock, *a], capture_output=True).returncode
 
     def tmux(self, *a):
         return subprocess.run(["tmux", "-L", self.sock, *a], capture_output=True, text=True).stdout
@@ -888,7 +903,19 @@ def no_shadow():
 
 def sock_selftest():
     print("two Runs with the same name never share a tmux socket")
-    check("distinct socket names for the same scenario name", sock_name("alt") != sock_name("alt"))
+    check("distinct socket names for the same scenario name", new_sock("selftest") != new_sock("selftest"))
+    global sock_name
+    real, sock_name = sock_name, lambda n: "nf-hl-selftest-fixed"
+    try:
+        new_sock("x")
+        try:
+            new_sock("x")
+            refused = False
+        except RuntimeError:
+            refused = True
+    finally:
+        sock_name = real
+    check("a socket name an earlier Run registered is refused", refused)
 
 
 def main():
@@ -897,7 +924,10 @@ def main():
     sock_selftest()
     for t in (basic, real_spans, wide_span, rc_readout, chime_readout, dialog, dialog_ticking, shift, shift_generic, dup_text, dup_vanishes, tracked_writes, tiny_terminal, failed_switch_cost, dead_shadow_costs_nothing, alt_screen, alt_screen_split, wide_readout, cost_bounded, exit_path, shadow_dies, resized, sigterm, no_shadow):
         if not sys.argv[1:] or t.__name__ in sys.argv[1:]:       # a scenario name runs just that one
-            t()
+            try:
+                t()
+            except RuntimeError as e:      # one scenario's setup failing must not hide the others or the summary
+                check(f"{t.__name__}: setup", False, str(e))
     print(f"\nhover-highlight-e2e: {'FAIL' if fails else 'PASS'}")
     sys.exit(1 if fails else 0)
 
