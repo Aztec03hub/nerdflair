@@ -13,6 +13,7 @@ HEAL="${NF_TMUX_HEAL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/band/hove
 [[ -x "$HEAL" ]] || { echo "tmux-heal: missing $HEAL" >&2; exit 2; }
 command -v tmux >/dev/null && command -v ss >/dev/null || { echo "tmux-heal: needs tmux and ss" >&2; exit 77; }
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/real-home-guard.sh"; rhg_snapshot
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-heal-XXXXXX") || exit 1
 export TMUX_TMPDIR="$ROOT"
 unset TMUX
@@ -94,5 +95,6 @@ check "spaced path: server unreachable" 1 "$(TMUX_TMPDIR="$ROOT3" tmux ls >/dev/
 check "spaced path: healed" 0 "$(TMUX_TMPDIR="$ROOT3" reach tmux)"
 
 printf '\n'
+rhg_check || fail=1
 (( fail )) && { echo "tmux-heal: FAIL"; exit 1; }
 echo "tmux-heal: PASS"

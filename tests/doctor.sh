@@ -138,6 +138,10 @@ doc; expect "launcher.log errors in 24 h: warn with key and count" 0 '^warn    l
 printf '%s' "$out" | command grep -qE 'SECRETLINE|old' && bad "log lines were printed whole or an old line counted" || ok "only key, count and time are printed; a 2020 line is ignored"
 printf '%s 123 panic: thread main panicked at x\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$H/.claude/nerdflair-errors.log"
 doc; expect "panic in the error log: BROKEN" 1 '^BROKEN  nerdflair-errors.log +PANIC; panic x1'
+fresh; mkdir -p "$H/.local/state/nerdflair"; printf '%s DELETED: /tmp/x/tmux-1000\n%s     pid=2843118 ppid=1 age=4s user=u rg test result|FAILED|panicked|error\n' "$(date +%Y-%m-%d\ %H:%M:%S)" "$(date +%Y-%m-%d\ %H:%M:%S)" > "$H/.local/state/nerdflair/tmux-watch.log"
+doc; expect "a process-snapshot line naming panicked in tmux-watch.log: not BROKEN" 0 '^warn    tmux-watch.log +DELETED x1'
+printf '%s watch: thread main panicked at x\n' "$(date +%Y-%m-%d\ %H:%M:%S)" >> "$H/.local/state/nerdflair/tmux-watch.log"
+doc; expect "a real panic line in tmux-watch.log: still BROKEN" 1 '^BROKEN  tmux-watch.log +PANIC'
 fresh; mkdir "$H/st"; printf '%s pty: dup fd\n' "$now" > "$H/st/nfpty-error.log"
 NF_STATE_DIR="$H/st" doc; expect "NF_STATE_DIR is honoured for the logs" 0 '^warn    nfpty-error.log +pty x1'
 fresh; printf '%s pty: boom\n' "$now" > "$H/elsewhere.log"

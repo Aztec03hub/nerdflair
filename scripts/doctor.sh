@@ -195,7 +195,8 @@ for path in sys.argv[1:]:
         rest = re.sub(r"^(nfpty|watch): ", "", rest)  # the component every line of that log shares
         k = re.match(r"[\w.:~/-]{1,40}?(?=:\s|\s|$)", rest)
         k = k.group(0) if k else "?"
-        if "panic" in ln: panic = True
+        # a process-snapshot line (nf-tmux-watch lists what ran: "pid=N ppid=N ...") is another program's text, never ours
+        if "panic" in ln and not rest.startswith("pid="): panic = True
         c, newest = keys.get(k, (0, 0)); keys[k] = (c + 1, max(newest, ts))
     if not keys:
         print(f"ok\t{name}\tnothing in 24 h"); continue

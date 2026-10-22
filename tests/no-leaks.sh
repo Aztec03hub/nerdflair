@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 B="$HERE/band/bridge"
 D=$(mktemp -d "${TMPDIR:-/tmp}/nf-noleaks-XXXXXX") || exit 1
 fail=0
+. "$HERE/tests/real-home-guard.sh"; rhg_snapshot
 
 cleanup() {   # only the dir mktemp made; live servers found under it are killed by their exact socket path first
   trap - EXIT
@@ -54,5 +55,6 @@ run logcheck.py python3 "$B/logcheck.py"
 run cells-table.py python3 "$B/cells-table.py"
 run "hover-highlight-e2e resized" python3 "$B/hover-highlight-e2e.py" resized
 run tmux-heal.sh bash "$HERE/tests/tmux-heal.sh"
+rhg_check || fail=1
 if (( fail )); then echo "no-leaks: FAIL"; exit 1; fi
 echo "no-leaks: PASS"

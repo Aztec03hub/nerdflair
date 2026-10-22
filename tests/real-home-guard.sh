@@ -16,6 +16,10 @@ rhg_snapshot() {
   RHG_LOG="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.claude/nerdflair-errors.log"
   RHG_PID=$$
   RHG_SIZE=-1
+  # Any file in the real ~/.local/state/nerdflair/ must keep its size (a test writing there is the bug; the
+  # live nf-tmux-watch service ignores scratch servers, so a growing file here is this run's doing).
+  RHG_STATE="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.local/state/nerdflair"
+  RHG_STATE_SNAP=$(stat -c '%n %s' "$RHG_STATE"/* 2>/dev/null | sort)
   [[ -f "$RHG_LOG" ]] || return 0
   RHG_SIZE=$(stat -c %s "$RHG_LOG")
   RHG_LAST=$(head -c "$RHG_SIZE" "$RHG_LOG" | tail -n 1 | cksum)
@@ -40,7 +44,18 @@ rhg_show() {
   else t='?'; p='?'; k='?'; fi
   printf '%s %s %s' "$t" "$p" "$k"; [[ $k == '?' ]] || printf ':'
 }
+rhg_check_state() { # 1 if a file in the real state dir grew or appeared since rhg_snapshot
+  local now f n o rc=0
+  now=$(stat -c '%n %s' "$RHG_STATE"/* 2>/dev/null | sort)
+  while read -r f n; do
+    [[ -n "$f" ]] || continue
+    o=$(printf '%s\n' "$RHG_STATE_SNAP" | awk -v f="$f" '$1==f{print $2}')
+    if [[ -z "$o" || "$n" -gt "$o" ]]; then printf '  FAIL  the real %s grew during this run (%s -> %s bytes)\n' "$f" "${o:-absent}" "$n"; rc=1; fi
+  done <<< "$now"
+  return $rc
+}
 rhg_check() {
+  rhg_check_state || return 1
   [[ "$RHG_SIZE" == -1 ]] && { printf '  NOTE  no real error log at %s; guard skipped (start the runner with your real HOME)\n' "$RHG_LOG"; return 0; }
   local now last new bad warn m q
   now=$(stat -c %s "$RHG_LOG" 2>/dev/null || echo 0)

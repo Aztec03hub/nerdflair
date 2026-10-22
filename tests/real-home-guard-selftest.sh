@@ -62,4 +62,10 @@ seed; out '2026-10-22T01:00:00Z 999 tmp-write:/home/phil/secret-dir: panic' >/de
 seed; o=$(out "2026-10-22T01:00:00Z 777 t: ${TMPDIR:-/tmp}/nf-x"); [[ "$o" == *'>> tmp: '* ]] && check "marker names the temp-path rule" ok ok || check "marker names the temp-path rule" ok "$o"
 seed; o=$(NF_GUARD_VERBOSE=1 out "2026-10-22T01:00:00Z 777 t: $(printf '\xc3\xa9%.0s' {1..150}) panic"); [[ "$o" == *'>> panic:'* && "$o" != *$'\xc3'$'\n'* ]] && check "verbose cut keeps multibyte characters whole" ok ok || check "verbose cut keeps multibyte characters whole" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
+# The real ~/.local/state/nerdflair/: any file that grows or appears fails, a quiet one passes.
+mkdir -p "$W/home/.local/state/nerdflair"; SL="$W/home/.local/state/nerdflair/tmux-watch.log"
+runs() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; [[ -n "$1" ]] && printf '%b' "$1" > "$W/home/.local/state/nerdflair/$2"; rhg_check >/dev/null; echo $? ); }
+seed; echo old > "$SL"; check "state dir: nothing written passes" 0 "$(runs '')"
+seed; echo old > "$SL"; check "state dir: a grown tmux-watch.log fails" 1 "$( ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; echo more >> "$SL"; rhg_check >/dev/null; echo $? ) )"
+seed; check "state dir: a new file fails" 1 "$(runs 'x\n' launcher.log)"
 exit $fail
