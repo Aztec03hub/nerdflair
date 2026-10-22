@@ -505,7 +505,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
         // No cache dir: no probe cache either (already logged as cache-dir).
-        let mh = mcp_cache_path(uid, if project_dir.is_empty() { &cwd } else { &project_dir });
+        let mh = mcp_cache_path(uid, &mcp_key_src(&cwd, &project_dir));
         match mh.as_ref().map(std::fs::read_to_string) {
             None => {}
             Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
@@ -785,8 +785,6 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut total_used: i64 = 0;
     let mut pct: i64 = 0;
     let mut pct_is_int = true;
-    // False when neither the payload nor a transcript usage line gave a figure: the gauge then says "--".
-    let mut ctx_src = true;
     if !f.used_pct.is_empty() && !f.ctx_size.is_empty() {
         ctx_total_s = f.ctx_size.clone();
         // A fractional `used_percentage` is legal in the payload (the docs' own
@@ -822,7 +820,6 @@ fn render_inner(input: &str) -> Result<String, String> {
             },
         }
     } else {
-        ctx_src = false;
         let transcript = jqx::path(&root, &["transcript_path"])
             .map(jqx::tostring)
             .unwrap_or_default();
@@ -906,7 +903,6 @@ fn render_inner(input: &str) -> Result<String, String> {
                                         }),
                                     }
                                 };
-                                ctx_src = true;
                                 total_used = g("input_tokens")
                                     + g("cache_creation_input_tokens")
                                     + g("cache_read_input_tokens")
@@ -980,7 +976,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         Some(t) => format!("{}", t),
         None => ctx_total_s.clone(),
     };
-    let ctx_label = if ctx_src { format!("{}/{} {}%", used_fmt, size_fmt, pct) } else { "--".to_string() };
+    let ctx_label = format!("{}/{} {}%", used_fmt, size_fmt, pct);
 
     // ── Width ────────────────────────────────────────────────────
     // The configured number IS the row width; the bar is that less its two
@@ -1333,7 +1329,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
 
     // ── MCP health ───────────────────────────────────────────────
-    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, if project_dir.is_empty() { &cwd } else { &project_dir });
+    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, &mcp_key_src(&cwd, &project_dir));
 
     // ── Time, cost, speed ────────────────────────────────────────
     let mut api_fmt = String::new();
@@ -2729,7 +2725,7 @@ fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, St
     if !fresh && idle {
         let script = format!(
             "{cd}exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
-             _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 2>\"$_ef\"); _rc=$?; \
+             _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 9>&- 2>\"$_ef\"); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
              *Connected*) _o=$((_o+1)) ;; \
@@ -2981,7 +2977,17 @@ fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
     }
 }
 
-/// The ONE rule for the per-project key (twin of `_nf_norm_key_dir`): cut at the first newline (bash reads the
+/// Which dir keys the MCP cache: the project dir, else the working dir, as bash sees the payload. Bash reads the
+/// fields with one line-wise `read`, so a newline inside `current_dir` loses every later field (project_dir is
+/// then empty), and a project_dir that starts with a newline is empty too. Mirrored here, BEFORE the
+/// emptiness choice.
+fn mcp_key_src(cwd: &str, project_dir: &str) -> String {
+    let first = |s: &str| s.split('\n').next().unwrap_or("").to_string();
+    let pd = if cwd.contains('\n') { String::new() } else { first(project_dir) };
+    if pd.is_empty() { first(cwd) } else { pd }
+}
+
+/// The ONE rule for the per-project key (the bash twin is the inline block above the MCP cache path in statusline.sh): cut at the first newline (bash reads the
 /// payload fields line-wise), collapse runs of `/`, strip a trailing `/` (the root stays `/`).
 fn norm_key_dir(s: &str) -> String {
     let s = s.split('\n').next().unwrap_or("");
@@ -3017,7 +3023,11 @@ fn prune_mcp_caches(cache: &Path, uid: u32) {
     let max_age = env_int("NERDFLAIR_MCP_PRUNE_DAYS", 14) * 86400;
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
-        if e.file_name().to_string_lossy().starts_with(&prefix) && file_age(&e.path()) >= max_age {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Symlinks are skipped (never aged, never removed), like bash. The old shared file
+        // `nerdflair-mcphealth-UID` (never read since the per-project change) is pruned too.
+        let is_link = e.file_type().map_or(true, |t| t.is_symlink());
+        if !is_link && (name.starts_with(&prefix) || name == format!("nerdflair-mcphealth-{}", uid)) && file_age(&e.path()) >= max_age {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
             }

@@ -124,11 +124,10 @@ CARDS = [
     ("session_cost", "", "Session spend", (134, 239, 172), [
         "cost.total_cost_usd for THIS session, from Claude Code",
     ]),
-    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%|(?<!\S)--(?!\S)", "Context window", (125, 211, 252), [
+    ("context", r"(?<![\d.])\d+(?:\.\d+)?[kM]?/\d+(?:\.\d+)?[kM]\s+\d+%", "Context window", (125, 211, 252), [
         "tokens in context over the window size, then percent used",
         "read from the payload, else the newest usage line in the transcript",
         "compaction triggers near the top; the ETA reads off the same series",
-        "-- = no figure yet (the payload has none and there is no transcript usage line)",
     ]),
     ("effort", r"\b(minimal|low|medium|high|xhigh|max)\b", "Effort",
      (196, 181, 253), [
@@ -362,12 +361,6 @@ def selfcheck():
         assert hit and hit.group(0) == label, (label, hit and hit.group(0))
         assert bar_label(bar) == (22, cells(label), label), bar_label(bar)
     assert re.search(r"\d[kM]?/\d+(\.\d+)?[kM]\s+\d+%", "200k/1M 20%").group(0) == "0k/1M 20%"
-    # The gauge with no source says "--": still the context readout, and nothing else is mistaken for it.
-    bar = "\ue0b6" + " " * 20 + "--" + " " * 30 + "\ue0b4"
-    assert bar_label(bar) == (22, 2, "--") and CONTEXT_ROW.search(bar).group(0) == "--", bar_label(bar)
-    assert classify("--")[0] == "context", classify("--")
-    for other in ("\U000f04c5 --/s", "~--", "$--", "a--b"):
-        assert not CONTEXT_ROW.search(other), other
     # The halves of a row are justified with at least TWO spaces: two readouts, not one. The chime's own
     # two spaces (volume icon, style) stay inside its readout.
     tight = " 2 MCP   main · 5h 2%"
@@ -556,8 +549,7 @@ PLACEHOLDER_LINES = {
 
 def placeholder_drift(root):
     """Each placeholder readout (`--/s`, `$--`, `~$`, `~--`) is explained on its hover card, in the bridge
-    (CARDS here) and in the band plugin (register.tsx), word for word. The gauge's `--` card line exists
-    only here: the plugin has no context card."""
+    (CARDS here) and in the band plugin (register.tsx), word for word."""
     with open(os.path.join(root, "band", "hooks", "register.tsx"), encoding="utf-8") as fh:
         tsx = fh.read()
     for cid, want in PLACEHOLDER_LINES.items():
@@ -565,8 +557,6 @@ def placeholder_drift(root):
         for line in want:
             assert line in mk[4], f"card {cid}: mklayout.py lacks {line!r}"
             assert f"'{line}'" in tsx, f"card {cid}: register.tsx lacks {line!r}"
-    ctx = next(c for c in CARDS if c[0] == "context")
-    assert any(l.startswith("-- = no figure yet") for l in ctx[4]), "context card does not explain the -- gauge"
 
 
 def rc_drift(root):
@@ -610,7 +600,7 @@ def bar_label(line):
     """The context readout of a gauge row: the one run of text sitting inside the bar, between the
     bar's cap glyphs and spaces. (col, width, text), or None when the row has no such label."""
     runs = list(re.finditer(r"[^\s\ue0b4\ue0b6]+(?: [^\s\ue0b4\ue0b6]+)*", line))
-    if len(runs) != 1 or not (("/" in runs[0].group(0) and "%" in runs[0].group(0)) or runs[0].group(0) == "--"):
+    if len(runs) != 1 or "/" not in runs[0].group(0) or "%" not in runs[0].group(0):
         return None
     return cells(line[:runs[0].start()]) + 1, cells(runs[0].group(0)), runs[0].group(0)
 

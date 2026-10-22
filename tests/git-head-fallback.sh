@@ -59,6 +59,10 @@ check_pair "NUL" "$(mkcase x 'ref: refs/heads/fe\000at\n')" 'feat'
 check_pair "invalid UTF-8" "$(mkcase x 'ref: refs/heads/fe\377at\n')" 'feat'
 check_pair "truncated UTF-8" "$(mkcase x 'ref: refs/heads/fe\342\202at\n')" 'feat'
 check_pair "C1 control" "$(mkcase x 'ref: refs/heads/a\302\205b\n')" 'ab'
+check_pair "above U+10FFFF" "$(mkcase x 'ref: refs/heads/a\364\220\200\200b\n')" 'ab'
+check_pair "5-byte form" "$(mkcase x 'ref: refs/heads/a\370\210\200\200\200b\n')" 'ab'
+check_pair "surrogate" "$(mkcase x 'ref: refs/heads/a\355\240\200b\n')" 'ab'
+check_pair "valid 4-byte char" "$(mkcase x 'ref: refs/heads/a\360\237\230\200b\n')" 'a😀b'
 check_pair "trailing spaces" "$(mkcase x 'ref: refs/heads/trail   \n')" 'trail'
 # a `.git` FILE whose gitdir line ends in a space (and CR)
 n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/real.git/refs" "$d/wt"; printf 'ref: refs/heads/spaced\n' > "$d/real.git/HEAD"
@@ -74,5 +78,15 @@ n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs" "$d/inner.git/refs"
 printf 'ref: refs/heads/outer-branch\n' > "$d/.git/HEAD"; printf 'ref: refs/heads/inner-branch\n' > "$d/inner.git/HEAD"
 check_pair "nested bare repo" "$d/inner.git" 'inner-branch'
 r=$(render rust "$d/inner.git" | head -n 1); [[ "$r" != *outer-branch* ]] || { echo "FAIL nested bare repo: outer branch shown"; fail=1; }
+# without a working iconv bash must not silently show nothing: printable ASCII, and the cause is logged
+mkdir -p "$W/noiconv"; printf '#!/bin/sh\nexit 127\n' > "$W/noiconv/iconv"; chmod +x "$W/noiconv/iconv"
+d=$(mkcase x 'ref: refs/heads/feat\303\251x\n')
+cmd=(bash "$SH"); [[ -x "$BIN" ]] || true
+nd="$W/c-noiconv"; mkdir -m 700 "$nd"; rm -f "$W/home/.claude/nerdflair-errors.log"
+o=$(printf '{"session_id":"ni","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"}}' "$d" "$d" |
+  env -i PATH="$W/noiconv:$W/hang:$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=160 NERDFLAIR_CACHE_DIR="$nd" \
+    NERDFLAIR_ERR_STAMP_DIR="$W/st-noiconv" NERDFLAIR_PROC_TIMEOUT_MS=300 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST=0 "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -n 1)
+[[ "$o" == *featx* ]] || { echo "FAIL no iconv: want the ASCII branch 'featx' in: $o"; fail=1; }
+rg -q 'git-branch-fallback-noiconv' "$W/home/.claude/nerdflair-errors.log" 2>/dev/null || { echo "FAIL no iconv: the cause was not logged"; fail=1; }
 (( fail )) && exit 1
 echo "git-head-fallback: ok"
