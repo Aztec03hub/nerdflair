@@ -14,7 +14,37 @@ if ! _SL_BUF=$(mktemp "${TMPDIR:-/tmp}/nerdflair-sl.XXXXXX" 2>/dev/null); then
   _SL_BUF="${HOME:-}/.claude/.nerdflair-sl.$$"
 fi
 exec 3>&1 1>"$_SL_BUF"
-trap '_nf_rc=$?; cat "$_SL_BUF" >&3; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
+# Claude Code clamps its output to 256 colours when $TMUX is set and
+# CLAUDE_CODE_TMUX_TRUECOLOR is empty (chalk level 2, ansi-styles
+# rgbToAnsi256). Schemes remap indices 16 and 17 (Catppuccin Mocha: peach,
+# rosewater), so near-black colours that land there would show orange. In that
+# mode _nf_flush sends every 38;2/48;2 colour through _nf_safe256, which swaps
+# a would-be 16/17 for a grey on the 232-255 ramp. Twin of colors::safe256 /
+# safe256_sgr in rust/src/colors.rs; both must agree byte for byte.
+_nf_safe256() { # r g b -> sets _s256 to "r;g;b"
+  local r=$((10#$1)) g=$((10#$2)) b=$((10#$3)) l
+  if (( r == g && g == b ? r < 8 : (r <= 25 && g <= 25 && b <= 76) )); then
+    l=$(( (299*r + 587*g + 114*b + 500) / 1000 )); (( l < 8 )) && l=8
+    _s256="$l;$l;$l"
+  else
+    _s256="$1;$2;$3"
+  fi
+}
+_nf_flush() {
+  if [[ -z "${TMUX:-}" || -n "${CLAUDE_CODE_TMUX_TRUECOLOR:-}" ]]; then
+    cat "$_SL_BUF" >&3; return
+  fi
+  local rest out="" re='[[;]([34]8);2;([0-9]+);([0-9]+);([0-9]+)' _s256
+  IFS= read -r -d '' rest < "$_SL_BUF"
+  while [[ $rest =~ $re ]]; do
+    out+="${rest%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[0]:0:1}${BASH_REMATCH[1]};2;"
+    _nf_safe256 "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    out+="$_s256"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  printf '%s' "$out$rest" >&3
+}
+trap '_nf_rc=$?; _nf_flush; rm -f "$_SL_BUF" "$_SL_BUF.err"; (( _nf_rc != 0 )) && _nf_err "render-abort" "statusline.sh exited with status $_nf_rc (fatal arithmetic or shell error); output truncated"' EXIT
 
 # ── Shared library ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

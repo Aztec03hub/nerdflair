@@ -49,7 +49,10 @@ fn main() {
         errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
     }
     let input = String::from_utf8_lossy(&buf).into_owned();
-    let out = render(&input);
+    let mut out = render(&input);
+    if colors::clamp256_active() {
+        out = colors::safe256_sgr(&out);
+    }
     let mut so = std::io::stdout().lock();
     // EPIPE means the host went away (it kills slow renderers); that is not a
     // renderer fault and stdout is no place to report it. Anything else is.

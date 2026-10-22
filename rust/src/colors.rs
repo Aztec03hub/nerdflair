@@ -313,3 +313,128 @@ pub const LOGO_ICONS: [&str; 17] = [
     " ",
     "\u{f0c1e}",
 ];
+
+// ── 256-colour clamp guard ─────────────────────────────────────────
+// Claude Code forces chalk to 256 colours when $TMUX is set and
+// CLAUDE_CODE_TMUX_TRUECOLOR is empty, converting every 24-bit colour with
+// ansi-styles rgbToAnsi256. Indices 16 and 17 are the ones colour schemes
+// remap (Catppuccin Mocha: peach, rosewater), so the near-black splash and
+// empty bar turn orange. In that mode every 38;2 / 48;2 colour that would
+// land on 16 or 17 becomes a grey on the 232-255 ramp instead. The bash twin
+// is _nf_safe256 / _nf_flush in scripts/statusline.sh; both must agree.
+
+/// True when Claude Code will clamp this render's output to 256 colours.
+pub fn clamp256_active() -> bool {
+    std::env::var_os("TMUX").map_or(false, |v| !v.is_empty())
+        && std::env::var_os("CLAUDE_CODE_TMUX_TRUECOLOR").map_or(true, |v| v.is_empty())
+}
+
+/// (r,g,b) unchanged unless rgbToAnsi256 maps it to 16 or 17; then the grey
+/// (L,L,L), L = max(8, rounded Rec. 601 luminance), which lands on 232+.
+pub fn safe256(r: u32, g: u32, b: u32) -> (u32, u32, u32) {
+    // rgbToAnsi256: greys r<8 -> 16; otherwise the cube index is 16 or 17
+    // exactly when round(r/255*5) == round(g/255*5) == 0 (r,g <= 25) and
+    // round(b/255*5) <= 1 (b <= 76).
+    let bad = if r == g && g == b { r < 8 } else { r <= 25 && g <= 25 && b <= 76 };
+    if !bad {
+        return (r, g, b);
+    }
+    let l = ((299 * r + 587 * g + 114 * b + 500) / 1000).max(8);
+    (l, l, l)
+}
+
+/// Rewrites every `[38;2;R;G;B` / `;48;2;R;G;B` (preceded by `[` or `;`)
+/// through safe256. Untouched colours keep their original text.
+pub fn safe256_sgr(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if (b[i] == b'[' || b[i] == b';')
+            && (b[i + 1..].starts_with(b"38;2;") || b[i + 1..].starts_with(b"48;2;"))
+        {
+            let mut j = i + 6;
+            let mut v = [0u32; 3];
+            let mut ok = true;
+            for (k, slot) in v.iter_mut().enumerate() {
+                let st = j;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    *slot = slot.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
+                    j += 1;
+                }
+                if j == st || (k < 2 && (j >= b.len() || b[j] != b';')) {
+                    ok = false;
+                    break;
+                }
+                if k < 2 {
+                    j += 1;
+                }
+            }
+            if ok {
+                let n = safe256(v[0], v[1], v[2]);
+                if n != (v[0], v[1], v[2]) {
+                    out.push_str(&s[last..i + 6]);
+                    out.push_str(&format!("{};{};{}", n.0, n.1, n.2));
+                    last = j;
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
+#[cfg(test)]
+mod safe256_tests {
+    use super::*;
+
+    /// ansi-styles rgbToAnsi256, transcribed from the JS.
+    fn rgb_to_ansi256(r: u32, g: u32, b: u32) -> u32 {
+        let js_round = |x: f64| (x + 0.5).floor() as u32;
+        if r == g && g == b {
+            if r < 8 { return 16; }
+            if r > 248 { return 231; }
+            return js_round(((r as f64 - 8.0) / 247.0) * 24.0) + 232;
+        }
+        16 + 36 * js_round(r as f64 / 255.0 * 5.0)
+            + 6 * js_round(g as f64 / 255.0 * 5.0)
+            + js_round(b as f64 / 255.0 * 5.0)
+    }
+
+    #[test]
+    fn safe256_never_lands_on_16_or_17_and_leaves_the_rest_alone() {
+        let axis: Vec<u32> = (0..=255).step_by(3).chain([25, 26, 76, 77, 255]).collect();
+        for &r in &axis {
+            for &g in &axis {
+                for &b in &axis {
+                    let (nr, ng, nb) = safe256(r, g, b);
+                    let q = rgb_to_ansi256(r, g, b);
+                    if q == 16 || q == 17 {
+                        assert!(nr == ng && ng == nb && nr >= 8, "{r},{g},{b} -> not a ramp grey");
+                        assert!(rgb_to_ansi256(nr, ng, nb) >= 232, "{r},{g},{b} -> {nr}");
+                    } else {
+                        assert_eq!((nr, ng, nb), (r, g, b), "changed a safe colour");
+                    }
+                }
+            }
+        }
+        for v in 0..=255 { // every exact grey
+            let n = safe256(v, v, v);
+            let q = rgb_to_ansi256(n.0, n.1, n.2);
+            assert!(q != 16 && q != 17, "grey {v}");
+        }
+    }
+
+    #[test]
+    fn safe256_sgr_rewrites_only_bad_colours() {
+        let s = "\x1b[48;2;12;14;18m \x1b[1;38;2;72;78;74mX\x1b[38;2;10;10;70mY\x1b[38;2;3;3;3m";
+        assert_eq!(
+            safe256_sgr(s),
+            "\x1b[48;2;14;14;14m \x1b[1;38;2;72;78;74mX\x1b[38;2;17;17;17mY\x1b[38;2;8;8;8m"
+        );
+    }
+}

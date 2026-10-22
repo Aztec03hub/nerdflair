@@ -1,0 +1,1 @@
+256 clamp: logo splash 0%, TMUX set, opt-in set (truecolor as before)
