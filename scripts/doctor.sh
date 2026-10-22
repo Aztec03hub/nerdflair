@@ -26,7 +26,7 @@ if [[ ! -x "$BIN" ]]; then
   row BROKEN renderer "$BIN is missing" "bash $REPO/scripts/build-rust.sh"
 # A build from before --version would read stdin and render (and write its caches), so it
 # is never run: the stamp is one literal in the file (main.rs concat!), absent = old build.
-elif ! grep -qaE 'nerdflair-statusline [0-9][^ ]* src:[0-9a-f]{8}' "$BIN"; then
+elif ! command grep -qaE 'nerdflair-statusline [0-9][^ ]* src:[0-9a-f]{8}' "$BIN"; then
   row BROKEN renderer "installed binary has no --version (built before it existed): stale" "bash $REPO/scripts/build-rust.sh"
 else
   ver="$(timeout 2 "$BIN" --version </dev/null 2>/dev/null)"
@@ -145,8 +145,9 @@ else
 fi
 
 # 8. logs, last 24 h: key/reason name, count, newest time; never whole lines. One python, tail reads.
-while IFS=$'\t' read -r st name detail fix; do row "$st" "$name" "$detail" "$fix"; done < <(python3 -"$HOME/.claude/nerdflair-errors.log" \
-  "$STATE/nfpty-error.log" "$STATE/launcher.log" "$STATE/tmux-watch.log" <<'PY'
+# (a failing scan is a row of its own, never an empty "nothing to report")
+logs="$(python3 - "$HOME/.claude/nerdflair-errors.log" \
+  "$STATE/nfpty-error.log" "$STATE/launcher.log" "$STATE/tmux-watch.log" 2>&1 <<'PY'
 import sys, os, re, time, datetime as dt
 now = time.time()
 for path in sys.argv[1:]:
@@ -185,7 +186,8 @@ for path in sys.argv[1:]:
     desc = ", ".join(f"{k} x{v[0]}" for k, v in top) + (f" (+{len(keys) - 4} more)" if len(keys) > 4 else "") + f"; newest {newest}"
     print(f"{'BROKEN' if panic else 'warn'}\t{name}\t{'PANIC; ' if panic else ''}{desc}\tless {path}  # read the reasons, fix what they name")
 PY
-)
+)" || { row BROKEN logs "the log scan failed: ${logs//$'\n'/ }" "python3 --version  # needs python3"; logs=""; }
+while IFS=$'\t' read -r st name detail fix; do [[ -n "$st" ]] && row "$st" "$name" "$detail" "$fix"; done <<<"$logs"
 
 # 9. info only
 [[ -n "${NFPTY:-}" ]] && row info wrapper "this shell is under the hover wrapper (NFPTY)" || row info wrapper "this shell is not under the hover wrapper"
