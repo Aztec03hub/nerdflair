@@ -44,6 +44,13 @@ fn main() {
         let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
         std::process::exit(rc::name(&args));
     }
+    // Test helper: the per-project MCP cache file name for a payload's current_dir and project_dir, by the real key rule.
+    if std::env::args_os().nth(1).map_or(false, |a| a == "--mcp-cache-name") {
+        let arg = |i| std::env::args_os().nth(i).map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+        let path = mcp_cache_path(uid(), &mcp_key_src(&arg(2), &arg(3)));
+        println!("{}", path.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default());
+        std::process::exit(0);
+    }
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
         errlog::note_io("stdin-read", "reading the status payload; rendering with what was read", &e);
