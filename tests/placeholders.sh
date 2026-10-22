@@ -14,10 +14,10 @@ mkdir -p "$W/home" "$W/work"
 
 render() { # impl payload-extra-json (inside "cost" or top level is fixed) -> stripped output
   local impl=$1 tok=$2 d="$W/c-$1-$RANDOM" cmd; mkdir -m 700 "$d"; cmd=("$BIN"); [[ $impl == bash ]] && cmd=(bash "$SH")
-  printf '{"session_id":"ph-%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":0,"total_duration_ms":600000,"total_api_duration_ms":240000},"context_window":{"used_percentage":3,"context_window_size":200000%s}}' \
-    "$RANDOM" "$W/work" "$W/work" "$tok" |
+  printf '{"session_id":"ph-%s","workspace":{"current_dir":"%s","project_dir":"%s"},"model":{"display_name":"Opus"},"cost":{"total_cost_usd":%s,"total_duration_ms":600000,"total_api_duration_ms":240000},"context_window":{%s%s}}' \
+    "$RANDOM" "$W/work" "$W/work" "${COSTV:-0}" "${CTX:-\"used_percentage\":3,\"context_window_size\":200000}" "$tok" |
     env -i PATH="$PATH" HOME="$W/home" TMPDIR="$W" LC_ALL=C.UTF-8 TZ=UTC COLUMNS=200 NERDFLAIR_CACHE_DIR="$d" \
-      NERDFLAIR_ERR_STAMP_DIR="$W/st-$RANDOM" NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST_FILE="$W/empty-ledger.tsv" \
+      NERDFLAIR_ERR_STAMP_DIR="$W/st-$RANDOM" NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_REPO_COST_FILE="$d/ledger.tsv" \
       "${cmd[@]}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
 }
 want() { # label impl out needle
@@ -32,6 +32,14 @@ for impl in rust bash; do
   want "repo cost placeholder" "$impl" "$out" '$--'
   want "eta placeholder" "$impl" "$out" '~--'
   want "rate placeholder" "$impl" "$out" '--/s'
+  # the ETA slot is kept whenever used% is known and no estimate exists (here 100%: nothing left to predict)
+  out3=$(CTX='"used_percentage":100,"context_window_size":200000' render "$impl" '')
+  want "eta placeholder at 100%" "$impl" "$out3" '~--'
+  # no used% and no transcript: the gauge says "--" (a dim empty gauge), not "0/200k 0%"
+  out4=$(COSTV=1.5 CTX='"context_window_size":200000' render "$impl" '')
+  grep -qE '(^|[[:space:]])--([[:space:]]|$)' <<<"$out4" || { echo "FAIL $impl: gauge placeholder missing in: $out4"; fail=1; }
+  refuse "gauge shows 0%" "$impl" "$out4" '0/200k 0%'
+  refuse "eta without used%" "$impl" "$out4" '~--'
   out2=$(render "$impl" '')
   refuse "rate placeholder without tokens" "$impl" "$out2" '--/s'
 done

@@ -36,5 +36,43 @@ worktree|$W/wt|wt-branch
 detached|$W/dt|$SHORT
 EOF
 done
+# ── hostile and odd HEAD contents: both renderers must clean them identically ──────────────────────────
+# fake repos (a .git dir with HEAD): git is hung, so HEAD is the only source. `want` is what must show;
+# ESC and the other control bytes are removed (so what is left of an escape sequence is plain text).
+ESC=$'\x1b'; BEL=$'\x07'
+n=0
+mkcase() { # label head-bytes(printf format) want -> creates $W/h$n/.git/HEAD; prints the dir
+  local d="$W/hc$RANDOM$RANDOM"; mkdir -p "$d/.git/refs"; printf "$2" > "$d/.git/HEAD"; echo "$d"
+}
+check_pair() { # label dir want
+  local r b; r=$(render rust "$2" | head -n 1); b=$(render bash "$2" | head -n 1)
+  [[ "$r" == *"$3"* ]] || { echo "FAIL rust $1: want '$3' in: $r"; fail=1; }
+  [[ "$b" == *"$3"* ]] || { echo "FAIL bash $1: want '$3' in: $b"; fail=1; }
+  [[ "$r" == "$b" ]] || { echo "FAIL $1: rust and bash differ:"; echo "  rust: $r"; echo "  bash: $b"; fail=1; }
+  [[ "$r$b" != *"$ESC]"* && "$r$b" != *"$BEL"* ]] || { echo "FAIL $1: control bytes reached the output"; fail=1; }
+}
+check_pair "escape sequence" "$(mkcase x 'ref: refs/heads/a\033[31mRED\033[0m\n')" 'a[31mRED[0m'
+check_pair "OSC title" "$(mkcase x 'ref: refs/heads/a\033]0;pwn\007b\n')" 'a]0;pwnb'
+check_pair "CRLF" "$(mkcase x 'ref: refs/heads/feat\r\n')" 'feat'
+check_pair "CR inside" "$(mkcase x 'ref: refs/heads/fe\rat\n')" 'feat'
+check_pair "NUL" "$(mkcase x 'ref: refs/heads/fe\000at\n')" 'feat'
+check_pair "invalid UTF-8" "$(mkcase x 'ref: refs/heads/fe\377at\n')" 'feat'
+check_pair "truncated UTF-8" "$(mkcase x 'ref: refs/heads/fe\342\202at\n')" 'feat'
+check_pair "C1 control" "$(mkcase x 'ref: refs/heads/a\302\205b\n')" 'ab'
+check_pair "trailing spaces" "$(mkcase x 'ref: refs/heads/trail   \n')" 'trail'
+# a `.git` FILE whose gitdir line ends in a space (and CR)
+n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/real.git/refs" "$d/wt"; printf 'ref: refs/heads/spaced\n' > "$d/real.git/HEAD"
+printf 'gitdir: %s/real.git \r\n' "$d" > "$d/wt/.git"
+check_pair "gitdir trailing space and CR" "$d/wt" 'spaced'
+# bounded read: a first line longer than 4 KiB is cut at 4096 bytes in both, and a 20 MB HEAD costs nothing
+n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs"
+{ printf 'ref: refs/heads/'; head -c 20000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$d/.git/HEAD"
+t0=$EPOCHREALTIME; check_pair "huge HEAD" "$d" 'xxxx'; t1=$EPOCHREALTIME
+(( (${t1/./} - ${t0/./}) / 1000 < 6000 )) || { echo "FAIL huge HEAD: took too long"; fail=1; }
+# a bare repo nested inside a repo: its own branch, not the outer one
+n=$((n + 1)); d="$W/h$n"; mkdir -p "$d/.git/refs" "$d/inner.git/refs"
+printf 'ref: refs/heads/outer-branch\n' > "$d/.git/HEAD"; printf 'ref: refs/heads/inner-branch\n' > "$d/inner.git/HEAD"
+check_pair "nested bare repo" "$d/inner.git" 'inner-branch'
+r=$(render rust "$d/inner.git" | head -n 1); [[ "$r" != *outer-branch* ]] || { echo "FAIL nested bare repo: outer branch shown"; fail=1; }
 (( fail )) && exit 1
 echo "git-head-fallback: ok"

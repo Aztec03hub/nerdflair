@@ -263,11 +263,15 @@ _mcp_probe_names=""
 # the health counts came from the override and the NAMES from /tmp, which is
 # exactly the disagreement between the two that the probe exists to prevent.
 # Empty when there is no private cache dir (then no probe cache and no probe).
+# The ONE rule for the per-project key (twin of norm_key_dir): cut at the first newline, collapse runs of "/",
+# strip a trailing "/" (the root stays "/"). Set whether or not NERDFLAIR_MCP_CACHE is: the probe cds to it.
+_mcp_key_dir="${project_dir:-$cwd}"; _mcp_key_dir="${_mcp_key_dir%%$'\n'*}"
+while [[ "$_mcp_key_dir" == *//* ]]; do _mcp_key_dir="${_mcp_key_dir//\/\//\/}"; done
+[[ ${#_mcp_key_dir} -gt 1 ]] && _mcp_key_dir="${_mcp_key_dir%/}"
 if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _MCP_CACHE="$NERDFLAIR_MCP_CACHE"
 else
   # Keyed by the project dir (cksum, like the git cache): `claude mcp list` is cwd-dependent, so one shared
   # file let a 11/11 from one project show in another. The probe also runs from this dir.
-  _mcp_key_dir="${project_dir:-$cwd}"
   _mcp_key_crc=$(printf '%s' "$_mcp_key_dir" | cksum | cut -d' ' -f1)
   _nf_cache_path "nerdflair-mcphealth-${UID}-${_mcp_key_crc}"; _MCP_CACHE="$_NF_CP"
 fi
@@ -377,9 +381,18 @@ OPT_BULLET="${DIM} ·${RESET}"
 # Sets one of: git_dir (cwd is a repo, or wraps exactly one), or
 # _multi_git_subs (cwd wraps 2+ repos → multi-branch summary). When git_dir is
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
+# First line of a small file into _NF_CL, read as at most 4 KiB: invalid UTF-8 dropped, control characters
+# (C0, DEL, C1, so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of clean_first_line.
+_nf_clean_line() {
+  local LC_ALL=C
+  _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177' 2>/dev/null) || true
+  _NF_CL=${_NF_CL//$'\xc2'[$'\x80'-$'\x9f']/}
+  _NF_CL=${_NF_CL%"${_NF_CL##*[! ]}"}
+}
 # Branch name read straight from .git/HEAD, for when git itself is hung or missing (twin of
-# head_fallback_branch). Walks up to the first .git; a linked worktree has a .git FILE with
-# "gitdir: <path>". "ref: refs/heads/x" -> x; a bare 40/64 hex sha -> its first 7. Sets _NF_HB.
+# head_fallback_branch). Walks up and stops at the FIRST .git entry or bare layout (HEAD plus refs/); a
+# linked worktree has a .git FILE with "gitdir: <path>". "ref: refs/heads/x" -> x; a bare 40/64 hex sha ->
+# its first 7. Sets _NF_HB.
 _nf_head_branch() {
   local _d="$1" _dot _gd="" _l=""
   _NF_HB=""
@@ -387,11 +400,13 @@ _nf_head_branch() {
     _dot="$_d/.git"
     if [[ -d "$_dot" ]]; then _gd="$_dot"
     elif [[ -f "$_dot" ]]; then
-      IFS= read -r _l < "$_dot" || true
-      [[ "$_l" == "gitdir: "* ]] && { _gd="${_l#gitdir: }"; [[ "$_gd" == /* ]] || _gd="$_d/$_gd"; }
+      _nf_clean_line "$_dot"; _l="$_NF_CL"
+      [[ "$_l" == "gitdir: "* ]] || return 1
+      _gd="${_l#gitdir: }"; [[ "$_gd" == /* ]] || _gd="$_d/$_gd"
+    elif [[ -f "$_d/HEAD" && -d "$_d/refs" ]]; then _gd="$_d"
     fi
     if [[ -n "$_gd" ]]; then
-      _l=""; IFS= read -r _l < "$_gd/HEAD" || true
+      _nf_clean_line "$_gd/HEAD"; _l="$_NF_CL"
       if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
       elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
       [[ -n "$_NF_HB" ]]; return
@@ -890,6 +905,7 @@ ctx_segment=""
 ctx_total=200000  # default context window size
 total_used=0
 pct=0
+_ctx_src=1   # 0 when neither the payload nor a transcript usage line gave a figure: the gauge then says "--"
 
 if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   # used_pct is the authoritative context fill percentage from Claude Code.
@@ -903,6 +919,7 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   pct="${used_pct%%.*}"
   total_used=$(( ctx_total * pct / 100 ))
 else
+  _ctx_src=0
   # Fall back: parse last usage entry from transcript JSONL
   # 2>/dev/null on every parse of the PAYLOAD: it is untrusted input, and a
   # malformed one made jq print "parse error: Invalid numeric literal" on
@@ -959,6 +976,7 @@ else
           printf -v "$_uf" 0
         fi
       done
+      _ctx_src=1
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
       (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
@@ -1025,6 +1043,7 @@ fi
 
 # Context label for embedding in progress bar
 ctx_label="${used_fmt}/${size_fmt} ${pct}%"
+(( _ctx_src )) || ctx_label="--"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
@@ -1648,7 +1667,23 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && ! command -v claude &>/dev/null;
 fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v claude &>/dev/null; then
   _mh_cache="$_MCP_CACHE"
-  _mh_lock="${_mh_cache}.lock"
+  # ONE probe at a time per user: every project's job takes the same lock, a render that loses shows the last
+  # cached value. (A test's NERDFLAIR_MCP_CACHE override keeps a lock of its own.)
+  if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _mh_lock="${_mh_cache}.lock"
+  else _mh_lock="${_mh_cache%/*}/nerdflair-mcphealth-${UID}.lock"; fi
+  # Daily: delete per-project probe files untouched for 14+ days (twin of prune_mcp_caches).
+  if [[ -z "${NERDFLAIR_MCP_CACHE:-}" ]]; then
+    _nf_cache_path "nerdflair-mcphealth-prune-${UID}"; _pr_stamp="$_NF_CP"
+    if [[ -n "$_pr_stamp" ]] && { [[ ! -f "$_pr_stamp" ]] || (( EPOCHSECONDS - $(stat -c %Y "$_pr_stamp" 2>/dev/null || echo 0) >= 86400 )); }; then
+      if _nf_cache_put "$_pr_stamp" ""; then
+        _pr_max=$(( ${NERDFLAIR_MCP_PRUNE_DAYS:-14} * 86400 ))
+        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"*; do
+          [[ -e "$_pr_f" ]] || continue
+          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        done
+      else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
+    fi
+  fi
   _mh_fresh=false
   if [[ -f "$_mh_cache" ]]; then
     _mh_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_cache" 2>/dev/null || stat -f %m "$_mh_cache" 2>/dev/null || echo 0) ))
@@ -2291,8 +2326,8 @@ if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && 
   fi
   compact_segment="${_cp_color}\xf3\xb0\x94\x9f ~${_cp_fmt}${RESET}"
 fi
-# Under 5% used the estimate is not drawn: keep the slot with a dim placeholder.
-if [[ -z "$compact_segment" && -n "$_used10" ]] && (( _used10 < 50 )) 2>/dev/null; then
+# No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
+if [[ -z "$compact_segment" && -n "$_used10" ]]; then
   compact_segment="${DIM}\xf3\xb0\x94\x9f ~--${RESET}"
 fi
 
@@ -2905,11 +2940,12 @@ _render_bar() {
   (( _bar_area < 20 )) && _bar_area=20
 
   # Position logo centered in the bar area (only when bar is empty)
-  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
+  # (A "--" label is the gauge with no source: the label shows instead of the logo.)
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )) && [[ "$_label" != "--" ]]; then
     _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
     (( _logo_start < 0 )) && _logo_start=0
     _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
-  elif (( _pct > 0 )); then
+  elif (( _pct > 0 )) || [[ "$_label" == "--" ]]; then
     _logo_icons=()
   fi
 

@@ -785,6 +785,8 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut total_used: i64 = 0;
     let mut pct: i64 = 0;
     let mut pct_is_int = true;
+    // False when neither the payload nor a transcript usage line gave a figure: the gauge then says "--".
+    let mut ctx_src = true;
     if !f.used_pct.is_empty() && !f.ctx_size.is_empty() {
         ctx_total_s = f.ctx_size.clone();
         // A fractional `used_percentage` is legal in the payload (the docs' own
@@ -820,6 +822,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             },
         }
     } else {
+        ctx_src = false;
         let transcript = jqx::path(&root, &["transcript_path"])
             .map(jqx::tostring)
             .unwrap_or_default();
@@ -903,6 +906,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                                         }),
                                     }
                                 };
+                                ctx_src = true;
                                 total_used = g("input_tokens")
                                     + g("cache_creation_input_tokens")
                                     + g("cache_read_input_tokens")
@@ -976,7 +980,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         Some(t) => format!("{}", t),
         None => ctx_total_s.clone(),
     };
-    let ctx_label = format!("{}/{} {}%", used_fmt, size_fmt, pct);
+    let ctx_label = if ctx_src { format!("{}/{} {}%", used_fmt, size_fmt, pct) } else { "--".to_string() };
 
     // ── Width ────────────────────────────────────────────────────
     // The configured number IS the row width; the bar is that less its two
@@ -1721,8 +1725,8 @@ fn render_inner(input: &str) -> Result<String, String> {
             compact_segment = format!("{}{}~{}{}", color, DOWN_DASHED, fmt, RESET);
         }
     }
-    // Under 5% used the estimate is not drawn: keep the slot with a dim placeholder.
-    if compact_segment.is_empty() && used10.map_or(false, |u| u < 50) {
+    // No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
+    if compact_segment.is_empty() && used10.is_some() {
         compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
@@ -2405,10 +2409,26 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
 )
 }
 
+/// First line of a small file, read as at most 4 KiB: invalid UTF-8 dropped, control characters (C0, DEL, C1,
+/// so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of `_nf_clean_line` in statusline.sh.
+fn clean_first_line(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(p).ok()?.take(4096).read_to_end(&mut buf).ok()?;
+    let line = buf.split(|b| *b == b'\n').next().unwrap_or(&[]);
+    let mut s = String::new();
+    for ch in line.utf8_chunks() {
+        s.push_str(ch.valid());
+    }
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    Some(s.trim_end_matches(' ').to_string())
+}
+
 /// Branch name read straight from `.git/HEAD`, for when git itself is hung or
-/// missing. Walks up from `start` to the first `.git`; a linked worktree has a
-/// `.git` FILE holding `gitdir: <path>` (relative paths are relative to it).
-/// `ref: refs/heads/x` gives `x`, a bare 40/64 hex sha gives its first 7.
+/// missing. Walks up from `start` and stops at the FIRST `.git` entry or bare-repo layout (`HEAD` plus
+/// `refs/`), so a nested bare repo never shows the outer branch. A linked worktree has a `.git` FILE holding
+/// `gitdir: <path>` (relative paths are relative to it). `ref: refs/heads/x` gives `x`, a bare 40/64 hex sha
+/// gives its first 7. The result is cleaned like clean_first_line.
 fn head_fallback_branch(start: &str) -> Option<String> {
     let mut d = PathBuf::from(start);
     loop {
@@ -2416,14 +2436,17 @@ fn head_fallback_branch(start: &str) -> Option<String> {
         let gd = if dot.is_dir() {
             Some(dot)
         } else if dot.is_file() {
-            let t = std::fs::read_to_string(&dot).unwrap_or_default();
-            t.lines().next().and_then(|l| l.strip_prefix("gitdir: ")).map(|g| d.join(g.trim()))
+            match clean_first_line(&dot).and_then(|l| l.strip_prefix("gitdir: ").map(|g| d.join(g))) {
+                Some(g) => Some(g),
+                None => return None,
+            }
+        } else if d.join("HEAD").is_file() && d.join("refs").is_dir() {
+            Some(d.clone())
         } else {
             None
         };
         if let Some(gd) = gd {
-            let t = std::fs::read_to_string(gd.join("HEAD")).unwrap_or_default();
-            let l = t.lines().next().unwrap_or("");
+            let l = clean_first_line(&gd.join("HEAD"))?;
             if let Some(b) = l.strip_prefix("ref: refs/heads/") {
                 return if b.is_empty() { None } else { Some(b.to_string()) };
             }
@@ -2649,7 +2672,14 @@ fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, St
     let Some(cache) = mcp_cache_path(uid, key_dir) else {
         return (ok, bad, warn, names); // no cache dir: no probe (already logged as cache-dir)
     };
-    let lock = PathBuf::from(format!("{}.lock", cache.display()));
+    // ONE probe at a time per user: every project's job takes the same lock, a render that loses shows the
+    // last cached value. (A test's NERDFLAIR_MCP_CACHE override keeps a lock of its own.)
+    let lock = if std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
+        PathBuf::from(format!("{}.lock", cache.display()))
+    } else {
+        cache.with_file_name(format!("nerdflair-mcphealth-{}.lock", uid))
+    };
+    prune_mcp_caches(&cache, uid);
     let mut fresh = false;
     if cache.is_file() {
         if file_age(&cache) < ttl {
@@ -2728,7 +2758,7 @@ fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, St
                || printf '%s %s mcp-probe-write: cannot update %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" {cache} >> {log}; \
              else touch {cache} 2>/dev/null; fi",
             tmo = env_int("NERDFLAIR_MCP_PROBE_TIMEOUT", 30).clamp(1, 600),
-            cd = if key_dir.is_empty() { String::new() } else { format!("cd {} 2>/dev/null; ", shq(key_dir)) },
+            cd = if key_dir.is_empty() { String::new() } else { format!("cd {} 2>/dev/null; ", shq(&norm_key_dir(key_dir))) },
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
             // Empty when no safe stamp directory exists: the script then logs without a rate limit.
@@ -2947,7 +2977,51 @@ fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
 fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
     match std::env::var("NERDFLAIR_MCP_CACHE") {
         Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
-        _ => cache_path(&format!("nerdflair-mcphealth-{}-{}", uid, cksum(key_dir.as_bytes()))),
+        _ => cache_path(&format!("nerdflair-mcphealth-{}-{}", uid, cksum(norm_key_dir(key_dir).as_bytes()))),
+    }
+}
+
+/// The ONE rule for the per-project key (twin of `_nf_norm_key_dir`): cut at the first newline (bash reads the
+/// payload fields line-wise), collapse runs of `/`, strip a trailing `/` (the root stays `/`).
+fn norm_key_dir(s: &str) -> String {
+    let s = s.split('\n').next().unwrap_or("");
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '/' && out.ends_with('/') {
+            continue;
+        }
+        out.push(c);
+    }
+    if out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// At most once a day, delete per-project probe files (`nerdflair-mcphealth-UID-<crc>` and its siblings) whose
+/// mtime is 14+ days old: a probe touches its cache every few minutes while the project is in use, so these
+/// are projects nobody has opened. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
+fn prune_mcp_caches(cache: &Path, uid: u32) {
+    if json_mode() || std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
+        return;
+    }
+    let (Some(dir), Some(stamp)) = (cache.parent(), cache_path(&format!("nerdflair-mcphealth-prune-{}", uid))) else { return };
+    if stamp.is_file() && file_age(&stamp) < 86400 {
+        return;
+    }
+    if let Err(e) = cache_write(&stamp, b"") {
+        errlog::note_io(&errlog::tmp_key(&stamp), &stamp.display().to_string(), &e);
+        return;
+    }
+    let prefix = format!("nerdflair-mcphealth-{}-", uid);
+    let max_age = env_int("NERDFLAIR_MCP_PRUNE_DAYS", 14) * 86400;
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) && file_age(&e.path()) >= max_age {
+            if let Err(err) = std::fs::remove_file(e.path()) {
+                errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
+            }
+        }
     }
 }
 

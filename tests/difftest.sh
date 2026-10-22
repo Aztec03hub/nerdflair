@@ -374,8 +374,8 @@ run_side() {
   rm -f "${GIT_CACHE_PATHS[@]}" 2>/dev/null
   rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
   rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
-  rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" 2>/dev/null
-  rmdir "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
+  rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-mcphealth-${UID}-* "$CACHE_DIR/nerdflair-mcphealth-prune-${UID}" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-sample-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-tmux-${UID}-* 2>/dev/null
@@ -390,8 +390,12 @@ run_side() {
   fi
   if [[ -n "${CASE_SEED_MCPHEALTH:-}" ]]; then
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"
-    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}"
-    extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999" "NERDFLAIR_MCP_CACHE=$CACHE_DIR/nerdflair-mcphealth-${UID}")
+    # NO NERDFLAIR_MCP_CACHE: the renderers must find the per-project file by its own name,
+    # nerdflair-mcphealth-UID-<cksum of the normalised project dir> (the dir comes from the payload).
+    local kd; kd=$(jq -r '(.workspace.project_dir // .workspace.current_dir // empty)' "$outdir/payload.json")
+    kd="${kd%%$'\n'*}"; while [[ "$kd" == *//* ]]; do kd="${kd//\/\//\/}"; done; [[ ${#kd} -gt 1 ]] && kd="${kd%/}"
+    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}-$(printf '%s' "$kd" | cksum | cut -d' ' -f1)"
+    extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")
   fi
@@ -572,6 +576,13 @@ for id in "${CASES[@]}"; do
     problems+=("stdout differs — $off")
   fi
   [[ "$rcA" != "$rcB" ]] && problems+=("exit status differs: A=$rcA B=$rcB")
+  # A seeded MCP health file is found by its per-project NAME (no override). If neither side shows the seeded
+  # count, the name did not match and the case proves nothing.
+  if [[ -n "$CASE_SEED_MCPHEALTH" ]]; then
+    _sd_ok="${CASE_SEED_MCPHEALTH%%:*}"
+    sed 's/\x1b\[[0-9;]*m//g' "$OUTDIR/A.out" | grep -q "${_sd_ok}/" \
+      || problems+=("seeded MCP health ${CASE_SEED_MCPHEALTH} not shown: the per-project cache name did not match")
+  fi
   # stderr: compare EMPTINESS PARITY, not byte equality. A Rust diagnostic will
   # never match jq's wording, but "one side is silent and the other is not" is a
   # real behavioural difference and must fail. Both noisy is reported, not failed.
