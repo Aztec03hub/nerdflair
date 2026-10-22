@@ -2307,6 +2307,10 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
                 if ucount > 100 {
                     break;
                 }
+                // A nested worktree or repo is listed as a directory: no lines to count.
+                if d.join(file).is_dir() {
+                    continue;
+                }
                 match std::fs::read(d.join(file)) {
                     Ok(bytes) => added += bytes.iter().filter(|b| **b == b'\n').count() as i64,
                     // A file listed then gone (a race) is normal; anything else

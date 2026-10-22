@@ -495,6 +495,7 @@ if [[ -n "$git_dir" ]]; then
         [[ -z "$ufile" ]] && continue
         (( _ucount++ ))
         (( _ucount > 100 )) && break
+        [[ -d "$ufile" ]] && continue   # a nested worktree or repo is listed as a directory
         # a file listed then gone is a race and normal; unreadable is not
         if [[ -e "$ufile" && ! -r "$ufile" ]]; then _nf_err git-untracked-read "cannot read $ufile"; fi
         ulines=$(wc -l < "$ufile" 2>/dev/null | tr -d ' ')
