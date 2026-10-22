@@ -686,7 +686,9 @@ else
   xargs -P "$JOBS" -I{} bash -c \
     'run_case "$1" > "$RUN_DIR/$1.report" 2>&1; echo "$1" >> "$RUN_DIR/progress"; printf "difftest: %s/%s cases done\n" "$(wc -l < "$RUN_DIR/progress")" "$TOTAL" >&2' _ {} <<<"$(printf '%s\n' "${SEL[@]}")" &
   XPID=$!; set +m
-  wait "$XPID"; XPID=
+  # XPID stays set: if xargs dies early, _cleanup still signals the leftover worker group (kill on an empty group is a no-op).
+  # A SIGKILL to difftest cannot be trapped; its workers then run on to the end of their case. Nothing to handle there.
+  wait "$XPID"
   for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report" 2>/dev/null; done
   # a crashed case is caught below by its missing `done` marker (xargs' own status is the last printf's, always 0)
 fi
