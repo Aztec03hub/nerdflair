@@ -381,4 +381,9 @@ for w in 60 80 110 150 200; do
     emit "row3 gap: COLUMNS=$w MCP=$m with the RC chip" "$(mut '.')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w" "CASE_MCP=$m" "CASE_TMUX=%3" "CASE_SEED_TMUX=orchestrator" "CASE_SEED_RC=$RCSEED"
   done
 done
+# ═══ 256-colour clamp guard: TMUX set, CLAUDE_CODE_TMUX_TRUECOLOR empty or set ═══
+emit "256 clamp: logo splash 0%, TMUX set, opt-in empty (greys, no 16/17)" "$(mut '.context_window.used_percentage=0')" "${E_FULL[@]}" "CASE_TMUX=%3"
+emit "256 clamp: logo splash 0%, TMUX set, opt-in set (truecolor as before)" "$(mut '.context_window.used_percentage=0')" "${E_FULL[@]}" "CASE_TMUX=%3" "CASE_EXTRA_ENV=CLAUDE_CODE_TMUX_TRUECOLOR=1"
+emit "256 clamp: bar 37%, TMUX set, opt-in empty" "$(mut '.')" "${E_FULL[@]}" "CASE_TMUX=%3"
+emit "256 clamp: full bar 100%, TMUX set, opt-in empty" "$(mut '.context_window.used_percentage=100')" "${E_FULL[@]}" "CASE_TMUX=%3"
 echo "generated $N payloads in $OUT"

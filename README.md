@@ -118,6 +118,8 @@ Things that are normal are not logged: a closed window, tmux lock contention, a 
 - Session cost, API duration, and token throughput
 - Chime style label (shown for the random style before any cost is incurred)
 
+**256-colour mode inside tmux.** When `$TMUX` is set and `CLAUDE_CODE_TMUX_TRUECOLOR` is empty, Claude Code drops every colour it prints to the 256-colour palette. Many terminal schemes repaint palette slots 16 and 17 (Catppuccin Mocha makes them peach and rosewater), so the near-black logo splash and the empty part of the context bar would come out flat orange. In that mode both renderers swap any colour that would land on 16 or 17 for a dark grey from the 232-255 ramp, which schemes leave alone, and everything else is drawn as before. For the full gradient, export `CLAUDE_CODE_TMUX_TRUECOLOR=1` before starting Claude Code (or `tmux set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1` so windows started with a command get it too); with it set the output is the same truecolor line you get outside tmux. `tests/check-256-safe.py` checks both modes.
+
 
 ## Prerequisites
 
