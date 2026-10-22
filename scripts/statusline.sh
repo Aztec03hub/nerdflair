@@ -383,9 +383,23 @@ OPT_BULLET="${DIM} ·${RESET}"
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
 # First line of a small file into _NF_CL, read as at most 4 KiB: invalid UTF-8 dropped, control characters
 # (C0, DEL, C1, so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of clean_first_line.
+# Invalid UTF-8 is dropped by a round trip through UTF-16 (which, unlike UTF-8 to UTF-8, also drops code points
+# above U+10FFFF, as Rust does). Without a working iconv the line is cut to printable ASCII instead and
+# git-branch-fallback-noiconv is logged: a non-ASCII branch name then differs from the Rust renderer's.
 _nf_clean_line() {
-  local LC_ALL=C
-  _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177' 2>/dev/null) || true
+  local LC_ALL=C _ascii="${2:-}"   # $2 = "ascii": cut the result to printable ASCII (the no-iconv degrade) only for the BRANCH
+  if [[ -z "${_NF_ICONV:-}" ]]; then
+    if iconv -f UTF-8 -t UTF-16LE </dev/null >/dev/null 2>&1; then _NF_ICONV=1
+    else _NF_ICONV=0; _nf_err git-branch-fallback-noiconv "iconv is missing or broken; the .git/HEAD branch fallback shows printable ASCII only"; fi
+  fi
+  # The control characters go AFTER the round trip: removing them first could join the bytes around them into a
+  # valid sequence (E2 01 82 AC would become the euro sign), which Rust never does. Only GNU iconv is verified.
+  if [[ "$_NF_ICONV" == 1 ]]; then
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-16LE -c 2>/dev/null | iconv -f UTF-16LE -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177') || true
+  else
+    _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | tr -d '\000-\037\177') || true
+    [[ -n "$_ascii" ]] && _NF_CL=$(printf '%s' "$_NF_CL" | tr -cd '\040-\176')
+  fi
   _NF_CL=${_NF_CL//$'\xc2'[$'\x80'-$'\x9f']/}
   _NF_CL=${_NF_CL%"${_NF_CL##*[! ]}"}
 }
@@ -406,7 +420,7 @@ _nf_head_branch() {
     elif [[ -f "$_d/HEAD" && -d "$_d/refs" ]]; then _gd="$_d"
     fi
     if [[ -n "$_gd" ]]; then
-      _nf_clean_line "$_gd/HEAD"; _l="$_NF_CL"
+      _nf_clean_line "$_gd/HEAD" ascii; _l="$_NF_CL"
       if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
       elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
       [[ -n "$_NF_HB" ]]; return
@@ -906,7 +920,6 @@ ctx_segment=""
 ctx_total=200000  # default context window size
 total_used=0
 pct=0
-_ctx_src=1   # 0 when neither the payload nor a transcript usage line gave a figure: the gauge then says "--"
 
 if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   # used_pct is the authoritative context fill percentage from Claude Code.
@@ -920,7 +933,6 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   pct="${used_pct%%.*}"
   total_used=$(( ctx_total * pct / 100 ))
 else
-  _ctx_src=0
   # Fall back: parse last usage entry from transcript JSONL
   # 2>/dev/null on every parse of the PAYLOAD: it is untrusted input, and a
   # malformed one made jq print "parse error: Invalid numeric literal" on
@@ -977,7 +989,6 @@ else
           printf -v "$_uf" 0
         fi
       done
-      _ctx_src=1
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
       (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
@@ -1044,7 +1055,6 @@ fi
 
 # Context label for embedding in progress bar
 ctx_label="${used_fmt}/${size_fmt} ${pct}%"
-(( _ctx_src )) || ctx_label="--"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
@@ -1675,19 +1685,21 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
   # Daily: delete per-project probe files untouched for 14+ days (twin of prune_mcp_caches).
   if [[ -z "${NERDFLAIR_MCP_CACHE:-}" ]]; then
     _nf_cache_path "nerdflair-mcphealth-prune-${UID}"; _pr_stamp="$_NF_CP"
-    if [[ -n "$_pr_stamp" ]] && { [[ ! -f "$_pr_stamp" ]] || (( EPOCHSECONDS - $(stat -c %Y "$_pr_stamp" 2>/dev/null || echo 0) >= 86400 )); }; then
+    if [[ -n "$_pr_stamp" ]] && (( $(_nf_stamp_age "$_pr_stamp") >= 86400 )); then
       if _nf_cache_put "$_pr_stamp" ""; then
         _pr_max=$(( ${NERDFLAIR_MCP_PRUNE_DAYS:-14} * 86400 ))
-        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"*; do
-          [[ -e "$_pr_f" ]] || continue
-          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        # Symlinks are skipped (never aged, never removed): same in Rust. The old shared file
+        # nerdflair-mcphealth-UID (no project suffix, never read since the per-project change) goes too.
+        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"* "${_mh_cache%/*}/nerdflair-mcphealth-${UID}"; do
+          [[ -L "$_pr_f" || ! -e "$_pr_f" ]] && continue
+          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
         # Same pass, same age (NERDFLAIR_MCP_PRUNE_DAYS): per-session repo-cost stamps (not the -total-
         # memo) and orphan `nerdflair-*.tmp.*` files (a writer killed between create and rename).
         # Symlinks and directories are skipped entirely, like the rest of this prune.
         for _pr_f in "${_mh_cache%/*}/nerdflair-repocost-${UID}-"* "${_mh_cache%/*}/nerdflair-"*.tmp.*; do
           [[ -f "$_pr_f" && ! -L "$_pr_f" ]] || continue
-          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+          (( $(_nf_stamp_age "$_pr_f") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
         done
       else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
     fi
@@ -1734,7 +1746,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
       # The probe's stderr goes to an unguessable mktemp file, never to a
       # predictable name in shared /tmp that a planted symlink could redirect.
       _mh_err=$(mktemp "${TMPDIR:-/tmp}/nerdflair-mcperr.XXXXXX" 2>/dev/null) || _mh_err=/dev/null
-      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 2>"$_mh_err"); _rc=$?
+      _raw=$(timeout -k 5 "${NERDFLAIR_MCP_PROBE_TIMEOUT:-30}" claude mcp list 9>&- 2>"$_mh_err"); _rc=$?   # 9>&-: the probe and the servers it spawns must not inherit the lock
       _out=$(printf '%s\n' "$_raw" | sed 's/\x1b\[[0-9;]*m//g')
       _o=0; _b=0; _w=0; _nm=""
       while IFS= read -r _ln; do
@@ -2948,12 +2960,11 @@ _render_bar() {
   (( _bar_area < 20 )) && _bar_area=20
 
   # Position logo centered in the bar area (only when bar is empty)
-  # (A "--" label is the gauge with no source: the label shows instead of the logo.)
-  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )) && [[ "$_label" != "--" ]]; then
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
     _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
     (( _logo_start < 0 )) && _logo_start=0
     _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
-  elif (( _pct > 0 )) || [[ "$_label" == "--" ]]; then
+  elif (( _pct > 0 )); then
     _logo_icons=()
   fi
 

@@ -121,7 +121,7 @@ trap _cleanup EXIT
 # ═════════════════════════════════════════════════════════════════════════════
 # Git fixtures
 # ═════════════════════════════════════════════════════════════════════════════
-FIXROOT="/tmp/nerdflair-difftest-fixtures"
+FIXROOT="$RUN_DIR/fixtures"   # private per run: a shared /tmp copy let concurrent agents race on the git index/rebuild (~1.5s to build)
 FIX_STAMP="$FIXROOT/.built-v3"
 
 # A failed fixture step aborts the build: both sides would otherwise read the same
@@ -563,9 +563,16 @@ for id in "${CASES[@]}"; do
        && [[ "$(cat "$OUTDIR/A.rc")" == "$(cat "$OUTDIR/B.rc")" ]]; then
       break
     fi
+    # keep the first (differing) attempt: it is the only evidence of what was unstable
+    if (( _attempt == 0 )); then cp "$OUTDIR/A.out" "$OUTDIR/first-A.out"; cp "$OUTDIR/B.out" "$OUTDIR/first-B.out"; fi
     (( _attempt++ >= 1 )) && break
   done
-  (( _attempt > 0 )) && UNSTABLE+=("$id")
+  if (( _attempt > 0 )); then
+    UNSTABLE+=("$id")
+    # evidence: what differed on the first attempt (cp ran before the retry)
+    printf '%sUNSTABLE %s first-attempt diff:%s\n' "$C_YEL" "$id" "$C_RST"
+    diff <(cat -v "$OUTDIR/first-A.out") <(cat -v "$OUTDIR/first-B.out") | head -20 | cut -c1-1500
+  fi
 
   rcA=$(cat "$OUTDIR/A.rc"); rcB=$(cat "$OUTDIR/B.rc")
   errA=$(wc -c < "$OUTDIR/A.err"); errB=$(wc -c < "$OUTDIR/B.err")
@@ -634,6 +641,9 @@ done
   "$C_YEL" "${NOISY[*]}" "$C_RST"
 if (( ${#FAILED[@]} == 0 )); then
   printf '%s%d/%d identical%s\n' "$C_GRN" "$SAME" "$TOTAL" "$C_RST"
+  # A case that needed its retry is nondeterminism, not a pass: fail the run.
+  # NERDFLAIR_DIFFTEST_ALLOW_UNSTABLE=1 restores the old warn-only behaviour.
+  (( ${#_only_unstable[@]} )) && [[ "${NERDFLAIR_DIFFTEST_ALLOW_UNSTABLE:-0}" != 1 ]] && exit 3
   exit 0
 else
   printf '%s%d/%d identical — %d differ: %s%s\n' \

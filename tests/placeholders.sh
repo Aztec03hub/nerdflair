@@ -35,10 +35,10 @@ for impl in rust bash; do
   # the ETA slot is kept whenever used% is known and no estimate exists (here 100%: nothing left to predict)
   out3=$(CTX='"used_percentage":100,"context_window_size":200000' render "$impl" '')
   want "eta placeholder at 100%" "$impl" "$out3" '~--'
-  # no used% and no transcript: the gauge says "--" (a dim empty gauge), not "0/200k 0%"
+  # no used% and no transcript: the empty bar keeps the logo splash (no label, no "--"), as before
   out4=$(COSTV=1.5 CTX='"context_window_size":200000' render "$impl" '')
-  grep -qE '(^|[[:space:]])--([[:space:]]|$)' <<<"$out4" || { echo "FAIL $impl: gauge placeholder missing in: $out4"; fail=1; }
-  refuse "gauge shows 0%" "$impl" "$out4" '0/200k 0%'
+  grep -q $'\U000f0bf7' <<<"$out4" || grep -q $'\U000f0c1e' <<<"$out4" || { echo "FAIL $impl: logo splash missing in: $out4"; fail=1; }
+  refuse "gauge label on a fresh bar" "$impl" "$out4" ' -- '
   refuse "eta without used%" "$impl" "$out4" '~--'
   out2=$(render "$impl" '')
   refuse "rate placeholder without tokens" "$impl" "$out2" '--/s'
