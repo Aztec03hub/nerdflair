@@ -93,6 +93,13 @@ o=$( ( unset TMPDIR; HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_sna
   printf '2026-10-22 04:34:05 DELETED: %s/nf-x/tmux-1000\n' "$r" >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "rc=$?"
   rhg_done; [[ -d "$r" ]] && echo left || echo removed ) )
 [[ "$o" == *made* && "$o" == *rc=1* && "$o" == *removed* ]] && check "TMPDIR unset: the guard makes its own root, blames lines naming it, removes it" ok ok || check "TMPDIR unset: the guard makes its own root, blames lines naming it, removes it" ok "$o"
+# TMPDIR=/tmp is every session's, so the guard treats it as unset: another session's /tmp line passes, its own root's fails.
+o=$( ( export TMPDIR=/tmp; HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; r=$TMPDIR
+  [[ -d "$r" && "$r" != /tmp ]] && echo made || echo notmade
+  printf '2026-10-22 04:34:05 DELETED: /tmp/nf-other-x/tmux-1000\n' >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "other=$?"
+  printf '2026-10-22 04:34:05 DELETED: %s/nf-x/tmux-1000\n' "$r" >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "ours=$?"
+  rhg_done; [[ -d "$r" ]] && echo left || echo removed ) )
+[[ "$o" == *made* && "$o" == *other=0* && "$o" == *ours=1* && "$o" == *removed* ]] && check "TMPDIR=/tmp: the guard makes its own root; another session's /tmp line passes, its own fails" ok ok || check "TMPDIR=/tmp: the guard makes its own root; another session's /tmp line passes, its own fails" ok "$o"
 # One failing check must not hide the other.
 seed; o=$( ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot
   printf '2026-10-22T01:00:00Z 999 panic: boom\n' >> "$L"; echo "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x" >> "$SL"; rhg_check; echo "rc=$?" ) )

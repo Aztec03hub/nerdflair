@@ -283,7 +283,6 @@ echo '# edited' >> "$U"; bash "$INSTALL" install >/dev/null 2>&1
 check "reinstall: installed unit differed, running unit restarted" 2 "$(restarts)"
 rm -f "$SC_ACTIVE"; echo '# edited' >> "$W"; bash "$INSTALL" install >/dev/null 2>&1
 check "reinstall: changed watcher but the unit was not running: no restart" 2 "$(restarts)"
-check "the unit lets a heal child outlive a restart (KillMode=process)" 1 "$(grep -c '^KillMode=process$' "$U")"
 bash "$INSTALL" uninstall >/dev/null 2>&1
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
 

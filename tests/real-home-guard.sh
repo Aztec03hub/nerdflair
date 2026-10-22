@@ -14,9 +14,10 @@
 # Read-only on the real HOME; skipped when the log does not exist.
 rhg_snapshot() {
   # Every run owns one scratch root, and a log line is blamed on this run only if it names that exact root. The runners
-  # (quick.sh, full.sh) export a per-run TMPDIR; run alone, with TMPDIR unset, the guard makes one here, before the test
-  # makes any scratch. rhg_done removes it (rmdir: only when the test left it empty).
-  if [[ -z "${TMPDIR:-}" ]]; then
+  # (quick.sh, full.sh) export a per-run TMPDIR; run alone, with TMPDIR unset or the shared /tmp or /var/tmp, the guard
+  # makes one here, before the test makes any scratch. rhg_done removes it (rmdir: only when the test left it empty).
+  # ponytail: another shared TMPDIR (a sandbox dir several sessions use) still counts as this run's root; the runners avoid it.
+  if [[ -z "${TMPDIR:-}" || "${TMPDIR%/}" == /tmp || "${TMPDIR%/}" == /var/tmp ]]; then
     RHG_MADE_TMP=$(mktemp -d) || return 1
     export TMPDIR="$RHG_MADE_TMP"
   fi

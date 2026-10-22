@@ -9,9 +9,6 @@ StartLimitBurst=5
 Type=simple
 ExecStart=%h/.nerdflair/bin/nf-tmux-watch
 Restart=on-failure
-# A restart (install.sh does one after a change) stops only the watcher: a heal it started a moment earlier is two quick
-# steps (mkdir, SIGUSR1) and must finish, not be killed between them by the default KillMode=control-group.
-KillMode=process
 RestartSec=30
 Nice=10
 MemoryMax=64M
