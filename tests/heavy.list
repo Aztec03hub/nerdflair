@@ -7,10 +7,13 @@ bash tests/git-head-fallback.sh   # TIMEOUT at 15 s (16.1s), not measured to the
 bash tests/launcher-logging.sh   # 11.8s measured, near the limit so heavy
 bash tests/log-sanitizers.sh   # 12.9s measured, near the limit so heavy
 bash tests/bridge-selfchecks.sh   # 14.2s measured; its parts run singly in quick.list
-bash tests/test-nerdflair.sh   # 13.8s, FAILED under an empty temp HOME (fixture git needs an identity); run it with a real HOME
+bash tests/test-nerdflair.sh   # 13.8s, needs a git identity, which full.sh puts in its temp HOME
 bash tests/loadtest.sh --workers 20 --secs 120   # estimate: 120s+, not measured (spawns 20 workers)
 python3 band/bridge/hover-e2e.py   # estimate: minutes, not measured, uses the ambient tmux so agents never run it
 python3 band/bridge/hover-covered-e2e.py   # estimate: minutes, not measured, needs tmux
 python3 band/bridge/hover-highlight-e2e.py   # estimate: minutes, not measured, needs tmux
 python3 band/bridge/hover-linger-e2e.py   # estimate: minutes, not measured, needs tmux
 python3 band/bridge/hover-stale-e2e.py   # estimate: minutes, not measured, needs tmux
+bash tests/tmux-watch.sh   # 7.2s, load-flaky when it sleeps; private TMUX_TMPDIR server
+bash tests/golden-mutation.sh   # 7 s alone, moved from quick.list so load can't time it out
+bash tests/nfpty-exit.sh   # 7 s alone, moved from quick.list so load can't time it out

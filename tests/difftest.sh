@@ -372,10 +372,10 @@ run_side() {
   local lk
   exec {lk}>"$RUN_DIR/ccusage.lock"
   if [[ -n "${CASE_SEED_CCUSAGE:-}" ]]; then flock -x "$lk"; else flock -s "$lk"; fi
-  if [[ -n "${CASE_SEED_CCUSAGE:-}" || "$JOBS" == 1 ]]; then
-    rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
-    rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
-  fi
+  # Every case clears a stale seed, seeding or not: under the shared lock no seeder is running, and the
+  # removal is idempotent, so readers can't clear each other's state.
+  rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
+  rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
   rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-mcphealth-${UID}-* "$CACHE_DIR/nerdflair-mcphealth-prune-${UID}" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
@@ -626,6 +626,7 @@ run_case() {
     if (( errB > 0 )); then printf '%s║ B stderr: %s%s\n' "$C_RED" "$(head -c 400 "$OUTDIR/B.err")" "$C_RST"; fi
     printf '%s╚═ artifacts: %s%s\n' "$C_DIM" "$OUTDIR" "$C_RST"
   fi
+  : > "$OUTDIR/done"   # a case that dies before this line is counted as FAILED, never SAME
 }
 
 export -f run_case run_side mcp_json_for maybe_normalize resolve_repo
@@ -641,11 +642,16 @@ if (( JOBS == 1 )); then
   for id in "${SEL[@]}"; do run_case "$id"; done
 else
   # Each case reports into its own file; the reports are printed below in case order.
-  printf '%s\n' "${SEL[@]}" | xargs -P "$JOBS" -I{} bash -c 'run_case "$1" > "$RUN_DIR/$1.report" 2>&1' _ {}
-  for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report"; done
+  # One progress line per finished case on stderr (the reports themselves print at the end, in case order).
+  export TOTAL
+  printf '%s\n' "${SEL[@]}" | xargs -P "$JOBS" -I{} bash -c \
+    'run_case "$1" > "$RUN_DIR/$1.report" 2>&1; echo "$1" >> "$RUN_DIR/progress"; printf "difftest: %s/%s cases done\n" "$(wc -l < "$RUN_DIR/progress")" "$TOTAL" >&2' _ {}
+  XARGS_RC=$?
+  for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report" 2>/dev/null; done
+  (( XARGS_RC )) && printf 'difftest: xargs exited %d (a case crashed)\n' "$XARGS_RC" >&2
 fi
 for id in "${SEL[@]}"; do
-  if [[ -e "$RUN_DIR/$id/fail" ]]; then FAILED+=("$id"); KEEP=1; else SAME=$((SAME+1)); fi
+  if [[ -e "$RUN_DIR/$id/fail" || ! -e "$RUN_DIR/$id/done" ]]; then FAILED+=("$id"); KEEP=1; else SAME=$((SAME+1)); fi
   [[ -e "$RUN_DIR/$id/unstable" ]] && UNSTABLE+=("$id")
   [[ -e "$RUN_DIR/$id/noisy" ]] && NOISY+=("$id")
   [[ -e "$RUN_DIR/$id/bothfail" ]] && BOTHFAIL+=("$id=$(<"$RUN_DIR/$id/bothfail")")
