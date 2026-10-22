@@ -18,7 +18,6 @@ for a in "$@"; do
     *) echo "deploy: unknown argument '$a'" >&2; echo "usage: deploy.sh [--dry-run] [--from-worktree]" >&2; exit 2 ;;
   esac
 done
-echo "deploy: checkout $REPO"
 if [[ "$(git -C "$REPO" rev-parse --git-dir 2>/dev/null)" != "$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)" ]] && (( ! wt )); then
   echo "deploy: $REPO is a git worktree; deploying from it would install the worktree's build and hover/plugin copies over the real install (and break the hover link when the worktree is removed). Run it from the main checkout, or pass --from-worktree." >&2
   exit 2
