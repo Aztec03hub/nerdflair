@@ -704,7 +704,7 @@ check "lib.sh _nf_err memo: keys with glob characters are literal (3 lines)" 3 "
 BV="$WORK/bell-vol"; mkdir -p "$BV/home/.claude/nerdflair" "$BV/stamps" "$BV/work"
 printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_sound":"Glass","chime_volume":"loud","chime_style":"random","chime_events":"Notification,Stop","color":"vibrant","last_session":"","chime_recent_styles":[]}' > "$BV/home/.claude/nerdflair/state.json"
 ( cd "$BV/work" && printf '{"hook_event_name":"Stop","session_id":"%s-b"}' "$TAG" | timeout 20 env -i PATH="$PATH" HOME="$BV/home" TMPDIR="$BV" \
-    NERDFLAIR_ERR_STAMP_DIR="$BV/stamps" bash "$REPO/hooks/bell.sh" >/dev/null 2>&1 )
+    NERDFLAIR_ERR_STAMP_DIR="$BV/stamps" bash "$REPO/hooks/bell.sh" Stop >/dev/null 2>&1 )
 check "bell.sh: a non-numeric chime_volume is logged by the hook (1 line)" 1 "$(rg -cF ' chime-volume: ' "$BV/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
 _bv=$( ( export HOME="$BV/home" NERDFLAIR_ERR_STAMP_DIR="$BV/stamps2"; mkdir -p "$NERDFLAIR_ERR_STAMP_DIR"; source "$REPO/scripts/lib.sh"; _nf_read_state; printf '%s' "$NF_CUR_CHIME_VOLUME" ) 2>/dev/null )
 check "lib.sh: a non-numeric chime_volume is defaulted to 1 for every consumer" 1 "$_bv"

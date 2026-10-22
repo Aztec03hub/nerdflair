@@ -3,7 +3,6 @@
 
 use crate::errlog;
 use crate::jqx;
-use crate::util::read_ifs_whitespace;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -57,7 +56,6 @@ pub fn read_state(path: &Path) -> State {
                 let keys = [
                     "mode",
                     "width",
-                    "flair",
                     "color",
                     "terminal_bell",
                     "chime_sound",
@@ -65,6 +63,7 @@ pub fn read_state(path: &Path) -> State {
                     "chime_events",
                     "chime_volume",
                     "last_session",
+                    "spinner_verbs",
                     "bell",
                     "audio_style",
                     "audio_events",
@@ -74,7 +73,7 @@ pub fn read_state(path: &Path) -> State {
                 let mut fields = Vec::with_capacity(14);
                 for k in keys {
                     match jqx::path(&v, &[k]) {
-                        Ok(node) => fields.push(jqx::tsv_escape(&jqx::alt_str(node))),
+                        Ok(node) => fields.push(jqx::alt_str(node)),
                         Err(_) => {
                             ok = false;
                             break;
@@ -82,9 +81,13 @@ pub fn read_state(path: &Path) -> State {
                     }
                 }
                 if ok {
-                    // `IFS=$'\t' read`: tab is IFS whitespace, so empty fields
-                    // collapse and later fields shift left. Reproduced.
-                    vals = read_ifs_whitespace(&fields.join("\t"), 14);
+                    // `IFS=$'\x1f' read -r` (upstream 89c0af3): a non-whitespace
+                    // separator keeps empty fields in place; read stops at the
+                    // first newline.
+                    let joined = fields.join("\u{1f}");
+                    let line = joined.split('\n').next().unwrap_or("");
+                    let mut it = line.split('\u{1f}').map(String::from);
+                    vals = (0..14).map(|_| it.next().unwrap_or_default()).collect();
                     errlog::ok("state-corrupt");
                 } else {
                     errlog::note(
@@ -100,14 +103,14 @@ pub fn read_state(path: &Path) -> State {
     let mut s = State {
         mode: vals[0].clone(),
         width: vals[1].clone(),
-        flair: vals[2].clone(),
-        color: vals[3].clone(),
-        terminal_bell: vals[4].clone(),
-        chime_sound: vals[5].clone(),
-        chime_style: vals[6].clone(),
-        chime_events: vals[7].clone(),
-        chime_volume: vals[8].clone(),
-        last_session: vals[9].clone(),
+        flair: String::new(),
+        color: vals[2].clone(),
+        terminal_bell: vals[3].clone(),
+        chime_sound: vals[4].clone(),
+        chime_style: vals[5].clone(),
+        chime_events: vals[6].clone(),
+        chime_volume: vals[7].clone(),
+        last_session: vals[8].clone(),
     };
     let old_bell = &vals[10];
     let old_audio_style = &vals[11];

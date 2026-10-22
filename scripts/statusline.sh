@@ -1,5 +1,18 @@
 #!/bin/bash
 set -uo pipefail
+
+# Width math (wc -m, ${#var}, ${var:i:1}) needs a UTF-8 locale, but Claude Code
+# spawns the statusline without LANG. _fmt_num stays locale-free on purpose.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+  *)
+    if locale -a 2>/dev/null | grep -qiE '^C\.UTF-?8$'; then
+      export LC_ALL=C.UTF-8
+    else
+      export LC_ALL=en_US.UTF-8
+    fi
+    ;;
+esac
 # Note: -e is intentionally omitted because arithmetic expressions like
 # (( x == 0 )) return exit code 1, which would cause spurious termination.
 
@@ -117,7 +130,6 @@ _nf_read_state
 _SL_MODE="$NF_CUR_MODE"
 _SL_WIDTH="$NF_CUR_WIDTH"
 _SL_COLOR_MODE="$NF_CUR_COLOR"
-_SL_TERMINAL_BELL="$NF_CUR_TERMINAL_BELL"
 _SL_CHIME_VOLUME="$NF_CUR_CHIME_VOLUME"
 _SL_CHIME_STYLE="$NF_CUR_CHIME_STYLE"
 _SL_LAST_SESSION="$NF_CUR_LAST_SESSION"
@@ -158,16 +170,19 @@ fi
 # title-cased ("Opus 4.8 (1M context)") while IDs are lowercase ("claude-opus-4-8").
 
 model=""
+# Drop a parenthesised suffix such as "(1M context)" before looking for a version,
+# so a display_name with no version does not turn into "Sonnet 1".
+_model_core="${raw_model%%(*}"
 shopt -s nocasematch
-if [[ "$raw_model" =~ (opus|sonnet|haiku|fable) ]]; then
+if [[ "$_model_core" =~ (opus|sonnet|haiku|fable) ]]; then
   name="${BASH_REMATCH[1]}"
   # Capitalize first letter
   model="${name:0:1}"; model="${model^^}${name:1}"
   # Version: "4.8" or "4-8" → "4.8"; else a bare major like "5". A dotted/dashed
   # pair is matched first so a date stamp (e.g. "-20251001") is not picked up.
-  if [[ "$raw_model" =~ [0-9]+[.-][0-9]+ ]]; then
+  if [[ "$_model_core" =~ [0-9]+[.-][0-9]+ ]]; then
     model+=" ${BASH_REMATCH[0]//-/.}"
-  elif [[ "$raw_model" =~ [0-9]+ ]]; then
+  elif [[ "$_model_core" =~ [0-9]+ ]]; then
     model+=" ${BASH_REMATCH[0]}"
   fi
 else
@@ -205,7 +220,6 @@ shopt -u nocasematch
 # MCP servers — aggregate from global ~/.claude.json, project-scoped servers
 # in ~/.claude.json, and project/cwd .mcp.json files.
 # Only active (non-disabled, not project-disabled) servers are collected.
-mcp_total=0
 mcp_enabled=0
 mcp_names=()
 _claude_json="$HOME/.claude.json"
@@ -224,13 +238,55 @@ _is_proj_disabled() {
   done
   return 1
 }
-for mcp_file in "$_claude_json" "${project_dir}/.mcp.json" "${cwd}/.mcp.json"; do
+# Project .mcp.json servers are only active once the user approves them in
+# Claude Code, recorded as enabledMcpjsonServers / disabledMcpjsonServers /
+# enableAllProjectMcpServers (per project in ~/.claude.json, or globally in
+# settings.json). With no approval data anywhere, list every server.
+_mcpjson_all=false
+_mcpjson_has_policy=false
+_mcpjson_enabled=()
+_mcpjson_disabled=()
+_read_mcpjson_policy() {  # $1 = json file, $2 = jq expression selecting the object
+  [[ -f "$1" ]] || return 0
+  local _line
+  while IFS= read -r _line; do
+    case "$_line" in
+      POLICY) _mcpjson_has_policy=true ;;
+      ALL)    _mcpjson_all=true ;;
+      EN:*)   _mcpjson_enabled+=("${_line#EN:}") ;;
+      DIS:*)  _mcpjson_disabled+=("${_line#DIS:}") ;;
+    esac
+  done < <(jq -r --arg p "${project_dir:-}" "$2"' | select(type == "object")
+    | (if (has("enableAllProjectMcpServers") or has("enabledMcpjsonServers") or has("disabledMcpjsonServers")) then "POLICY" else empty end),
+      (if .enableAllProjectMcpServers == true then "ALL" else empty end),
+      ((.enabledMcpjsonServers // [])[] | "EN:" + .),
+      ((.disabledMcpjsonServers // [])[] | "DIS:" + .)' "$1" 2>/dev/null)
+}
+_read_mcpjson_policy "$_claude_json" '.projects[$p]'
+_read_mcpjson_policy "$NF_SETTINGS_FILE" '.'
+_mcpjson_approved() {
+  local _n="$1" _e
+  for _e in ${_mcpjson_disabled[@]+"${_mcpjson_disabled[@]}"}; do [[ "$_e" == "$_n" ]] && return 1; done
+  [[ "$_mcpjson_has_policy" == "false" || "$_mcpjson_all" == "true" ]] && return 0
+  for _e in ${_mcpjson_enabled[@]+"${_mcpjson_enabled[@]}"}; do [[ "$_e" == "$_n" ]] && return 0; done
+  return 1
+}
+# cwd and project_dir usually name the same directory; -ef compares inodes so a
+# differently spelled path to the same .mcp.json is still read only once.
+_mcp_files=("$_claude_json" "${project_dir}/.mcp.json")
+if [[ ! "${cwd}/.mcp.json" -ef "${project_dir}/.mcp.json" ]]; then
+  _mcp_files+=("${cwd}/.mcp.json")
+fi
+for mcp_file in "${_mcp_files[@]}"; do
   if [[ -f "$mcp_file" ]]; then
     _mcp_key=mcp-json; [[ "$mcp_file" == "$_claude_json" ]] && _mcp_key=claude-json
     _nf_jq "$_mcp_key" -r '[.mcpServers // {} | to_entries[] | select(.value.disabled != true) | .key] | sort[]' "$mcp_file"
     while IFS= read -r _name; do
       if [[ -n "$_name" ]]; then
         if [[ "$mcp_file" == "$_claude_json" ]] && _is_proj_disabled "$_name"; then
+          continue
+        fi
+        if [[ "$mcp_file" != "$_claude_json" ]] && ! _mcpjson_approved "$_name"; then
           continue
         fi
         mcp_names+=("$(_sanitize "$_name")")
@@ -297,23 +353,16 @@ MAUVE="\033[38;2;145;130;155m"
 MCP_COLOR="\033[38;2;195;130;140m"
 # Accent: money
 DARK_GREEN="\033[38;2;110;155;95m"
-# Alert: warnings (progress bar caution)
+# Alert: warnings
 ALERT="\033[38;2;220;175;100m"
-# Danger: critical (progress bar 80%+)
-RED="\033[38;2;224;108;117m"
-# Progress bar healthy state
-GREEN="\033[38;2;152;195;121m"
-# Agent name
-ORANGE="\033[38;2;235;150;60m"
 # Accent: dirty files
 MUSTARD="\033[38;2;180;155;95m"
-# Time/cost
-SAGE="\033[38;2;190;150;120m"
 # Cost
 COST_GREEN="\033[38;2;90;120;82m"
 # Diff
 DIFF_PLUS="\033[38;2;130;190;110m"
 DIFF_MINUS="\033[38;2;235;100;90m"
+DIFF_BRACKET="\033[1;38;2;72;78;74m"
 # Utility
 DIM="\033[38;2;85;90;100m"
 RESET="\033[0m"
@@ -329,13 +378,9 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
   STATE_COLOR="\033[38;2;150;150;150m"
   MAUVE="\033[38;2;140;140;140m"
   MCP_COLOR="\033[38;2;170;170;170m"
-  ORANGE="\033[38;2;200;200;200m"
   DARK_GREEN="\033[38;2;150;150;150m"
   ALERT="\033[38;2;200;200;200m"
-  RED="\033[38;2;210;210;210m"
-  GREEN="\033[38;2;170;170;170m"
   MUSTARD="\033[38;2;185;185;185m"
-  SAGE="\033[38;2;145;145;145m"
   COST_GREEN="\033[38;2;150;150;150m"
   DIFF_PLUS="\033[38;2;160;160;160m"
   DIFF_MINUS="\033[38;2;160;160;160m"
@@ -348,13 +393,9 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   STATE_COLOR="\033[38;2;95;175;150m"
   MAUVE="\033[38;2;140;135;150m"
   MCP_COLOR="\033[38;2;170;138;142m"
-  ORANGE="\033[38;2;200;160;100m"
   DARK_GREEN="\033[38;2;125;145;115m"
   ALERT="\033[38;2;185;165;125m"
-  RED="\033[38;2;185;140;140m"
-  GREEN="\033[38;2;150;170;135m"
   MUSTARD="\033[38;2;185;170;115m"
-  SAGE="\033[38;2;165;145;125m"
   COST_GREEN="\033[38;2;120;135;118m"
   DIFF_PLUS="\033[38;2;115;135;110m"
   DIFF_MINUS="\033[38;2;175;125;118m"
@@ -369,7 +410,7 @@ OPT_BULLET="${DIM} ·${RESET}"
 
 # ── Detect effective git repo (current dir or one level deep) ────
 # Sets one of: git_dir (cwd is a repo, or wraps exactly one), or
-# _multi_git_subs (cwd wraps 2+ repos → multi-branch summary). When git_dir is
+# _multi_git_subs (cwd wraps 2+ repos, so a multi-branch summary). When git_dir is
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
 git_dir=""
 _multi_git_subs=()
@@ -404,12 +445,29 @@ fi
 
 # ── Helper: format number with commas ──────────────────────────
 _fmt_num() {
-  printf "%'d" "$1" 2>/dev/null || printf "%d" "$1"
+  # Locale-independent thousands grouping. printf "%'d" is a no-op under the
+  # C/POSIX locale that Claude Code spawns hooks with, so group by hand.
+  local n="$1" sign="" out=""
+  [[ "$n" == -* ]] && { sign="-"; n="${n#-}"; }
+  while (( ${#n} > 3 )); do
+    out=",${n: -3}${out}"
+    n="${n:0:${#n}-3}"
+  done
+  printf '%s%s%s' "$sign" "$n" "$out"
+}
+
+# Coerce a cached or external value to a non-negative integer. Cache files feed
+# (( )) arithmetic, and bash evaluates a[$(cmd)] there, so never trust them raw.
+_int_or_zero() {
+  if [[ "$1" =~ ^[0-9]+$ ]]; then printf "%s" "$1"; else printf "0"; fi
 }
 
 # ── Git cache (3-second TTL) ──────────────────────────────────────
 # Cache git status/diff results to avoid running git on every render.
 _GIT_CACHE_TTL=3
+# Caches live under HOME, never in world-writable /tmp where another user could
+# plant a file (or a symlink) with a predictable name.
+mkdir -p "$NF_CACHE_DIR" 2>/dev/null
 _git_cache_file=""
 _git_cache_fresh=false
 if [[ -n "$git_dir" ]]; then
@@ -527,7 +585,7 @@ if [[ -n "$git_dir" ]]; then
       diff_parts+="${DIFF_MINUS}${minus_icon}$(_fmt_num "$lines_removed")${RESET}"
     fi
     if [[ -n "$diff_parts" ]]; then
-      dirty_segment+=" \033[1;38;2;72;78;74m[${RESET}${diff_parts}\033[1;38;2;72;78;74m]${RESET}"
+      dirty_segment+=" ${DIFF_BRACKET}[${RESET}${diff_parts}${DIFF_BRACKET}]${RESET}"
     fi
   fi
 fi
@@ -979,14 +1037,6 @@ else
   size_fmt="$ctx_total"
 fi
 
-if (( pct >= 70 )); then
-  ctx_color="$RED"
-elif (( pct >= 40 )); then
-  ctx_color="$ALERT"
-else
-  ctx_color="$GREEN"
-fi
-
 # Context label for embedding in progress bar
 ctx_label="${used_fmt}/${size_fmt} ${pct}%"
 
@@ -1013,7 +1063,7 @@ _join_parts() {
 }
 
 # ── Helper: build justified row (left parts | padding | right parts)
-# Usage: _justified_row max_width left_parts_str sep right_parts_str
+# Usage: _justified_row max_width left_parts_str right_parts_str
 _justified_row() {
   local max_w=$1
   local max_gap=$2
@@ -1151,15 +1201,9 @@ if [[ "$fast_mode" == "true" ]]; then
   fast_suffix_colored=" ${STATE_COLOR}${_fast_icon}${RESET}"
 fi
 
-# Calculate chrome: folder_icon(2) + [bullet(3) + branch_icon(2) if branch] + bullet(3) + model_icon(2)
-# Home icon is just 1 char with no folder name text, so chrome is smaller
-if [[ "${_is_home:-0}" == "1" ]]; then
-  chrome=7  # home_icon(2) + bullet(3) + model_icon(2)
-  [[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
-else
-  chrome=7  # folder_icon(2) + bullet(3) + model_icon(2)
-  [[ -n "$branch" ]] && chrome=12  # add bullet(3) + branch_icon(2)
-fi
+# Chrome: folder or home icon(2) + bullet(3) + model_icon(2); a branch adds bullet(3) + branch_icon(2)
+chrome=7
+[[ -n "$branch" ]] && chrome=12
 
 # Available text budget after chrome
 text_budget=$(( left_budget - chrome ))
@@ -1819,6 +1863,7 @@ fi
 
 COST_COLOR="${COST_GREEN}"
 formatted_cost=$(printf '%.2f' "${cost:-0}")
+formatted_cost="$(_fmt_num "${formatted_cost%.*}").${formatted_cost#*.}"
 cost_segment=""
 if [[ "$formatted_cost" != "0.00" ]]; then
   cost_segment="${COST_COLOR}${cost_icon}${formatted_cost}${RESET}"
@@ -2397,6 +2442,7 @@ fi
 
 # Build chime style segment
 # Only show the resolved style name when on "random" and before any cost is incurred
+_chime_label=$(_sanitize "$_chime_label")
 _chime_segment=""
 if [[ -n "$_chime_label" ]]; then
   _show_label=false
@@ -2522,7 +2568,7 @@ fi
 # ── Row 2: progress bar with Powerline caps ─────────────────────
 bar_width=$ROW_WIDTH
 
-# Bar fill colors — 10-tier gradient: grey-green → green → gold → orange
+# Bar fill colors — 10-tier gradient: grey-green, green, gold, orange
 # Each tier: BG (fill background), FG (powerline cap foreground), TEXT (label text)
 # Starts near the empty bar color (35;38;45) with a subtle green tint,
 # then gradually saturates through green to gold to orange.
@@ -2560,19 +2606,6 @@ TIER_FG=(
   "\033[38;2;148;125;60m"
   "\033[38;2;170;130;62m"
 )
-# Wind icons: darker than fill BG (~30-40 units)
-TIER_WIND=(
-  "\033[38;2;27;35;30m"     # 0–10
-  "\033[38;2;29;43;30m"     # 11–20
-  "\033[38;2;32;52;31m"     # 21–30
-  "\033[38;2;38;63;31m"     # 31–40
-  "\033[38;2;50;71;30m"     # 41–50
-  "\033[38;2;66;78;29m"     # 51–60
-  "\033[38;2;86;84;28m"     # 61–70
-  "\033[38;2;109;91;30m"    # 71–80
-  "\033[38;2;131;93;30m"    # 81–90
-  "\033[38;2;153;66;27m"    # 91–100
-)
 EMPTY_BG="\033[48;2;35;38;45m"
 EMPTY_FG="\033[38;2;35;38;45m"
 LIGHT_FG="\033[38;2;85;90;100m"    # dim text on empty bg
@@ -2605,24 +2638,12 @@ if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
     "\033[38;2;170;170;170m"
     "\033[38;2;190;190;190m"
   )
-  TIER_WIND=(
-    "\033[38;2;28;28;28m"
-    "\033[38;2;35;35;35m"
-    "\033[38;2;44;44;44m"
-    "\033[38;2;54;54;54m"
-    "\033[38;2;66;66;66m"
-    "\033[38;2;78;78;78m"
-    "\033[38;2;92;92;92m"
-    "\033[38;2;107;107;107m"
-    "\033[38;2;126;126;126m"
-    "\033[38;2;146;146;146m"
-  )
   EMPTY_BG="\033[48;2;38;38;38m"
   EMPTY_FG="\033[38;2;38;38;38m"
   LIGHT_FG="\033[38;2;90;90;90m"
   LABEL_COVERED_FG="\033[38;2;22;22;22m"
 elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
-  # Muted gradient: same green → yellow → orange hues, reduced saturation (~40%)
+  # Muted gradient: same green, yellow, orange hues, reduced saturation (~40%)
   TIER_BG=(
     "\033[48;2;68;82;66m"     # 0–10   muted soft green
     "\033[48;2;70;85;68m"     # 11–20  muted green
@@ -2647,18 +2668,6 @@ elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
     "\033[38;2;158;132;70m"
     "\033[38;2;178;132;68m"
   )
-  TIER_WIND=(
-    "\033[38;2;33;47;31m"
-    "\033[38;2;35;49;33m"
-    "\033[38;2;37;52;34m"
-    "\033[38;2;40;54;32m"
-    "\033[38;2;44;57;31m"
-    "\033[38;2;48;60;30m"
-    "\033[38;2;62;66;28m"
-    "\033[38;2;92;83;32m"
-    "\033[38;2;120;93;34m"
-    "\033[38;2;140;93;32m"
-  )
   EMPTY_BG="\033[48;2;38;40;45m"
   EMPTY_FG="\033[38;2;38;40;45m"
   LIGHT_FG="\033[38;2;88;92;102m"
@@ -2667,30 +2676,21 @@ fi
 
 # ── Smooth gradient control points per color mode ────────────────
 # 10 control points (one per tier), linearly interpolated per-cell in _render_bar.
-# Default: grey-green → green → gold → orange → red at the very end
+# Default: grey-green, green, gold, orange, red at the very end
 GRAD_BG_R=(48 50 55 65  88  115 140 160 180 200)
 GRAD_BG_G=(62 74 88 105 112 116 122 125 120 55)
 GRAD_BG_B=(48 48 50 52  54  55  58  60  58  50)
-GRAD_WN_R=(27 29 32 38 50  66  86  109 131 153)
-GRAD_WN_G=(35 43 52 63 71  78  84  91  93  66)
-GRAD_WN_B=(30 30 31 31 30  29  28  30  30  27)
 
 if [[ "$_SL_COLOR_MODE" == "mono" ]]; then
-  # Monochrome: dark grey → bright grey, subtle brightness ramp
+  # Monochrome: dark grey to bright grey, subtle brightness ramp
   GRAD_BG_R=(45 55 65 76 88  100 115 132 155 185)
   GRAD_BG_G=(45 55 65 76 88  100 115 132 155 185)
   GRAD_BG_B=(45 55 65 76 88  100 115 132 155 185)
-  GRAD_WN_R=(28 35 44 54 66  78  92  107 126 146)
-  GRAD_WN_G=(28 35 44 54 66  78  92  107 126 146)
-  GRAD_WN_B=(28 35 44 54 66  78  92  107 126 146)
 elif [[ "$_SL_COLOR_MODE" == "muted" ]]; then
   # Muted: same hue progression as default but desaturated (~40% saturation)
   GRAD_BG_R=(48 52 55 62 76  92  110 132 150 168)
   GRAD_BG_G=(52 58 65 74 86  96  104 108 104 68)
   GRAD_BG_B=(50 52 54 56 58  58  60  62  60  56)
-  GRAD_WN_R=(33 35 37 40 44  48  62  92  120 140)
-  GRAD_WN_G=(47 49 52 54 57  60  66  83  93  93)
-  GRAD_WN_B=(31 33 34 32 31  30  28  32  34  32)
 fi
 
 # Powerline semicircle glyphs
@@ -2721,12 +2721,11 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
 fi
 
 # ── _compute_gradient_cache: pre-compute per-cell ANSI colors ────
-# Populates _cell_bg_cache, _cell_fg_cache, _cell_wind_cache in the
+# Populates _cell_bg_cache and _cell_fg_cache in the
 # caller's scope. Interpolates RGB between GRAD_* control points.
 _compute_gradient_cache() {
   local _filled=$1 _body_area=$2 _compact_mark_pct="$3"
   _cell_bg_cache=()
-  _cell_wind_cache=()
   _cell_fg_cache=()
   for (( _ci=0; _ci<_filled; _ci++ )); do
     local _cpct=$(( (_ci + 1) * 100 / _body_area ))
@@ -2745,16 +2744,12 @@ _compute_gradient_cache() {
     local _b=$(( GRAD_BG_B[_lo] + (GRAD_BG_B[_hi] - GRAD_BG_B[_lo]) * _frac / 100 ))
     _cell_bg_cache[$_ci]="\033[48;2;${_r};${_g};${_b}m"
     _cell_fg_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
-    _r=$(( GRAD_WN_R[_lo] + (GRAD_WN_R[_hi] - GRAD_WN_R[_lo]) * _frac / 100 ))
-    _g=$(( GRAD_WN_G[_lo] + (GRAD_WN_G[_hi] - GRAD_WN_G[_lo]) * _frac / 100 ))
-    _b=$(( GRAD_WN_B[_lo] + (GRAD_WN_B[_hi] - GRAD_WN_B[_lo]) * _frac / 100 ))
-    _cell_wind_cache[$_ci]="\033[38;2;${_r};${_g};${_b}m"
   done
 }
 
 # ── _compute_logo_gradient: pre-compute per-cell BG/FG for logo ──
 # Populates _logo_bg_cache, _logo_fg_cache in the caller's scope.
-# Creates a dark center → light edges ambient glow effect.
+# Creates a dark center to light edges ambient glow effect.
 _compute_logo_gradient() {
   local _bar_area=$1
   _logo_bg_cache=()
@@ -2794,27 +2789,23 @@ _compute_logo_gradient() {
 _render_bar() {
   local _pct=$1
   local _label="$2"
-  local _suffix="${3:-}"
-  local _compact_mark_pct="${4:-}"
-  local _right_label="${5:-}"
+  local _compact_mark_pct="${3:-}"
+  local _right_label="${4:-}"
 
   # NerdFlair logo: shown right-aligned in empty area of bar
   local _logo_icons=()
   local _logo_start=0
   local _NF_BRAND_COLOR="\033[38;2;145;130;155m"
-  local _NF_BRAND_COLORS=()
-  local _i
-  for (( _i=0; _i<17; _i++ )); do _NF_BRAND_COLORS+=("$_NF_BRAND_COLOR"); done
   _logo_icons=(
-    "$(printf '\xee\xa0\xb8')" " "
-    "$(printf '\xf3\xb0\xaf\xb7')" " "
-    "$(printf '\xf3\xb0\xb0\x9e')" " "
-    "$(printf '\xf3\xb0\xaf\xb4')" " "
-    "$(printf '\xef\x8c\xb5')" " "
-    "$(printf '\xf3\xb0\xb0\x8c')" " "
-    "$(printf '\xf3\xb0\xaf\xab')" " "
-    "$(printf '\xf3\xb0\xb0\x83')" " "
-    "$(printf '\xf3\xb0\xb0\x9e')"
+    $'\xee\xa0\xb8' " "
+    $'\xf3\xb0\xaf\xb7' " "
+    $'\xf3\xb0\xb0\x9e' " "
+    $'\xf3\xb0\xaf\xb4' " "
+    $'\xef\x8c\xb5' " "
+    $'\xf3\xb0\xb0\x8c' " "
+    $'\xf3\xb0\xaf\xab' " "
+    $'\xf3\xb0\xb0\x83' " "
+    $'\xf3\xb0\xb0\x9e'
   )
   local _logo_end=0
 
@@ -2829,7 +2820,6 @@ _render_bar() {
   (( _top_tier_idx < 0 )) && _top_tier_idx=0
   local _FILL_BG="${TIER_BG[$_top_tier_idx]}"
   local _FILL_FG="${TIER_FG[$_top_tier_idx]}"
-  local _WIND_FG="${TIER_WIND[$_top_tier_idx]}"
 
   # Bar area: fixed width, clamped to MAX_BAR
   local _bar_area=$(( bar_width - 2 ))
@@ -2884,17 +2874,15 @@ _render_bar() {
   # Right-aligned label in empty area
   local _rlabel_start=-1
   local _rlabel_end=-1
-  local _rlabel_padded=""
   if [[ -n "$_right_label" ]]; then
-    _rlabel_padded="${_right_label}"
-    local _rlabel_len=${#_rlabel_padded}
+    local _rlabel_len=${#_right_label}
     _rlabel_start=$(( _bar_area - _rlabel_len ))
     (( _rlabel_start < 0 )) && _rlabel_start=0
     _rlabel_end=$(( _rlabel_start + _rlabel_len ))
   fi
 
   # Pre-compute per-cell gradient colors
-  local _cell_bg_cache=() _cell_wind_cache=() _cell_fg_cache=()
+  local _cell_bg_cache=() _cell_fg_cache=()
   _compute_gradient_cache "$_filled" "$_body_area" "$_compact_mark_pct"
 
   # Outer cap colors — left cap uses first filled cell, right cap uses last
@@ -2903,8 +2891,6 @@ _render_bar() {
     _left_cap_fg="${TIER_FG[0]}"
   elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
     _left_cap_fg="${_logo_fg_cache[0]}"
-  elif (( ${#_logo_icons[@]} > 0 )); then
-    _left_cap_fg="$_COMPACT_EMPTY_FG"
   else
     _left_cap_fg="$EMPTY_FG"
   fi
@@ -2913,8 +2899,6 @@ _render_bar() {
     _right_cap_fg="$_FILL_FG"
   elif (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
     _right_cap_fg="${_logo_fg_cache[$((_bar_area - 1))]}"
-  elif (( ${#_logo_icons[@]} > 0 )); then
-    _right_cap_fg="$_COMPACT_EMPTY_FG"
   elif (( _compact_mark_pos >= 0 )); then
     _right_cap_fg="$_COMPACT_EMPTY_FG"
   else
@@ -2935,14 +2919,11 @@ _render_bar() {
   local _body_i=0  # body cell index (0..body_area-1)
 
   while (( _vis < _bar_area )); do
-    # Insert inner transition cap at the fill boundary (fill → empty)
+    # Insert inner transition cap at the fill boundary (fill to empty)
     if (( _has_inner_cap && _body_i == _filled )); then
-      # Pick correct empty BG based on whether we're past the compact mark
-      # or logo is showing (uses darker BG everywhere)
+      # Darker empty BG past the compact mark (the logo never coexists with a cap)
       local _cap_empty_bg="$EMPTY_BG"
-      if (( ${#_logo_icons[@]} > 0 )); then
-        _cap_empty_bg="$_COMPACT_EMPTY_BG"
-      elif (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
+      if (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
         _cap_empty_bg="$_COMPACT_EMPTY_BG"
       fi
       # Use the last filled cell's FG/BG for the transition cap
@@ -2974,8 +2955,6 @@ _render_bar() {
     local _cur_light_fg="$LIGHT_FG"
     if (( ${#_logo_icons[@]} > 0 && ${#_logo_bg_cache[@]} > 0 )); then
       _cur_empty_bg="${_logo_bg_cache[$_vis]}"
-    elif (( ${#_logo_icons[@]} > 0 )); then
-      _cur_empty_bg="$_COMPACT_EMPTY_BG"
     elif (( _compact_mark_pos >= 0 && _vis >= _compact_mark_pos )); then
       _cur_empty_bg="$_COMPACT_EMPTY_BG"
     fi
@@ -2998,11 +2977,9 @@ _render_bar() {
     # Per-cell smooth gradient colors from pre-computed cache
     local _cell_bg="$_FILL_BG"
     local _cell_fg="$_FILL_FG"
-    local _cell_wind="$_WIND_FG"
     if (( _body_i < _filled )); then
       _cell_bg="${_cell_bg_cache[$_body_i]}"
       _cell_fg="${_cell_fg_cache[$_body_i]}"
-      _cell_wind="${_cell_wind_cache[$_body_i]}"
     fi
 
     if (( _vis >= _label_start && _vis < _label_end )); then
@@ -3016,7 +2993,7 @@ _render_bar() {
     elif (( _rlabel_start >= 0 && _vis >= _rlabel_start && _vis < _rlabel_end && _body_i >= _filled )); then
       # Right-aligned label in empty area
       local _ri=$(( _vis - _rlabel_start ))
-      local _rch="${_rlabel_padded:$_ri:1}"
+      local _rch="${_right_label:$_ri:1}"
       _bar+="${_cur_empty_bg}${_cur_light_fg}${_rch}"
     else
       if (( _body_i < _filled )); then
@@ -3024,7 +3001,7 @@ _render_bar() {
       else
         if (( ${#_logo_icons[@]} > 0 && _vis >= _logo_start && _vis < _logo_end )); then
           local _li=$(( _vis - _logo_start ))
-          local _lc="${_NF_BRAND_COLORS[$_li]:-${_NF_BRAND_COLOR}}"
+          local _lc="$_NF_BRAND_COLOR"
           _bar+="${_cur_empty_bg}${_lc}${_logo_icons[$_li]}"
         else
           _bar+="${_cur_empty_bg} "
@@ -3036,16 +3013,13 @@ _render_bar() {
   done
 
   # Assemble and print the bar
-  printf '\n%b%b%b%b%b' \
+  printf '\n%b%b%b%b' \
     "${RESET}${_left_cap_fg}${PL_LEFT}" \
     "${_bar}" \
     "${RESET}${_right_cap_fg}${PL_RIGHT}" \
-    "${_suffix}" \
     "${RESET}"
 }
 
-
-_bar_label="$ctx_label"
 
 # Render the real progress bar (skip in minimal — context pill is on row 1)
 if [[ "$_SL_MODE" != "minimal" ]]; then
@@ -3060,7 +3034,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
   # Calculate available space in the dark zone for right-aligned content
   # Dark zone = bar_area * (100 - compact_mark%) / 100, minus 1 for the right cap
   _bar_area_est=$(( bar_width - 2 ))
-  (( _bar_area_est > 78 )) && _bar_area_est=78
+  (( _bar_area_est > MAX_BAR )) && _bar_area_est=$MAX_BAR
   (( _bar_area_est < 20 )) && _bar_area_est=20
   _dark_zone=$(( _bar_area_est - _bar_area_est * 80 / 100 ))
 
@@ -3087,7 +3061,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
     fi
     _bar_right_label="$_try"
   fi
-  _render_bar "$pct" "$_bar_label" "" "$_compact_mark" "$_bar_right_label"
+  _render_bar "$pct" "$ctx_label" "$_compact_mark" "$_bar_right_label"
 fi
 
 # Row 3: mcp | time + cost (full mode only)

@@ -4,8 +4,15 @@
 # Usage:
 #   ./plugins/nerdflair/tests/test-nerdflair.sh
 #   TRACE=1 ./plugins/nerdflair/tests/test-nerdflair.sh
+#
+# Requires bash, jq, git, and python3 (used by one glyph-counting test).
 
 set -euo pipefail
+
+# Mirror the environment Claude Code spawns the statusline with: no locale and a
+# fixed terminal width. Tests that need something else set it explicitly.
+export LC_ALL=C
+export COLUMNS=120
 if [[ "${TRACE-0}" == "1" ]]; then
   set -o xtrace
 fi
@@ -32,11 +39,43 @@ _setup() {
   # Minimal git repo so renderer can detect branch
   # chained with &&: set -e is ignored inside an if condition, so a failed step must stop the chain itself
   if ! ( cd "$FAKE_CWD" && git init -q && git checkout -q -b main && echo "hello" > file.txt \
-         && git add -A && git commit -q -m "init" && git checkout -q -b feature/test-branch \
+         && git add -A && git -c user.name=nerdflair -c user.email=tests@example.invalid commit -q -m "init" && git checkout -q -b feature/test-branch \
          && echo "change" >> file.txt ) >"$TMPDIR_ROOT/fixture.log" 2>&1; then
     # A bad fixture must not let tests run against it and pass or fail for the wrong reason.
     _fail=$((_fail + 1)); _errors+=("fixture git setup failed: $(tail -3 "$TMPDIR_ROOT/fixture.log" | tr '\n' ' ')")
   fi
+}
+
+# Writers use a mkdir lock (no flock on macOS bash 3.2). It must never hang:
+# a stale lock is broken, and a held lock is waited on briefly then bypassed.
+test_config_state_lock_is_never_fatal() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  touch -t 202001010000 "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  _configure layout compact >/dev/null 2>&1
+  assert_equals "stale lock is broken" "$(_state_field mode)" "compact"
+  local gone="yes"; [[ -d "$FAKE_HOME/.claude/nerdflair/state.json.lock" ]] && gone="no"
+  assert_equals "lock released after write" "$gone" "yes"
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  _configure layout minimal >/dev/null 2>&1
+  assert_equals "fresh held lock is bypassed after a short wait" "$(_state_field mode)" "minimal"
+  _teardown
+}
+
+# Exercise the empty-bar (logo) and full-bar paths, which most tests skip.
+test_renderer_bar_at_zero_and_full() {
+  _setup
+  local state='{"mode": "compact", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local err_file="$TMPDIR_ROOT/err" out0 out100
+  out0=$(_make_input 0 0.00 | HOME="$FAKE_HOME" bash "$RENDERER" 2>"$err_file" | _strip_ansi)
+  assert_equals "no errors at 0%" "" "$(cat "$err_file")"
+  assert_contains "logo glyph shown at 0%" "$out0" $'\xf3\xb0\xaf\xb4'
+  out100=$(_make_input 100 9.99 | HOME="$FAKE_HOME" bash "$RENDERER" 2>"$err_file" | _strip_ansi)
+  assert_equals "no errors at 100%" "" "$(cat "$err_file")"
+  assert_contains "label shown at 100%" "$out100" "100%"
+  _teardown
 }
 
 _teardown() {
@@ -136,7 +175,6 @@ _state_field_raw() {
     | head -1 | sed 's/.*:[[:space:]]*//'
 }
 
-
 # ════════════════════════════════════════════════════════════════
 # RENDERER TESTS
 # ════════════════════════════════════════════════════════════════
@@ -150,11 +188,11 @@ test_renderer_full_mode_has_three_rows() {
   local line_count
   line_count=$(echo "$output" | wc -l | tr -d ' ')
   # The bar prints a leading \n, so full mode = row1 + \n + bar + \n + row3 = 3 content lines
-  if (( line_count >= 3 )); then
+  if (( line_count == 3 )); then
     (( _pass++ ))
   else
     (( _fail++ ))
-    _errors+=("FAIL: full mode should have >= 3 lines, got $line_count")
+    _errors+=("FAIL: full mode should have exactly 3 lines, got $line_count")
   fi
   _teardown
 }
@@ -167,11 +205,11 @@ test_renderer_compact_mode_has_two_rows() {
   local line_count
   line_count=$(echo "$output" | wc -l | tr -d ' ')
   # Compact: row1 + \n + bar = 2 content lines
-  if (( line_count >= 2 && line_count < 4 )); then
+  if (( line_count == 2 )); then
     (( _pass++ ))
   else
     (( _fail++ ))
-    _errors+=("FAIL: compact mode should have 2-3 lines, got $line_count")
+    _errors+=("FAIL: compact mode should have exactly 2 lines, got $line_count")
   fi
   _teardown
 }
@@ -265,6 +303,16 @@ test_renderer_strips_context_suffix_from_display_name() {
   _teardown
 }
 
+test_renderer_model_without_version_ignores_context_suffix() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00 claude-sonnet "Sonnet (1M context)")" | _strip_ansi)
+  assert_contains "family shown" "$output" "Sonnet"
+  assert_not_contains "context size not mistaken for a version" "$output" "Sonnet 1"
+  _teardown
+}
+
 test_renderer_falls_back_to_id_parsing() {
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
@@ -292,8 +340,195 @@ test_renderer_shows_cost() {
   _teardown
 }
 
+# Claude Code spawns the statusline with a minimal environment (no LANG), so
+# number grouping must not depend on the locale. Run these under LC_ALL=C.
+test_renderer_cost_has_thousands_separator() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local output
+  output=$(LC_ALL=C _render "$state" "$(_make_input 42 1224.92)" | _strip_ansi)
+  assert_contains "cost with comma" "$output" '1,224.92'
+  _teardown
+}
+
+test_renderer_lines_added_has_thousands_separator() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  # Fixture already has 1 added line; append 1662 more for 1663 total
+  (cd "$FAKE_CWD" && seq 1 1662 >> file.txt)
+  local output
+  output=$(LC_ALL=C _render "$state" "$(_make_input 42 5.00)" | _strip_ansi)
+  assert_contains "lines added with comma" "$output" '+1,663'
+  _teardown
+}
+
+test_renderer_git_cache_lives_under_home() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  _render "$state" "$(_make_input 42 5.00)" >/dev/null
+  local n
+  n=$(ls "$FAKE_HOME/.claude/nerdflair/cache/" 2>/dev/null | grep -c '^git-' || true)
+  assert_equals "git cache written under HOME, not /tmp" "$n" "1"
+  _teardown
+}
+
+# Cache contents feed (( )) arithmetic; a planted cache must not execute code.
+test_renderer_poisoned_git_cache_is_inert() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/cache"
+  local hash
+  hash=$(printf '%s' "$FAKE_CWD" | cksum | cut -d' ' -f1)
+  printf 'a[$(touch %s/pwned)]\n0\n0\nmain\n0' "$TMPDIR_ROOT" > "$FAKE_HOME/.claude/nerdflair/cache/git-$hash"
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00)" 2>/dev/null | _strip_ansi)
+  local executed="no"
+  [[ -e "$TMPDIR_ROOT/pwned" ]] && executed="yes"
+  assert_equals "poisoned cache did not execute" "$executed" "no"
+  assert_contains "still renders a row" "$output" "my-project"
+  _teardown
+}
+
+# current_dir == project_dir is the normal case; the same .mcp.json must not be
+# read twice and list every server twice.
+test_renderer_mcp_servers_listed_once() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo '{"mcpServers":{"alpha":{},"beta":{}}}' > "$FAKE_CWD/.mcp.json"
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00)" | _strip_ansi)
+  assert_contains "both servers listed" "$output" "alpha, beta"
+  assert_not_contains "servers not duplicated" "$output" "alpha, alpha"
+  _teardown
+}
+
+# Project .mcp.json servers count only once Claude Code has approved them.
+test_renderer_mcp_json_respects_approval() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo '{"mcpServers":{"alpha":{},"beta":{}}}' > "$FAKE_CWD/.mcp.json"
+  local p; p=$(cd "$FAKE_CWD" && pwd -P)
+  jq -n --arg p "$p" '{projects:{($p):{enabledMcpjsonServers:["alpha"]}}}' > "$FAKE_HOME/.claude.json"
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00)" | _strip_ansi)
+  assert_contains "approved server listed" "$output" "alpha"
+  assert_not_contains "unapproved server hidden" "$output" "beta"
+  _teardown
+}
+
+# Claude Code may send used_percentage as a float; bash arithmetic must not choke.
+test_renderer_accepts_fractional_used_percentage() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local input err_file="$TMPDIR_ROOT/err"
+  input=$(_make_input 42 5.00 | sed 's/"used_percentage": 42/"used_percentage": 42.5/')
+  local output
+  output=$(printf '%s' "$input" | HOME="$FAKE_HOME" bash "$RENDERER" 2>"$err_file" | _strip_ansi)
+  assert_equals "no arithmetic error on float percentage" "" "$(cat "$err_file")"
+  assert_contains "percentage truncated to integer" "$output" "42%"
+  _teardown
+}
+
+# .mcp.json in a cloned repo is attacker-controlled; escape bytes in a server
+# name must never reach the terminal.
+test_renderer_strips_escape_bytes_from_mcp_names() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  printf '{"mcpServers":{"srv\\u001b[5mBLINK":{}}}' > "$FAKE_CWD/.mcp.json"
+  local raw
+  raw=$(_render "$state" "$(_make_input 42 5.00)")
+  assert_not_contains "blink escape not emitted" "$raw" $'\033[5m'
+  assert_contains "printable part of name still shown" "$(printf "%s" "$raw" | _strip_ansi)" "srv[5mBLINK"
+  _teardown
+}
+
+test_renderer_mcp_name_star_is_not_glob_expanded() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo '{"mcpServers":{"*":{}}}' > "$FAKE_CWD/.mcp.json"
+  local output
+  output=$(_render "$state" "$(_make_input 42 5.00)" | _strip_ansi)
+  assert_not_contains "star not expanded to cwd files" "$output" "file.txt"
+  _teardown
+}
+
+test_renderer_non_numeric_chime_volume_does_not_error() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1)", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local err_file="$TMPDIR_ROOT/err"
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  _make_input 42 5.00 | HOME="$FAKE_HOME" bash "$RENDERER" >/dev/null 2>"$err_file"
+  assert_equals "no awk syntax error from state value" "" "$(cat "$err_file")"
+  _teardown
+}
+
+# Rows must be exactly COLUMNS wide, and the same width whether or not the
+# spawning environment has a UTF-8 locale (Claude Code passes no LANG).
+_row_widths() {
+  sed $'s/\033\\[[0-9;]*m//g' | awk 'NF' | while IFS= read -r line; do
+    printf '%s ' "$(printf '%s' "$line" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
+  done
+}
+test_renderer_rows_match_columns_in_any_locale() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local w_c w_utf
+  w_c=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=C HOME="$FAKE_HOME" bash "$RENDERER" | _row_widths)
+  w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=en_US.UTF-8 HOME="$FAKE_HOME" bash "$RENDERER" | _row_widths)
+  assert_equals "rows are 100 wide under UTF-8" "$w_utf" "100 100 100 "
+  assert_equals "rows are 100 wide under C locale" "$w_c" "100 100 100 "
+  _teardown
+}
+
+# Rewriting state.json on every render races with the configurator's writes.
+test_renderer_does_not_rewrite_state_when_session_unchanged() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  _render "$state" "$(_make_input 42 5.00)" >/dev/null
+  local before after
+  before=$(stat -c %Y "$FAKE_HOME/.claude/nerdflair/state.json" 2>/dev/null || stat -f %m "$FAKE_HOME/.claude/nerdflair/state.json")
+  sleep 1
+  _make_input 42 5.00 | HOME="$FAKE_HOME" bash "$RENDERER" >/dev/null
+  after=$(stat -c %Y "$FAKE_HOME/.claude/nerdflair/state.json" 2>/dev/null || stat -f %m "$FAKE_HOME/.claude/nerdflair/state.json")
+  assert_equals "state file untouched on second render" "$before" "$after"
+  _teardown
+}
+
+# A linked worktree in a repo with no origin remote must still get the tree icon.
+test_renderer_worktree_icon_without_remote() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  (cd "$FAKE_CWD" && git worktree add -q "$TMPDIR_ROOT/wt" -b wt-branch) >/dev/null 2>&1
+  local input output
+  input=$(_make_input 42 5.00 | sed "s|$FAKE_CWD|$TMPDIR_ROOT/wt|g")
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  output=$(printf '%s' "$input" | HOME="$FAKE_HOME" bash "$RENDERER" | _strip_ansi)
+  assert_contains "tree icon on worktree folder" "$output" $'\xef\x86\xbb wt'
+  _teardown
+}
+
+# Claude Code kills slow renders with SIGTERM; the output buffer must not leak.
+test_renderer_removes_buffer_when_killed() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local i
+  for i in 1 2 3; do
+    _make_input 42 5.00 | TMPDIR="$TMPDIR_ROOT" HOME="$FAKE_HOME" bash "$RENDERER" >/dev/null 2>&1 &
+    local pid=$!
+    sleep 0.05
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  local leaked
+  leaked=$(ls "$TMPDIR_ROOT" | grep -c '^nerdflair-sl\.' || true)
+  assert_equals "no leaked output buffers after SIGTERM" "$leaked" "0"
+  _teardown
+}
+
 # Regression for the "500 shows light on green" report. A label glyph landing on
-# the fill→empty transition-cap cell must render as part of the fill (covered
+# the fill-to-empty transition-cap cell must render as part of the fill (covered
 # near-black text on the fill background), not with the light empty-area text on
 # the dark empty background. The cap cell is the visual cell right after the
 # last filled body cell; the fill normally draws a rounded glyph there, so a
@@ -354,7 +589,7 @@ test_renderer_zero_cost_not_shown() {
   local output
   output=$(_render "$state" "$(_make_input 10 0)" | _strip_ansi)
   # Row 3 should not show $0.00
-  assert_not_contains "zero cost hidden" "$output" '$0.00'
+  assert_not_contains "zero cost hidden" "$output" "0.00"
   _teardown
 }
 
@@ -414,17 +649,64 @@ test_renderer_width_respected() {
   _teardown
 }
 
-
 # ════════════════════════════════════════════════════════════════
 # CONFIGURATOR TESTS
 # ════════════════════════════════════════════════════════════════
 
-test_config_default_state_created() {
+test_config_install_on_fresh_home_writes_defaults() {
   _setup
+  _configure install >/dev/null 2>&1 || true
+  assert_equals "install default mode" "$(_state_field "mode")" "full"
+  assert_equals "install default chime events" "$(_state_field "chime_events")" "Notification,PermissionRequest,PreCompact,SessionEnd,SessionStart,Stop"
+  assert_not_contains "dead flair field no longer written" "$(cat "$FAKE_HOME/.claude/nerdflair/state.json")" "flair"
+  _teardown
+}
+
+test_config_install_quotes_statusline_path() {
+  _setup
+  _configure install >/dev/null 2>&1 || true
+  local cmd
+  cmd=$(jq -r '.statusLine.command' "$FAKE_HOME/.claude/settings.json")
+  assert_contains "statusline path is quoted" "$cmd" 'bash "'
+  assert_contains "statusline path ends quoted" "$cmd" 'statusline.sh"'
+  _teardown
+}
+
+# Ownership of spinnerVerbs is recorded in state, not inferred from one verb
+# the user is allowed to edit out of spinners.txt.
+test_config_spinner_verbs_ownership_survives_verb_edits() {
+  _setup
+  echo '{}' > "$FAKE_HOME/.claude/settings.json"
+  _configure spinner-verbs enable >/dev/null 2>&1
+  assert_equals "state marks verbs as ours" "$(_state_field spinner_verbs)" "on"
+  jq '.spinnerVerbs.verbs |= map(select(contains("estus") | not))' "$FAKE_HOME/.claude/settings.json" > "$TMPDIR_ROOT/s.json" && mv "$TMPDIR_ROOT/s.json" "$FAKE_HOME/.claude/settings.json"
+  _configure spinner-verbs enable >/dev/null 2>&1
+  local backups
+  backups=$(ls "$FAKE_HOME/.claude/nerdflair/" | grep -c backup || true)
+  assert_equals "re-enable does not back up our own verbs" "$backups" "0"
+  _configure spinner-verbs disable >/dev/null 2>&1
+  assert_equals "disable removes our verbs" "$(jq 'has("spinnerVerbs")' "$FAKE_HOME/.claude/settings.json")" "false"
+  assert_equals "state marks verbs off" "$(_state_field spinner_verbs)" "off"
+  _teardown
+}
+
+test_config_spinner_verbs_disable_keeps_user_verbs() {
+  _setup
+  echo '{"spinnerVerbs":{"mode":"replace","verbs":["Mine"]}}' > "$FAKE_HOME/.claude/settings.json"
   _configure layout full >/dev/null 2>&1
-  local mode
-  mode=$(_state_field "mode")
-  assert_equals "default mode is full" "$mode" "full"
+  _configure spinner-verbs disable >/dev/null 2>&1 || true
+  assert_equals "user verbs untouched by disable" "$(jq -r '.spinnerVerbs.verbs[0]' "$FAKE_HOME/.claude/settings.json")" "Mine"
+  _teardown
+}
+
+test_config_failed_settings_write_leaves_no_temp_file() {
+  _setup
+  echo '{ not json' > "$FAKE_HOME/.claude/settings.json"
+  local rc=0
+  _configure spinner-verbs enable >/dev/null 2>&1 || rc=$?
+  assert_exit_code "enable fails on corrupt settings" "1" "$rc"
+  assert_equals "settings.json left as it was" "$(cat "$FAKE_HOME/.claude/settings.json")" "{ not json"
+  assert_equals "no temp files left behind" "$(ls "$FAKE_HOME/.claude/" | grep -c '\.tmp\.' || true)" "0"
   _teardown
 }
 
@@ -480,17 +762,6 @@ test_config_width_validation() {
   rc=0
   _configure width 10 >/dev/null 2>&1 || rc=$?
   assert_exit_code "width < 50 rejected" "1" "$rc"
-  _teardown
-}
-
-test_config_flair_always_on() {
-  _setup
-  _configure layout full >/dev/null 2>&1
-  assert_equals "flair default true" "$(_state_field_raw "flair")" "true"
-  # flair command is legacy — should exit 0 without changing state
-  local output
-  output=$(_configure flair 2>&1)
-  assert_contains "flair prints always-on message" "$output" "always on"
   _teardown
 }
 
@@ -636,6 +907,67 @@ test_config_invalid_command_fails() {
   _teardown
 }
 
+# ${var,,} is bash 4 only; the plugin must run on macOS /bin/bash 3.2.
+test_config_chime_style_matches_case_insensitively() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  local err_file="$TMPDIR_ROOT/err"
+  HOME="$FAKE_HOME" /bin/bash "$CONFIGURATOR" chime-style balladpiano >/dev/null 2>"$err_file" || true
+  assert_equals "chime-style has no stderr on bash 3.2" "" "$(cat "$err_file")"
+  assert_equals "chime-style resolves canonical name" "$(_state_field "chime_style")" "BalladPiano"
+  _teardown
+}
+
+test_config_layout_rejects_regex_like_argument() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  local rc=0
+  _configure layout f.ll >/dev/null 2>&1 || rc=$?
+  assert_exit_code "regex-like layout rejected" "1" "$rc"
+  assert_equals "layout unchanged after bad arg" "$(_state_field "mode")" "full"
+  _teardown
+}
+
+test_config_corrupt_state_warns_instead_of_dying_silently() {
+  _setup
+  echo '{"mode": "full", "wid' > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local rc=0 err_file="$TMPDIR_ROOT/err"
+  _configure info >/dev/null 2>"$err_file" || rc=$?
+  assert_exit_code "info survives corrupt state" "0" "$rc"
+  assert_contains "warns about invalid JSON" "$(cat "$err_file")" "not valid JSON"
+  _teardown
+}
+
+# The state reader joins 14 fields; an empty one (here chime_sound) must not
+# shift every later field into the wrong variable.
+test_config_reads_state_correctly_with_empty_fields() {
+  _setup
+  echo '{"mode": "compact", "chime_style": "BalladPiano", "chime_volume": "0.25"}' > "$FAKE_HOME/.claude/nerdflair/state.json"
+  local output
+  output=$(_configure info 2>/dev/null | _strip_ansi)
+  assert_contains "mode read" "$output" "compact"
+  assert_contains "chime style read from correct field" "$output" "25% (BalladPiano)"
+  _teardown
+}
+
+test_config_volume_leading_zero_is_decimal() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  local err_file="$TMPDIR_ROOT/err"
+  _configure chime-volume 08 >/dev/null 2>"$err_file" || true
+  assert_equals "no octal error" "" "$(cat "$err_file")"
+  assert_equals "08 means 8 percent" "$(_state_field "chime_volume")" "0.08"
+  _teardown
+}
+
+test_config_volume_uses_dot_decimal_in_any_locale() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  LC_ALL=de_DE.UTF-8 _configure chime-volume 50 >/dev/null 2>&1 || true
+  assert_equals "volume written with a dot" "$(_state_field "chime_volume")" "0.50"
+  _teardown
+}
+
 test_config_legacy_default_color_migrated() {
   _setup
   # Write state with old "default" color value
@@ -647,7 +979,6 @@ EOF
   assert_equals "default migrated to vibrant" "$(_state_field "color")" "vibrant"
   _teardown
 }
-
 
 # ════════════════════════════════════════════════════════════════
 # BELL HOOK TESTS
@@ -681,7 +1012,7 @@ EOF
 test_bell_picks_random_style_on_session_start() {
   _setup
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
-{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
   echo '{"session_id":"test-new-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
   # bell.sh should pick a real style on SessionStart and write it to per-session file
@@ -696,6 +1027,50 @@ EOF
     (( _fail++ ))
     _errors+=("FAIL: per-session chime style should be a real style, got '$resolved'")
   fi
+  _teardown
+}
+
+# session_id comes from stdin JSON and is used as a filename; reject traversal.
+test_bell_rejects_traversal_in_session_id() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF2'
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "BalladPiano", "chime_events": "SessionStart", "color": "vibrant"}
+EOF2
+  echo '{"session_id":"../../../pwned"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  local escaped="no"
+  [[ -e "$FAKE_HOME/pwned" ]] && escaped="yes"
+  assert_equals "no file written outside sessions dir" "$escaped" "no"
+  _teardown
+}
+
+test_bell_ignores_missing_or_unknown_event() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF2'
+{"mode": "full", "width": "auto", "terminal_bell": "off", "chime_volume": "0", "chime_style": "BalladPiano", "chime_events": "SessionStart", "color": "vibrant"}
+EOF2
+  local rc=0
+  echo '{"session_id":"s1"}' | HOME="$FAKE_HOME" bash "$BELL" >/dev/null 2>&1 || rc=$?
+  assert_exit_code "no event exits 0" "0" "$rc"
+  echo '{"session_id":"s1"}' | HOME="$FAKE_HOME" bash "$BELL" Bogus >/dev/null 2>&1 || rc=$?
+  assert_exit_code "unknown event exits 0" "0" "$rc"
+  local created="no"; [[ -e "$FAKE_HOME/.claude/nerdflair/sessions/s1" ]] && created="yes"
+  assert_equals "no side effects without a valid event" "$created" "no"
+  _teardown
+}
+
+# The 7-day prune keys on mtime; a live session must refresh its file.
+test_bell_touches_session_file_on_events() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF2'
+{"mode": "full", "width": "auto", "terminal_bell": "off", "chime_volume": "0", "chime_style": "BalladPiano", "chime_events": "Stop", "color": "vibrant"}
+EOF2
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/sessions"
+  echo '{"chime":"BalladPiano"}' > "$FAKE_HOME/.claude/nerdflair/sessions/s2"
+  touch -t 202001010000 "$FAKE_HOME/.claude/nerdflair/sessions/s2"
+  echo '{"session_id":"s2"}' | HOME="$FAKE_HOME" bash "$BELL" Stop >/dev/null 2>&1 || true
+  local stale="yes"
+  [[ -n "$(find "$FAKE_HOME/.claude/nerdflair/sessions" -name s2 -newer "$FAKE_HOME/.claude/nerdflair/state.json" 2>/dev/null)" || -n "$(find "$FAKE_HOME/.claude/nerdflair/sessions" -name s2 -mtime -1)" ]] && stale="no"
+  assert_equals "session file mtime refreshed" "$stale" "no"
   _teardown
 }
 
@@ -717,10 +1092,22 @@ EOF
   _teardown
 }
 
+test_bell_suppresses_post_compaction_restart() {
+  _setup
+  cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF2'
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
+EOF2
+  echo '{"session_id":"compacted-session","source":"compact"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  local created="no"
+  [[ -f "$FAKE_HOME/.claude/nerdflair/sessions/compacted-session" ]] && created="yes"
+  assert_equals "compact restart does not start a new chime session" "$created" "no"
+  _teardown
+}
+
 test_bell_cleans_up_session_file_on_session_end() {
   _setup
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
-{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart,SessionEnd", "color": "vibrant"}
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "SessionStart,SessionEnd", "color": "vibrant"}
 EOF
   # Create a session file via SessionStart
   echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
@@ -743,7 +1130,6 @@ EOF
   _teardown
 }
 
-
 # ════════════════════════════════════════════════════════════════
 # RUN ALL TESTS
 # ════════════════════════════════════════════════════════════════
@@ -754,16 +1140,19 @@ while IFS= read -r fn; do
   _tests+=("$fn")
 done < <(declare -F | awk '{print $3}' | grep '^test_' | sort)
 
-# Use temp files to collect results across subshells
+# Collect results in temp files so the summary survives a test that exits.
 _results_dir=$(mktemp -d)
-trap 'rm -rf "$_results_dir"' EXIT
+# Also remove the fixture dir of a test that crashed before its own _teardown.
+trap 'rm -rf "$_results_dir" "${TMPDIR_ROOT:-}"' EXIT
 
 echo "Running ${#_tests[@]} tests..."
 echo ""
 
 for t in "${_tests[@]}"; do
-  printf "  %-55s" "$t"
-  # Run each test; capture pass/fail via temp files
+  printf "  %-60s" "$t"
+  # Run each test. stderr is captured rather than discarded: with errexit
+  # suspended inside the if, a failing command would otherwise vanish silently,
+  # so any stderr output counts as a failure and is shown in the summary.
   _pass=0
   _fail=0
   _errors=()
@@ -784,7 +1173,7 @@ for t in "${_tests[@]}"; do
     echo "FAIL (crashed)"
     [[ -s "$_results_dir/$t.err" ]] && sed 's/^/      stderr: /' "$_results_dir/$t.err" | tail -5
     echo "1" >> "$_results_dir/fails"
-    echo "FAIL: $t -- crashed or exited nonzero" >> "$_results_dir/errors"
+    echo "FAIL: $t -- crashed or exited nonzero: $(tail -1 "$_err_file" 2>/dev/null)" >> "$_results_dir/errors"
   fi
 done
 

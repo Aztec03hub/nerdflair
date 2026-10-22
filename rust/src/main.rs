@@ -1421,7 +1421,17 @@ fn render_inner(input: &str) -> Result<String, String> {
     } else {
         fmtx::strtod(&f.cost)
     };
-    let formatted_cost = fmtx::f2(cost_val);
+    let formatted_cost = {
+        // Twin of `formatted_cost="$(_fmt_num "${formatted_cost%.*}").${formatted_cost#*.}"`.
+        let f = fmtx::f2(cost_val);
+        match f.split_once('.') {
+            Some((w, d)) => match w.parse::<i64>() {
+                Ok(n) if w != "-0" => format!("{}.{}", fmt_num(n), d),
+                _ => f,
+            },
+            None => f,
+        }
+    };
     let mut cost_segment = String::new();
     if formatted_cost != "0.00" {
         cost_segment = format!("{}{}{}{}", pal.cost_green, COST_ICON, formatted_cost, RESET);

@@ -7,3 +7,5 @@ band/bridge/inspector-lab/app-compiled
 
 # Process files (reviews, audits, worklogs) stay local, not on the public remote
 reports/
+.claude/settings.local.json
+out.txt
