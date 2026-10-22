@@ -116,6 +116,7 @@ sync -- "$bad" web; check "name: --rc-sync takes it too" 0 "$RC"
 check "name: a clean id shaped like a modified name is another file" 1 "$([[ "$("$BIN" --rc-name a_b-3840401949 </dev/null)" != "$("$BIN" --rc-name a/b </dev/null)" ]] && echo 1 || echo 0)"
 
 # one file-name rule: no collisions, no traversal, a cap
+sync -- "a/b c" web; check "chain: the plugin passes the raw id; the file written is the one --rc-name names" 1 "$([[ -f "$W/c/$("$BIN" --rc-name "a/b c" </dev/null)" ]] && echo 1 || echo 0)"
 check "name: a plain id is kept" "rc-sid-1" "$("$BIN" --rc-name sid-1 </dev/null)"
 check "name: a/b and a_b get different files" 1 "$([[ "$("$BIN" --rc-name a/b </dev/null)" != "$("$BIN" --rc-name a_b </dev/null)" ]] && echo 1 || echo 0)"
 check "name: ../../evil stays a plain file name" 1 "$("$BIN" --rc-name ../../evil </dev/null | rg -c '^rc-[A-Za-z0-9_~-]+$')"

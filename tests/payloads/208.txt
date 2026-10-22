@@ -1,1 +1,1 @@
-row3 gap: COLUMNS=60 MCP=many
+rc: session id a/b does not read the record of a_b: no readout

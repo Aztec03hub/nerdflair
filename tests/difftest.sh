@@ -121,7 +121,7 @@ trap _cleanup EXIT
 # ═════════════════════════════════════════════════════════════════════════════
 # Git fixtures
 # ═════════════════════════════════════════════════════════════════════════════
-FIXROOT="/tmp/nerdflair-difftest-fixtures"
+FIXROOT="$RUN_DIR/fixtures"   # private per run: a shared /tmp copy let concurrent agents race on the git index/rebuild (~1.5s to build)
 FIX_STAMP="$FIXROOT/.built-v3"
 
 # A failed fixture step aborts the build: both sides would otherwise read the same
@@ -374,8 +374,8 @@ run_side() {
   rm -f "${GIT_CACHE_PATHS[@]}" 2>/dev/null
   rm -f /tmp/nerdflair-ccusage-${UID} /tmp/nerdflair-ccusage-${UID}.tmp 2>/dev/null
   rmdir /tmp/nerdflair-ccusage-${UID}.lock 2>/dev/null
-  rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" 2>/dev/null
-  rmdir "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
+  rm -f "$CACHE_DIR/nerdflair-mcphealth-${UID}" "$CACHE_DIR/nerdflair-mcphealth-${UID}.tmp" "$CACHE_DIR/nerdflair-mcphealth-${UID}.lock" 2>/dev/null
+  rm -f "$CACHE_DIR"/nerdflair-mcphealth-${UID}-* "$CACHE_DIR/nerdflair-mcphealth-prune-${UID}" 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-repocost-${UID}-* "$CACHE_DIR"/nerdflair-repocost-total-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-sample-${UID}-* 2>/dev/null
   rm -f "$CACHE_DIR"/nerdflair-tmux-${UID}-* 2>/dev/null
@@ -390,7 +390,11 @@ run_side() {
   fi
   if [[ -n "${CASE_SEED_MCPHEALTH:-}" ]]; then
     local ok="${CASE_SEED_MCPHEALTH%%:*}" rest="${CASE_SEED_MCPHEALTH#*:}"
-    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}"
+    # NO NERDFLAIR_MCP_CACHE: the renderers must find the per-project file by its own name,
+    # nerdflair-mcphealth-UID-<cksum of the normalised project dir> (the dir comes from the payload).
+    local kd; kd=$(jq -r '(.workspace.project_dir // .workspace.current_dir // empty)' "$outdir/payload.json")
+    kd="${kd%%$'\n'*}"; while [[ "$kd" == *//* ]]; do kd="${kd//\/\//\/}"; done; [[ ${#kd} -gt 1 ]] && kd="${kd%/}"
+    printf '%s\x1f%s\x1f%s' "$ok" "${rest%%:*}" "${rest##*:}" > "$CACHE_DIR/nerdflair-mcphealth-${UID}-$(printf '%s' "$kd" | cksum | cut -d' ' -f1)"
     extra_env+=("NERDFLAIR_MCP_HEALTH=1" "NERDFLAIR_MCP_HEALTH_TTL=999999999")
   else
     extra_env+=("NERDFLAIR_MCP_HEALTH=0")
@@ -559,9 +563,16 @@ for id in "${CASES[@]}"; do
        && [[ "$(cat "$OUTDIR/A.rc")" == "$(cat "$OUTDIR/B.rc")" ]]; then
       break
     fi
+    # keep the first (differing) attempt: it is the only evidence of what was unstable
+    if (( _attempt == 0 )); then cp "$OUTDIR/A.out" "$OUTDIR/first-A.out"; cp "$OUTDIR/B.out" "$OUTDIR/first-B.out"; fi
     (( _attempt++ >= 1 )) && break
   done
-  (( _attempt > 0 )) && UNSTABLE+=("$id")
+  if (( _attempt > 0 )); then
+    UNSTABLE+=("$id")
+    # evidence: what differed on the first attempt (cp ran before the retry)
+    printf '%sUNSTABLE %s first-attempt diff:%s\n' "$C_YEL" "$id" "$C_RST"
+    diff <(cat -v "$OUTDIR/first-A.out") <(cat -v "$OUTDIR/first-B.out") | head -20 | cut -c1-1500
+  fi
 
   rcA=$(cat "$OUTDIR/A.rc"); rcB=$(cat "$OUTDIR/B.rc")
   errA=$(wc -c < "$OUTDIR/A.err"); errB=$(wc -c < "$OUTDIR/B.err")
@@ -572,6 +583,13 @@ for id in "${CASES[@]}"; do
     problems+=("stdout differs — $off")
   fi
   [[ "$rcA" != "$rcB" ]] && problems+=("exit status differs: A=$rcA B=$rcB")
+  # A seeded MCP health file is found by its per-project NAME (no override). If neither side shows the seeded
+  # count, the name did not match and the case proves nothing.
+  if [[ -n "$CASE_SEED_MCPHEALTH" ]]; then
+    _sd_ok="${CASE_SEED_MCPHEALTH%%:*}"
+    sed 's/\x1b\[[0-9;]*m//g' "$OUTDIR/A.out" | grep -q "${_sd_ok}/" \
+      || problems+=("seeded MCP health ${CASE_SEED_MCPHEALTH} not shown: the per-project cache name did not match")
+  fi
   # stderr: compare EMPTINESS PARITY, not byte equality. A Rust diagnostic will
   # never match jq's wording, but "one side is silent and the other is not" is a
   # real behavioural difference and must fail. Both noisy is reported, not failed.
@@ -623,6 +641,9 @@ done
   "$C_YEL" "${NOISY[*]}" "$C_RST"
 if (( ${#FAILED[@]} == 0 )); then
   printf '%s%d/%d identical%s\n' "$C_GRN" "$SAME" "$TOTAL" "$C_RST"
+  # A case that needed its retry is nondeterminism, not a pass: fail the run.
+  # NERDFLAIR_DIFFTEST_ALLOW_UNSTABLE=1 restores the old warn-only behaviour.
+  (( ${#_only_unstable[@]} )) && [[ "${NERDFLAIR_DIFFTEST_ALLOW_UNSTABLE:-0}" != 1 ]] && exit 3
   exit 0
 else
   printf '%s%d/%d identical — %d differ: %s%s\n' \

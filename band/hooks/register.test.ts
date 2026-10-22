@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { register, resetStateForTests } from './register'
+import { bandRowDefaultForTests, register, resetStateForTests } from './register'
 
 // One case per class of failure the band used to absorb silently. Each asserts
 // BOTH halves of the rule: the failure is visible (red band, stale marker,
@@ -81,20 +81,19 @@ const ok = (argv: readonly string[]) => (argv[0] === 'printenv' ? result(0, '/ho
 test('printenv HOME failing is shown in the band and logged once, not silently handed to the engine', async ($, on) => {
   const { w } = world(on, argv => (argv[0] === 'printenv' ? result(1, '', 'printenv: gone') : ok(argv)))
 
-  const a = textOf(await $.ui.render(BAND as never))
-  await $.ui.render(BAND as never)
+  const a = await drawOrEngine($)
+  await drawOrEngine($)
 
-  expect(a).toContain('nerdflair-band: HOME lookup')
+  expect(a, 'no record has ever been written: the fault opens the row').toContain('HOME lookup')
   expect(a).toContain('printenv: gone')
+  expect(w.logs.filter(l => l.includes('HOME lookup')).length, 'logged once across two renders').toBe(1)
   expect(w.logs.filter(l => l.includes('HOME lookup')).length, 'logged once across two renders').toBe(1)
 })
 
 test('printenv rejecting (spawn failure or timeout) is reported, not thrown through the render', async ($, on) => {
   const { w } = world(on, argv => (argv[0] === 'printenv' ? { deny: 'spawn printenv ENOENT' } : ok(argv)))
 
-  const a = textOf(await $.ui.render(BAND as never))
-
-  expect(a).toContain('HOME lookup')
+  expect(await drawOrEngine($)).toContain('HOME lookup')
   expect(w.logs.some(l => l.includes('HOME lookup') && l.includes('ENOENT'))).toBe(true)
 })
 
@@ -363,8 +362,9 @@ test('ENOENT is tested before abort, even when the path contains "abort"', async
 })
 
 test('a printenv timeout that mentions "aborted" is a failure, reported at once', async ($, on) => {
-  world(on, argv => (argv[0] === 'printenv' ? { deny: 'HooksError: x: $.process.run(printenv) aborted: still running after 2000ms' } : ok(argv)))
+  const { w } = world(on, argv => (argv[0] === 'printenv' ? { deny: 'HooksError: x: $.process.run(printenv) aborted: still running after 2000ms' } : ok(argv)))
   expect(await drawOrEngine($)).toContain('printenv HOME failed')
+  expect(w.logs.some(l => l.includes('printenv HOME failed'))).toBe(true)
 })
 
 test('the abort report text is stable: logged once at the threshold across many renders, with a recovered note', async ($, on) => {
@@ -448,8 +448,8 @@ test('turning the flag on takes effect at the next sync', async ($, on) => {
   expect(await drawOrEngine($)).toContain('myrepo main')
 })
 
-test('no session id: nothing is written and the fault is shown in the band, once in the log', async ($, on) => {
-  const { w } = world(on, ok, { sid: '', debug: false })
+test('no session id: nothing is written, the fault opens the row (no record yet) and is logged once', async ($, on) => {
+  const { w } = world(on, ok, { sid: '', debug: true })
 
   const a = await drawOrEngine($)
   await drawOrEngine($)
@@ -459,23 +459,29 @@ test('no session id: nothing is written and the fault is shown in the band, once
   expect(w.logs.filter(l => l.includes('session id unknown')).length).toBe(1)
 })
 
-test('a failing sync is reported with the binary\'s words, backed off for 5 s, and draws the band', async ($, on) => {
-  const { w, clock } = world(on, ok, { sync: () => result(4, '', 'rc-sync: cannot write /c/rc-sid_1: Permission denied') })
+test('a failing sync is reported with the binary\'s words and backed off for 5 s; with the flag already on it shows in the row', async ($, on) => {
+  let fail = false
+  const { w, clock } = world(on, ok, {
+    sync: () => (fail ? result(4, '', 'rc-sync: cannot write /c/rc-sid_1: Permission denied') : result(0, 'debug=1\n')),
+  })
+  expect(await drawOrEngine($)).toContain('myrepo main')
+  fail = true
+  await clock.advance(2500)
 
   const a = await drawOrEngine($)
   await drawOrEngine($)
 
   expect(a).toContain('rc sync failed')
   expect(a).toContain('Permission denied')
-  expect(w.syncs.length, 'backed off').toBe(1)
+  expect(w.syncs.length, 'one good, one failed, then backed off').toBe(2)
   expect(w.logs.filter(l => l.includes('rc sync failed')).length).toBe(1)
 
   await clock.advance(5500)
   await drawOrEngine($)
-  expect(w.syncs.length).toBe(2)
+  expect(w.syncs.length).toBe(3)
 })
 
-test('an answer without a debug line is a failure, not a silent hidden band', async ($, on) => {
+test('an answer without a debug line (old binary) is a failure: logged, and with no record yet it opens the row', async ($, on) => {
   const { w } = world(on, ok, { sync: () => result(0, 'something else\n') })
 
   expect(await drawOrEngine($)).toContain('rc sync failed')
@@ -522,4 +528,70 @@ test('the record is kept by a timer too, so it does not depend on ui.render firi
 
   expect(w.syncs.length).toBeGreaterThanOrEqual(1)
   expect(w.syncs[0]?.slice(1, 3)).toEqual(['--rc-sync', 'sid-1'])
+})
+
+// ── U4: ONE code switch (BAND_ROW_ENABLED) plus the runtime flag ─────────────
+
+test('constant false and no flag: the row is hidden, and nothing in the band path ran', async ($, on) => {
+  const { w } = world(on, ok, { debug: false })
+
+  expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  expect(w.stdins, 'no --json refresh').toEqual([])
+  expect(w.logs.filter(l => l.includes('plugin bug'))).toEqual([])
+})
+
+test('a first failing sync (flag unknown, no record) opens the row with the binary\'s words, logged once', async ($, on) => {
+  const { w } = world(on, ok, { sync: () => result(4, '', 'rc-sync: cannot write /c/rc-sid_1: Permission denied') })
+
+  expect(await drawOrEngine($)).toContain('Permission denied')
+  await drawOrEngine($)
+  expect(w.logs.filter(l => l.includes('rc sync failed') && l.includes('Permission denied')).length).toBe(1)
+})
+
+test('hidden: a failed renderer refresh and the stale-copy "no recorded reason (plugin bug)" line can never appear', async ($, on) => {
+  const { w } = world(on, argv => (argv[0] === 'printenv' ? ok(argv) : result(1, '', 'boom')), { debug: false })
+
+  for (let i = 0; i < 3; i++) expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  expect(w.logs.some(l => l.includes('plugin bug') || l.includes('renderer failed'))).toBe(false)
+})
+
+test('the session id goes to --rc-sync verbatim, so the file is the one `--rc-name <id>` names (the binary owns the rule)', async ($, on) => {
+  const { w } = world(on, ok, { debug: false, sid: 'a/b c' })
+
+  await drawOrEngine($)
+
+  expect(w.syncs[0]?.[1]).toBe('--rc-sync')
+  expect(w.syncs[0]?.[2], 'raw id, no sanitising of its own').toBe('a/b c')
+})
+
+test('once a sync has succeeded, a later fault is log-only: the row stays hidden (the main line goes amber via the 120 s rule)', async ($, on) => {
+  let fail = false
+  const { w, clock } = world(on, ok, { sync: () => (fail ? result(4, '', 'rc-sync: disk full') : result(0, 'debug=0\n')) })
+  expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  fail = true
+  await clock.advance(2500)
+
+  expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  expect(w.logs.filter(l => l.includes('rc sync failed') && l.includes('disk full')).length).toBe(1)
+})
+
+test('a HOME fault that healed is not drawn later as a stale marker once the flag turns the row on', async ($, on) => {
+  let home = 0
+  let debug = 0
+  const { clock } = world(on, argv => (argv[0] === 'printenv' ? (++home === 1 ? result(1, '', 'printenv: gone') : result(0, '/home/t\n')) : ok(argv)), {
+    sync: () => result(0, `debug=${debug}\n`),
+  })
+  expect(await drawOrEngine($)).toContain('HOME lookup')
+  await clock.advance(31000)
+  expect(await drawOrEngine($)).toBe('ENGINE-DEFAULT-ROW')
+  debug = 1
+  await clock.advance(2500)
+
+  const a = await drawOrEngine($)
+  expect(a).toContain('myrepo main')
+  expect(a).not.toContain('HOME lookup')
+})
+
+test('the committed default of the code switch is false, so a debugging edit cannot ship', () => {
+  expect(bandRowDefaultForTests()).toBe(false)
 })

@@ -505,7 +505,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     // Prefer the probe's names so the two readouts cannot disagree.
     if std::env::var("NERDFLAIR_MCP_HEALTH").unwrap_or_else(|_| "1".into()) != "0" {
         // No cache dir: no probe cache either (already logged as cache-dir).
-        let mh = mcp_cache_path(uid);
+        let mh = mcp_cache_path(uid, if project_dir.is_empty() { &cwd } else { &project_dir });
         match mh.as_ref().map(std::fs::read_to_string) {
             None => {}
             Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {} // no probe yet: normal
@@ -552,8 +552,8 @@ fn render_inner(input: &str) -> Result<String, String> {
             "git:inside-work-tree",
             &["not a git repository"],
         );
-        if ok {
-            git_dir = cwd.clone();
+        if ok || (proc::timed_out() && head_fallback_branch(&cwd).is_some()) {
+            git_dir = cwd.clone(); // hung git: still a repo on disk, the cache/HEAD fallback fills in
         } else {
             let mut subs: Vec<String> = Vec::new();
             let rd_res = std::fs::read_dir(&cwd);
@@ -785,6 +785,8 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut total_used: i64 = 0;
     let mut pct: i64 = 0;
     let mut pct_is_int = true;
+    // False when neither the payload nor a transcript usage line gave a figure: the gauge then says "--".
+    let mut ctx_src = true;
     if !f.used_pct.is_empty() && !f.ctx_size.is_empty() {
         ctx_total_s = f.ctx_size.clone();
         // A fractional `used_percentage` is legal in the payload (the docs' own
@@ -820,6 +822,7 @@ fn render_inner(input: &str) -> Result<String, String> {
             },
         }
     } else {
+        ctx_src = false;
         let transcript = jqx::path(&root, &["transcript_path"])
             .map(jqx::tostring)
             .unwrap_or_default();
@@ -903,6 +906,7 @@ fn render_inner(input: &str) -> Result<String, String> {
                                         }),
                                     }
                                 };
+                                ctx_src = true;
                                 total_used = g("input_tokens")
                                     + g("cache_creation_input_tokens")
                                     + g("cache_read_input_tokens")
@@ -976,7 +980,7 @@ fn render_inner(input: &str) -> Result<String, String> {
         Some(t) => format!("{}", t),
         None => ctx_total_s.clone(),
     };
-    let ctx_label = format!("{}/{} {}%", used_fmt, size_fmt, pct);
+    let ctx_label = if ctx_src { format!("{}/{} {}%", used_fmt, size_fmt, pct) } else { "--".to_string() };
 
     // ── Width ────────────────────────────────────────────────────
     // The configured number IS the row width; the bar is that less its two
@@ -1329,7 +1333,7 @@ fn render_inner(input: &str) -> Result<String, String> {
     let repocost_segment = repo_cost_segment(&f, &git_dir, &project_dir, uid, now, pal);
 
     // ── MCP health ───────────────────────────────────────────────
-    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now);
+    let (mcp_ok, mcp_bad, mcp_warn, _mcp_probe_names) = mcp_health(uid, now, if project_dir.is_empty() { &cwd } else { &project_dir });
 
     // ── Time, cost, speed ────────────────────────────────────────
     let mut api_fmt = String::new();
@@ -1413,6 +1417,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             format!("{}", rate_show)
         };
         speed_segment = format!("{}{} {}/s{}", pal.mauve, SPEED_ICON, sf, RESET);
+    } else if !f.output_tokens.is_empty() && !f.total_api_ms.is_empty() {
+        // Tokens and api time are in the payload but no rate exists yet (first render, or the previous sample
+        // was not older): a stable dim placeholder, not a segment that appears later.
+        speed_segment = format!("{}{} --/s{}", pal.dim, SPEED_ICON, RESET);
     }
 
     // `printf '%.2f' "${cost:-0}"` -> C strtod semantics, not Rust's parser.
@@ -1438,7 +1446,18 @@ fn render_inner(input: &str) -> Result<String, String> {
         std::env::var("NERDFLAIR_REPO_COST_FILE")
             .unwrap_or_else(|_| format!("{}/.claude/nerdflair-usage.tsv", home)),
     );
-    let (ledger, ledger_cut) = ledger_tail(&ledger_file, ledger_cap, "ledger-read");
+    let (mut ledger, mut ledger_cut) = ledger_tail(&ledger_file, ledger_cap, "ledger-read");
+    // The block can start up to 5 h back. If the cut tail starts later than that, widen ONCE (16x, like the
+    // transcript path) instead of hiding burn and block at high activity.
+    if ledger_cut {
+        let first = ledger.lines().next().and_then(|l| l.split('\t').next()).map_or(0.0, fmtx::awk_num);
+        if first <= 0.0 || first > (now - 18000) as f64 {
+            let wider = clamp_cap((ledger_cap as i64).saturating_mul(16));
+            if wider > ledger_cap {
+                (ledger, ledger_cut) = ledger_tail(&ledger_file, wider, "ledger-read");
+            }
+        }
+    }
 
     // ── Burn rate ────────────────────────────────────────────────
     let mut burn_val = String::new();
@@ -1705,6 +1724,10 @@ fn render_inner(input: &str) -> Result<String, String> {
             let _ = cp_fuzzy;
             compact_segment = format!("{}{}~{}{}", color, DOWN_DASHED, fmt, RESET);
         }
+    }
+    // No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
+    if compact_segment.is_empty() && used10.is_some() {
+        compact_segment = format!("{}{}~--{}", pal.dim, DOWN_DASHED, RESET);
     }
 
     // ── Persist this sample ──────────────────────────────────────
@@ -2365,17 +2388,75 @@ fn git_cache(git_dir: &str, shell_cwd: &mut PathBuf) -> Option<GitCache> {
         },
     };
     let p = read_ifs_unit(&content, 8);
+    let mut branch = p[3].clone();
+    if branch.is_empty() {
+        // git hung, was skipped or is missing: the branch is still on disk.
+        if let Some(b) = head_fallback_branch(git_dir) {
+            errlog::note("git-branch-fallback", &format!("git gave no branch for {}; read .git/HEAD instead", git_dir));
+            branch = b;
+        }
+    }
     Some(GitCache {
         dirty: p[0].clone(),
         added: p[1].clone(),
         removed: p[2].clone(),
-        branch: p[3].clone(),
+        branch,
         remote: p[4].clone(),
         worktree: p[5].clone(),
         ahead: p[6].clone(),
         behind: p[7].clone(),
     }
 )
+}
+
+/// First line of a small file, read as at most 4 KiB: invalid UTF-8 dropped, control characters (C0, DEL, C1,
+/// so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of `_nf_clean_line` in statusline.sh.
+fn clean_first_line(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(p).ok()?.take(4096).read_to_end(&mut buf).ok()?;
+    let line = buf.split(|b| *b == b'\n').next().unwrap_or(&[]);
+    let mut s = String::new();
+    for ch in line.utf8_chunks() {
+        s.push_str(ch.valid());
+    }
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    Some(s.trim_end_matches(' ').to_string())
+}
+
+/// Branch name read straight from `.git/HEAD`, for when git itself is hung or
+/// missing. Walks up from `start` and stops at the FIRST `.git` entry or bare-repo layout (`HEAD` plus
+/// `refs/`), so a nested bare repo never shows the outer branch. A linked worktree has a `.git` FILE holding
+/// `gitdir: <path>` (relative paths are relative to it). `ref: refs/heads/x` gives `x`, a bare 40/64 hex sha
+/// gives its first 7. The result is cleaned like clean_first_line.
+fn head_fallback_branch(start: &str) -> Option<String> {
+    let mut d = PathBuf::from(start);
+    loop {
+        let dot = d.join(".git");
+        let gd = if dot.is_dir() {
+            Some(dot)
+        } else if dot.is_file() {
+            match clean_first_line(&dot).and_then(|l| l.strip_prefix("gitdir: ").map(|g| d.join(g))) {
+                Some(g) => Some(g),
+                None => return None,
+            }
+        } else if d.join("HEAD").is_file() && d.join("refs").is_dir() {
+            Some(d.clone())
+        } else {
+            None
+        };
+        if let Some(gd) = gd {
+            let l = clean_first_line(&gd.join("HEAD"))?;
+            if let Some(b) = l.strip_prefix("ref: refs/heads/") {
+                return if b.is_empty() { None } else { Some(b.to_string()) };
+            }
+            let hex = (l.len() == 40 || l.len() == 64) && l.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            return if hex { Some(l[..7].to_string()) } else { None };
+        }
+        if !d.pop() {
+            return None;
+        }
+    }
 }
 
 /// What bash's `cd` needs: a directory we may search (execute bit), by EFFECTIVE ids like cd.
@@ -2574,7 +2655,7 @@ fn shq_bare(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
+fn mcp_health(uid: u32, _now: i64, key_dir: &str) -> (String, String, String, String) {
     let ttl = env_int("NERDFLAIR_MCP_HEALTH_TTL", 300);
     let mut ok = String::new();
     let mut bad = String::new();
@@ -2588,10 +2669,17 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
         errlog::note("mcp-no-claude", "claude is not on PATH; MCP health probe disabled");
         return (ok, bad, warn, names);
     }
-    let Some(cache) = mcp_cache_path(uid) else {
+    let Some(cache) = mcp_cache_path(uid, key_dir) else {
         return (ok, bad, warn, names); // no cache dir: no probe (already logged as cache-dir)
     };
-    let lock = PathBuf::from(format!("{}.lock", cache.display()));
+    // ONE probe at a time per user: every project's job takes the same lock, a render that loses shows the
+    // last cached value. (A test's NERDFLAIR_MCP_CACHE override keeps a lock of its own.)
+    let lock = if std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
+        PathBuf::from(format!("{}.lock", cache.display()))
+    } else {
+        cache.with_file_name(format!("nerdflair-mcphealth-{}.lock", uid))
+    };
+    prune_mcp_caches(&cache, uid);
     let mut fresh = false;
     if cache.is_file() {
         if file_age(&cache) < ttl {
@@ -2640,7 +2728,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
     };
     if !fresh && idle {
         let script = format!(
-            "exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
+            "{cd}exec 9>>{lock} 2>/dev/null || exit 0; flock -n 9 || exit 0; \
              _ef=$(mktemp \"${{TMPDIR:-/tmp}}/nerdflair-mcperr.XXXXXX\" 2>/dev/null) || _ef=/dev/null; _raw=$(timeout -k 5 {tmo} claude mcp list 2>\"$_ef\"); _rc=$?; \
              _out=$(printf '%s\\n' \"$_raw\" | sed 's/\\x1b\\[[0-9;]*m//g'); _o=0; _b=0; _w=0; _nm=\"\"; \
              while IFS= read -r _ln; do case \"$_ln\" in \
@@ -2670,6 +2758,7 @@ fn mcp_health(uid: u32, _now: i64) -> (String, String, String, String) {
                || printf '%s %s mcp-probe-write: cannot update %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$$\" {cache} >> {log}; \
              else touch {cache} 2>/dev/null; fi",
             tmo = env_int("NERDFLAIR_MCP_PROBE_TIMEOUT", 30).clamp(1, 600),
+            cd = if key_dir.is_empty() { String::new() } else { format!("cd {} 2>/dev/null; ", shq(&norm_key_dir(key_dir))) },
             lock = shq(&lock.to_string_lossy()),
             cache = shq_bare(&cache.to_string_lossy()),
             // Empty when no safe stamp directory exists: the script then logs without a rate limit.
@@ -2881,10 +2970,58 @@ fn theil_sen(hist: &[Sample], idle_gap: i64) -> Option<(i64, bool)> {
 /// `NERDFLAIR_MCP_CACHE` exists so a test can own its cache. Without it the
 /// path is a single shared /tmp file that a test run cannot isolate, and
 /// running the suite spawns a real probe against every configured server.
-fn mcp_cache_path(uid: u32) -> Option<PathBuf> {
+///
+/// The default file is keyed by the project dir (cksum, like the git cache):
+/// `claude mcp list` is cwd-dependent, so one shared file let a 11/11 from one
+/// project show in another. The probe also runs from that dir.
+fn mcp_cache_path(uid: u32, key_dir: &str) -> Option<PathBuf> {
     match std::env::var("NERDFLAIR_MCP_CACHE") {
         Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
-        _ => cache_path(&format!("nerdflair-mcphealth-{}", uid)),
+        _ => cache_path(&format!("nerdflair-mcphealth-{}-{}", uid, cksum(norm_key_dir(key_dir).as_bytes()))),
+    }
+}
+
+/// The ONE rule for the per-project key (twin of `_nf_norm_key_dir`): cut at the first newline (bash reads the
+/// payload fields line-wise), collapse runs of `/`, strip a trailing `/` (the root stays `/`).
+fn norm_key_dir(s: &str) -> String {
+    let s = s.split('\n').next().unwrap_or("");
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '/' && out.ends_with('/') {
+            continue;
+        }
+        out.push(c);
+    }
+    if out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// At most once a day, delete per-project probe files (`nerdflair-mcphealth-UID-<crc>` and its siblings) whose
+/// mtime is 14+ days old: a probe touches its cache every few minutes while the project is in use, so these
+/// are projects nobody has opened. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
+fn prune_mcp_caches(cache: &Path, uid: u32) {
+    if json_mode() || std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
+        return;
+    }
+    let (Some(dir), Some(stamp)) = (cache.parent(), cache_path(&format!("nerdflair-mcphealth-prune-{}", uid))) else { return };
+    if stamp.is_file() && file_age(&stamp) < 86400 {
+        return;
+    }
+    if let Err(e) = cache_write(&stamp, b"") {
+        errlog::note_io(&errlog::tmp_key(&stamp), &stamp.display().to_string(), &e);
+        return;
+    }
+    let prefix = format!("nerdflair-mcphealth-{}-", uid);
+    let max_age = env_int("NERDFLAIR_MCP_PRUNE_DAYS", 14) * 86400;
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) && file_age(&e.path()) >= max_age {
+            if let Err(err) = std::fs::remove_file(e.path()) {
+                errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
+            }
+        }
     }
 }
 
@@ -3201,13 +3338,12 @@ fn repo_cost_segment(
         while total.ends_with('\n') {
             total.pop();
         }
-    } else if let Some(text) = match read_lossy(&cost_file) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None, // no ledger yet: normal
-        Err(e) => {
-            errlog::note_io("ledger-read", &format!("cannot read {} for the repo total", cost_file.display()), &e);
-            None
-        }
+    } else if let Some((text, total_cut)) = {
+        // Bounded: a ledger that compaction has not kept small must not cost a full read per refresh.
+        // ledger_tail logs every failure under its key and returns "" for a missing file (first run).
+        let cap = clamp_cap(env_int("NERDFLAIR_REPO_TOTAL_TAIL_BYTES", 16_777_216));
+        let (t, cut) = ledger_tail(&cost_file, cap, "ledger-read");
+        if t.is_empty() { None } else { Some((t, cut)) }
     } {
         let cutoff = (now - days * 86400) as f64;
         let mut m: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
@@ -3230,7 +3366,11 @@ fn repo_cost_segment(
         }
         let t: f64 = m.values().sum();
         if t > 0.0 {
-            total = fmtx::f2(t);
+            // "~" = the tail cap cut the file, so older sessions are missing: an estimate, not a total.
+            total = format!("{}{}", if total_cut { "~" } else { "" }, fmtx::f2(t));
+            if total_cut {
+                errlog::note("repo-total-cut", "ledger is larger than NERDFLAIR_REPO_TOTAL_TAIL_BYTES; repo total is a lower bound (~); compaction is not keeping up");
+            }
         }
         if let Some(memo) = memo.as_ref() {
             if let Err(e) = cache_write(memo, total.as_bytes()) {
@@ -3239,9 +3379,11 @@ fn repo_cost_segment(
         }
     }
     if !total.is_empty() && total != "0.00" {
-        return format!("{}{} ${}{}", pal.dark_green, REPO_ICON, total, RESET);
+        let (tilde, num) = match total.strip_prefix('~') { Some(n) => ("~", n), None => ("", total.as_str()) };
+        return format!("{}{} {}${}{}", pal.dark_green, REPO_ICON, tilde, num, RESET);
     }
-    String::new()
+    // Slug resolved, nothing in the ledger yet: a stable dim placeholder, not a segment that appears later.
+    format!("{}{} $--{}", pal.dim, REPO_ICON, RESET)
 }
 
 /// A non-blocking flock on `path`, held for as long as the returned File

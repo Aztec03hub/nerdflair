@@ -263,8 +263,18 @@ _mcp_probe_names=""
 # the health counts came from the override and the NAMES from /tmp, which is
 # exactly the disagreement between the two that the probe exists to prevent.
 # Empty when there is no private cache dir (then no probe cache and no probe).
+# The ONE rule for the per-project key (twin of norm_key_dir): cut at the first newline, collapse runs of "/",
+# strip a trailing "/" (the root stays "/"). Set whether or not NERDFLAIR_MCP_CACHE is: the probe cds to it.
+_mcp_key_dir="${project_dir:-$cwd}"; _mcp_key_dir="${_mcp_key_dir%%$'\n'*}"
+while [[ "$_mcp_key_dir" == *//* ]]; do _mcp_key_dir="${_mcp_key_dir//\/\//\/}"; done
+[[ ${#_mcp_key_dir} -gt 1 ]] && _mcp_key_dir="${_mcp_key_dir%/}"
 if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _MCP_CACHE="$NERDFLAIR_MCP_CACHE"
-else _nf_cache_path "nerdflair-mcphealth-${UID}"; _MCP_CACHE="$_NF_CP"; fi
+else
+  # Keyed by the project dir (cksum, like the git cache): `claude mcp list` is cwd-dependent, so one shared
+  # file let a 11/11 from one project show in another. The probe also runs from this dir.
+  _mcp_key_crc=$(printf '%s' "$_mcp_key_dir" | cksum | cut -d' ' -f1)
+  _nf_cache_path "nerdflair-mcphealth-${UID}-${_mcp_key_crc}"; _MCP_CACHE="$_NF_CP"
+fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -r "$_MCP_CACHE" ]]; then
   # `read` exits 1 at EOF without a trailing newline and the probe writes none:
   # the variables ARE set, so the `|| true` is correct, not an absorbed error.
@@ -371,6 +381,41 @@ OPT_BULLET="${DIM} ·${RESET}"
 # Sets one of: git_dir (cwd is a repo, or wraps exactly one), or
 # _multi_git_subs (cwd wraps 2+ repos → multi-branch summary). When git_dir is
 # adopted from a subfolder, _adopted_repo_name holds its basename for the prefix.
+# First line of a small file into _NF_CL, read as at most 4 KiB: invalid UTF-8 dropped, control characters
+# (C0, DEL, C1, so ESC, CR and NUL too) removed, trailing spaces trimmed. Twin of clean_first_line.
+_nf_clean_line() {
+  local LC_ALL=C
+  _NF_CL=$(head -c 4096 "$1" 2>/dev/null | head -n 1 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null | tr -d '\000-\037\177' 2>/dev/null) || true
+  _NF_CL=${_NF_CL//$'\xc2'[$'\x80'-$'\x9f']/}
+  _NF_CL=${_NF_CL%"${_NF_CL##*[! ]}"}
+}
+# Branch name read straight from .git/HEAD, for when git itself is hung or missing (twin of
+# head_fallback_branch). Walks up and stops at the FIRST .git entry or bare layout (HEAD plus refs/); a
+# linked worktree has a .git FILE with "gitdir: <path>". "ref: refs/heads/x" -> x; a bare 40/64 hex sha ->
+# its first 7. Sets _NF_HB.
+_nf_head_branch() {
+  local _d="$1" _dot _gd="" _l=""
+  _NF_HB=""
+  while :; do
+    _dot="$_d/.git"
+    if [[ -d "$_dot" ]]; then _gd="$_dot"
+    elif [[ -f "$_dot" ]]; then
+      _nf_clean_line "$_dot"; _l="$_NF_CL"
+      [[ "$_l" == "gitdir: "* ]] || return 1
+      _gd="${_l#gitdir: }"; [[ "$_gd" == /* ]] || _gd="$_d/$_gd"
+    elif [[ -f "$_d/HEAD" && -d "$_d/refs" ]]; then _gd="$_d"
+    fi
+    if [[ -n "$_gd" ]]; then
+      _nf_clean_line "$_gd/HEAD"; _l="$_NF_CL"
+      if [[ "$_l" == "ref: refs/heads/"?* ]]; then _NF_HB="${_l#ref: refs/heads/}"
+      elif [[ "$_l" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then _NF_HB="${_l:0:7}"; fi
+      [[ -n "$_NF_HB" ]]; return
+    fi
+    [[ -z "$_d" || "$_d" == / ]] && return 1
+    _d="${_d%/*}"; _d="${_d:-/}"
+  done
+}
+
 git_dir=""
 _multi_git_subs=()
 _adopted_repo_name=""
@@ -383,8 +428,9 @@ fi
 if [[ -n "$cwd" && -n "${_cd_ok-1}" ]]; then
   # "not a git repository" is the normal answer for a plain directory: silent.
   # Any other failure (dubious ownership, corrupt repo) drops the whole git UI.
-  if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree; then
-    git_dir="$cwd"
+  if _nf_cmd git:inside-work-tree 'not a git repository' git rev-parse --is-inside-work-tree \
+     || { [[ -n "${_NF_GIT_TIMED_OUT:-}" ]] && _nf_head_branch "$cwd"; }; then
+    git_dir="$cwd"   # on a hung git: still a repo on disk, the cache/HEAD fallback fills in
   else
     # Look one level deep for git repos (wrapper folder pattern).
     git_subs=()
@@ -504,6 +550,11 @@ if [[ -n "$git_dir" ]]; then
     elif [[ -z "${_gc_computed:-}" ]]; then
       _nf_err git-cache-read "cannot read $_git_cache_file"
     fi
+  fi
+  # git hung, was skipped or is missing: the branch is still on disk.
+  if [[ -n "$git_dir" && -z "${_gc_branch:-}" ]] && _nf_head_branch "$git_dir"; then
+    _nf_err git-branch-fallback "git gave no branch for $git_dir; read .git/HEAD instead"
+    _gc_branch="$_NF_HB"
   fi
 fi
 
@@ -854,6 +905,7 @@ ctx_segment=""
 ctx_total=200000  # default context window size
 total_used=0
 pct=0
+_ctx_src=1   # 0 when neither the payload nor a transcript usage line gave a figure: the gauge then says "--"
 
 if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   # used_pct is the authoritative context fill percentage from Claude Code.
@@ -867,6 +919,7 @@ if [[ -n "$used_pct" && -n "$ctx_size" ]]; then
   pct="${used_pct%%.*}"
   total_used=$(( ctx_total * pct / 100 ))
 else
+  _ctx_src=0
   # Fall back: parse last usage entry from transcript JSONL
   # 2>/dev/null on every parse of the PAYLOAD: it is untrusted input, and a
   # malformed one made jq print "parse error: Invalid numeric literal" on
@@ -923,6 +976,7 @@ else
           printf -v "$_uf" 0
         fi
       done
+      _ctx_src=1
       total_used=$(( u_input + u_cache_create + u_cache_read + u_output ))
       pct=$(( total_used * 100 / ctx_total ))
       (( pct > 100 )) && { _nf_err ctx-pct-clamped "computed context use ${pct}% shown as 99%"; pct=99; }
@@ -989,6 +1043,7 @@ fi
 
 # Context label for embedding in progress bar
 ctx_label="${used_fmt}/${size_fmt} ${pct}%"
+(( _ctx_src )) || ctx_label="--"
 
 # ── Helper: visible width of an ANSI string ──────────────────────
 _vis_len() {
@@ -1567,19 +1622,32 @@ if [[ "${NERDFLAIR_REPO_COST:-1}" != "0" && -n "$session_id" ]]; then
     elif [[ -e "$_REPO_COST_FILE" && ! -r "$_REPO_COST_FILE" ]]; then
       _nf_err ledger-read "$_REPO_COST_FILE exists but is not readable; repo total unavailable"
     elif [[ -r "$_REPO_COST_FILE" ]]; then
-      _rc_total=$(awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
+      # Bounded tail (twin of ledger_tail): a ledger compaction has not kept small must not cost a full read.
+      _rc_tcap=${NERDFLAIR_REPO_TOTAL_TAIL_BYTES:-16777216}
+      (( _rc_tcap < 4096 )) && _rc_tcap=4096; (( _rc_tcap > 67108864 )) && _rc_tcap=67108864
+      _rc_tcut=0; (( $(stat -c %s "$_REPO_COST_FILE" 2>/dev/null || echo 0) > _rc_tcap )) && _rc_tcut=1
+      _rc_total=$(if (( _rc_tcut )); then tail -c "$_rc_tcap" "$_REPO_COST_FILE" | tail -n +2; else cat "$_REPO_COST_FILE"; fi | awk -F'\t' -v repo="$_rc_slug" -v cutoff=$(( EPOCHSECONDS - _REPO_COST_DAYS*86400 )) \
                       -v maxcost="${NERDFLAIR_REPO_COST_MAX:-100000}" '
         NF==4 && $1+0 >= 1600000000 && $1+0 <= 4000000000 && $4+0 > 0 && $4+0 < maxcost && $1+0 >= cutoff && $3 == repo { if ($4+0 > m[$2]) m[$2] = $4+0 }
         END { t=0; for (k in m) t += m[k]; if (t > 0) printf "%.2f", t }
-      ' "$_REPO_COST_FILE" 2>"$_SL_BUF.err") \
+      ' 2>"$_SL_BUF.err") \
         || _nf_err ledger-read "awk repo total over $_REPO_COST_FILE failed: $(head -n 1 "$_SL_BUF.err")"
+      if (( _rc_tcut )) && [[ -n "$_rc_total" ]]; then
+        _rc_total="~${_rc_total}"
+        _nf_err repo-total-cut "ledger is larger than NERDFLAIR_REPO_TOTAL_TAIL_BYTES; repo total is a lower bound (~); compaction is not keeping up"
+      fi
       if [[ -n "$_rc_memo" ]]; then
         _nf_cache_put "$_rc_memo" "$_rc_total" || _nf_err "tmp-write:${_rc_memo##*/}" "cannot write $_rc_memo"
       fi
     fi
     if [[ -n "$_rc_total" && "$_rc_total" != "0.00" ]]; then
         printf -v _rc_icon '\xef\x90\x81'   # U+F401 nf-oct-repo
-      repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
+      [[ "$_rc_total" == "~"* ]] && repocost_segment="${DARK_GREEN}${_rc_icon} ~\$${_rc_total#\~}${RESET}" \
+        || repocost_segment="${DARK_GREEN}${_rc_icon} \$${_rc_total}${RESET}"
+    else
+      # Slug resolved, nothing in the ledger yet: a stable dim placeholder, not a segment that appears later.
+      printf -v _rc_icon '\xef\x90\x81'
+      repocost_segment="${DIM}${_rc_icon} \$--${RESET}"
     fi
   fi
 fi
@@ -1599,7 +1667,23 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" ]] && ! command -v claude &>/dev/null;
 fi
 if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v claude &>/dev/null; then
   _mh_cache="$_MCP_CACHE"
-  _mh_lock="${_mh_cache}.lock"
+  # ONE probe at a time per user: every project's job takes the same lock, a render that loses shows the last
+  # cached value. (A test's NERDFLAIR_MCP_CACHE override keeps a lock of its own.)
+  if [[ -n "${NERDFLAIR_MCP_CACHE:-}" ]]; then _mh_lock="${_mh_cache}.lock"
+  else _mh_lock="${_mh_cache%/*}/nerdflair-mcphealth-${UID}.lock"; fi
+  # Daily: delete per-project probe files untouched for 14+ days (twin of prune_mcp_caches).
+  if [[ -z "${NERDFLAIR_MCP_CACHE:-}" ]]; then
+    _nf_cache_path "nerdflair-mcphealth-prune-${UID}"; _pr_stamp="$_NF_CP"
+    if [[ -n "$_pr_stamp" ]] && { [[ ! -f "$_pr_stamp" ]] || (( EPOCHSECONDS - $(stat -c %Y "$_pr_stamp" 2>/dev/null || echo 0) >= 86400 )); }; then
+      if _nf_cache_put "$_pr_stamp" ""; then
+        _pr_max=$(( ${NERDFLAIR_MCP_PRUNE_DAYS:-14} * 86400 ))
+        for _pr_f in "${_mh_cache%/*}/nerdflair-mcphealth-${UID}-"*; do
+          [[ -e "$_pr_f" ]] || continue
+          (( EPOCHSECONDS - $(stat -c %Y "$_pr_f" 2>/dev/null || echo "$EPOCHSECONDS") >= _pr_max )) && { rm -f -- "$_pr_f" 2>/dev/null || _nf_err mcp-prune "cannot remove $_pr_f"; }
+        done
+      else _nf_err "tmp-write:${_pr_stamp##*/}" "cannot write $_pr_stamp"; fi
+    fi
+  fi
   _mh_fresh=false
   if [[ -f "$_mh_cache" ]]; then
     _mh_age=$(( EPOCHSECONDS - $(stat -c %Y "$_mh_cache" 2>/dev/null || stat -f %m "$_mh_cache" 2>/dev/null || echo 0) ))
@@ -1635,6 +1719,7 @@ if [[ "${NERDFLAIR_MCP_HEALTH:-1}" != "0" && -n "$_MCP_CACHE" ]] && command -v c
   # runs forever.
   if [[ "$_mh_fresh" == "false" ]]; then
     (
+      [[ -n "${_mcp_key_dir:-}" ]] && { cd "$_mcp_key_dir" 2>/dev/null || true; }
       exec 9>>"$_mh_lock" 2>/dev/null \
         || { _nf_err flock-open "cannot open MCP probe lock $_mh_lock; probe never runs"; exit 0; }
       flock -n 9 || exit 0   # a probe already running: normal, silent
@@ -1815,6 +1900,9 @@ if [[ -n "$_rate_show" ]] && (( _rate_show > 0 )) 2>/dev/null; then
     _speed_fmt="$_rate_show"
   fi
   speed_segment="${MAUVE}󰓅 ${_speed_fmt}/s${RESET}"
+elif [[ -n "$output_tokens" && -n "$total_api_ms" ]]; then
+  # Tokens and api time are in the payload but no rate exists yet: a stable dim placeholder.
+  speed_segment="${DIM}󰓅 --/s${RESET}"
 fi
 
 COST_COLOR="${COST_GREEN}"
@@ -1861,6 +1949,17 @@ if [[ -f "$_LEDGER_FILE" ]]; then
   if (( _lg_bytes > _LEDGER_CAP )); then
     _ledger_cut=1
     if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
+    # The block can start up to 5 h back. If the cut tail starts later than that, widen ONCE (16x, twin of the
+    # Rust side) instead of hiding burn and block at high activity.
+    _lg_first=${_ledger%%$'\t'*}; [[ "$_lg_first" =~ ^[0-9]+$ ]] || _lg_first=0
+    if (( _lg_first == 0 || _lg_first > EPOCHSECONDS - 18000 )); then
+      _lg_wide=$(( _LEDGER_CAP * 16 )); (( _lg_wide > 67108864 )) && _lg_wide=67108864
+      if (( _lg_wide > _LEDGER_CAP )) && _ledger=$(tail -c "$_lg_wide" "$_LEDGER_FILE" 2>"$_SL_BUF.err"); then
+        if (( _lg_bytes > _lg_wide )); then
+          if [[ "$_ledger" == *$'\n'* ]]; then _ledger="${_ledger#*$'\n'}"; else _ledger=""; fi
+        else _ledger_cut=0; fi
+      fi
+    fi
   fi
 fi
 
@@ -2227,6 +2326,10 @@ if [[ -n "$_cp_secs" && -n "$_used10" ]] && (( _cp_secs > 0 && _used10 >= 50 && 
   fi
   compact_segment="${_cp_color}\xf3\xb0\x94\x9f ~${_cp_fmt}${RESET}"
 fi
+# No estimate is drawn (under 5% used, too few samples, ...) but the used% is known: keep the slot, dim.
+if [[ -z "$compact_segment" && -n "$_used10" ]]; then
+  compact_segment="${DIM}\xf3\xb0\x94\x9f ~--${RESET}"
+fi
 
 
 # ── Persist this sample ──────────────────────────────────────────
@@ -2293,7 +2396,7 @@ fi
 # ── Remote Control ───────────────────────────────────────────────
 # Written by the band plugin (`nerdflair-statusline --rc-sync`) into the private cache dir as
 # rc-<session id>: `v1 on|off|unknown <since-epoch> <label>`. Nothing here can ask Claude Code, so
-# this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" over 120 s
+# this only reads. No file = plugin not loaded = no segment. A corrupt file, or an "on" or "off" over 120 s
 # old (the plugin rewrites it every 30 s), draws UNKNOWN in amber and logs once. Twin of rc.rs.
 # The record's file name for a session id: ONE rule, twin of rc::rc_name. Keep ASCII [A-Za-z0-9_-],
 # every other BYTE becomes _ (hence LC_ALL=C), cap at 64; when anything was changed or cut, append
@@ -2316,10 +2419,10 @@ if [[ -n "$session_id" ]]; then
     if { IFS= read -r _rc_line || [[ -n "$_rc_line" ]]; } 2>/dev/null < "$_rc_file"; then
       if [[ "$_rc_line" =~ $_rc_re ]]; then
         _rc_st="${BASH_REMATCH[1]}"; _rc_lab="${BASH_REMATCH[4]}"
-        if [[ "$_rc_st" == on ]]; then
+        if [[ "$_rc_st" != unknown ]]; then
           _rc_age=$(( EPOCHSECONDS - $(stat -c %Y "$_rc_file" 2>/dev/null || stat -f %m "$_rc_file" 2>/dev/null || echo 0) ))
           if (( _rc_age < 0 || _rc_age > 120 )); then
-            _nf_err rc-stale "${_rc_file} is over 120 s old while on; the band plugin is not refreshing it, remote control state unknown"
+            _nf_err rc-stale "${_rc_file} is over 120 s old; the band plugin is not refreshing it, remote control state unknown"
             _rc_st="unknown"
           fi
         fi
@@ -2837,11 +2940,12 @@ _render_bar() {
   (( _bar_area < 20 )) && _bar_area=20
 
   # Position logo centered in the bar area (only when bar is empty)
-  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )); then
+  # (A "--" label is the gauge with no source: the label shows instead of the logo.)
+  if (( ${#_logo_icons[@]} > 0 && _pct == 0 )) && [[ "$_label" != "--" ]]; then
     _logo_start=$(( (_bar_area - ${#_logo_icons[@]}) / 2 ))
     (( _logo_start < 0 )) && _logo_start=0
     _logo_end=$(( _logo_start + ${#_logo_icons[@]} ))
-  elif (( _pct > 0 )); then
+  elif (( _pct > 0 )) || [[ "$_label" == "--" ]]; then
     _logo_icons=()
   fi
 

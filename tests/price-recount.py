@@ -10,22 +10,26 @@ ledger to the cent and showed ccusage's table charging half the published price
 for cache reads on the newest models. This file turns that one-off into a
 repeatable tool.
 
-RATES, per million tokens. Source: Anthropic's published model pricing as
-carried by the claude-api skill (cached 2026-10-06), checked against the ledger
-on two Sonnet 5.5 sessions on 2026-10-09 ($3.90 and $7.86, exact). Cache writes
-are 1.25x the input rate for the 5 minute tier and 2x for the 1 hour tier; the
-transcript says which tier each write used. A model not in this table is
-reported as UNPRICED and left out of the total, never guessed at: a total that
-says how much it could not price is honest, one that quietly drops it is not.
+RATES, per million tokens. Source: https://platform.claude.com/docs/en/about-claude/pricing
+fetched 2026-10-22 (Opus 5.5 $4/$20, read $0.20 = 0.05x; Sonnet 5.5 $2/$10, read
+$0.10 = 0.05x; Opus 4.5 $5/$25, read $0.50; Sonnet 4.5 $3/$15, read $0.30; Haiku 5.5
+$0.10/$0.50, read $0.01 up to 100k prompt tokens and $0.50/$2.50, read $0.05 over
+100k, where prompt = input + cache read + cache write). Cache writes are 1.25x the
+input rate for the 5 minute tier and 2x for the 1 hour tier; the transcript says
+which tier each write used. A model not in this table is reported as UNPRICED and
+left out of the total, never guessed at: a total that says how much it could not
+price is honest, one that quietly drops it is not.
 """
 import glob
 import json
 import os
+import re
 import sys
 import time
 from calendar import timegm
 
-# model prefix: (input, output, cache read)
+# exact model id (date suffix stripped): (input, output, cache read)
+# ponytail: exact match only, so a future claude-sonnet-5-6 is UNPRICED, not Sonnet 5.
 RATES = {
     "claude-fable-5-1": (10.0, 50.0, 0.25),
     "claude-fable-5": (10.0, 50.0, 0.25),
@@ -34,25 +38,30 @@ RATES = {
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-opus-4-5": (5.0, 25.0, 0.50),
     "claude-sonnet-5-5": (2.0, 10.0, 0.10),  # 0.05x, per the pricing page footnote
     "claude-sonnet-5": (2.0, 10.0, 0.20),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-sonnet-4-5": (3.0, 15.0, 0.30),
     "claude-haiku-5-5": (0.10, 0.50, 0.01),
+    "claude-haiku-5-5@long": (0.50, 2.50, 0.05),
     "claude-haiku-4-5": (1.0, 5.0, 0.10),
 }
 
 
-def rates_for(model):
-    """Longest matching prefix, so claude-opus-5-5 is not priced as claude-opus-5."""
-    best = None
-    for k in RATES:
-        if model.startswith(k) and (best is None or len(k) > len(best)):
-            best = k
-    return RATES[best] if best else None
+def rates_for(model, prompt_tokens=0):
+    """Exact id after dropping a -YYYYMMDD date suffix and a [1m] tag."""
+    m = re.sub(r"\[.*\]$", "", model)
+    m = re.sub(r"-\d{8}$", "", m)
+    if m == "claude-haiku-5-5" and prompt_tokens > 100_000:
+        m += "@long"
+    return RATES.get(m)
 
 
 def cost_of(usage, model):
-    r = rates_for(model)
+    prompt = ((usage.get("input_tokens") or 0) + (usage.get("cache_read_input_tokens") or 0)
+              + (usage.get("cache_creation_input_tokens") or 0))
+    r = rates_for(model, prompt)
     if r is None:
         return None
     pin, pout, pcr = r
@@ -148,6 +157,26 @@ def selfcheck():
     assert cost_of({"output_tokens": 1}, "claude-nonesuch-9") is None
     # Longest prefix wins: 5-5 must not be priced as 5.
     assert rates_for("claude-opus-5-5")[0] == 4.0 and rates_for("claude-opus-5")[0] == 5.0
+    assert rates_for("claude-sonnet-5-5-20261001")[0] == 2.0 and rates_for("claude-opus-4-5")[0] == 5.0
+    # Version safety: an unknown future id is UNPRICED, never priced as its prefix.
+    assert rates_for("claude-sonnet-5-6") is None and rates_for("claude-opus-5-6") is None
+    assert rates_for("claude-sonnet-4-5")[2] == 0.30
+    # Haiku 5.5 long tier: 150k prompt tokens (read counts) uses the over-100k row.
+    lo = {"input_tokens": 1000, "output_tokens": 1000, "cache_read_input_tokens": 1000}
+    hi = {"input_tokens": 1000, "output_tokens": 1000, "cache_read_input_tokens": 150000}
+    assert abs(cost_of(lo, "claude-haiku-5-5") - (1000*.10 + 1000*.50 + 1000*.01) / 1e6) < 1e-12
+    assert abs(cost_of(hi, "claude-haiku-5-5") - (1000*.50 + 1000*2.5 + 150000*.05) / 1e6) < 1e-12
+    # Dedupe regression: one message.id on 3 streamed lines counts once, at the last line.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "s.jsonl"), "w") as f:
+            for i, out in enumerate((20, 363, 1138)):
+                f.write(json.dumps({"uuid": f"u{i}", "timestamp": "2026-10-22T10:00:00.000Z", "message": {
+                    "id": "m1", "model": "claude-sonnet-5-5",
+                    "usage": {"input_tokens": 1, "output_tokens": out, "cache_read_input_tokens": 5000}}}) + "\n")
+        total, _, _ = recount(0, 2**40, root=tmp)
+        want = cost_of({"input_tokens": 1, "output_tokens": 1138, "cache_read_input_tokens": 5000}, "claude-sonnet-5-5")
+        assert abs(total - want) < 1e-12, f"dedupe broke: {total} vs {want}"
     print("price-recount ok")
 
 
