@@ -157,10 +157,11 @@ _nf_log_line() {
   return 1
 }
 _nf_err() {   # KEY REASON [SECS: rate limit, default 3600; twin of errlog::note_every]
-  local _k="$1" _st
-  [[ "$_NF_MEM" == *" $_k "* ]] && return 0    # once per process whatever the stamp says
-  _NF_MEM+="${_k} "
-  _nf_stamp "$_k"
+  local _k="$1" _st _sk="$1"
+  [[ -n "${3:-}" ]] && _sk="$1-${2:-}"          # SECS given: one stamp per reason text too
+  [[ "$_NF_MEM" == *" $_sk "* ]] && return 0    # once per process whatever the stamp says
+  _NF_MEM+="${_sk} "
+  _nf_stamp "$_sk"
   _st="$_NF_STAMP"
   if [[ -n "$_st" ]] && (( $(_nf_stamp_age "$_st") < ${3:-3600} )); then return 0; fi
   # Log, then stamp whether or not the append worked: an unwritable log would
@@ -434,6 +435,7 @@ _nf_write_state() {
 
   # jq to a variable first (as _nf_update_field does): the temp file is only created on the
   # path that immediately renames it, so a failed jq or a kill never leaves an empty one.
+  # (jq's stderr is dropped: a warning next to valid output must not land in the file.)
   local _tmp="${NF_STATE_FILE}.tmp.$$" _werr _new
   _new=$(jq -n \
     --arg mode "$NF_CUR_MODE" \
@@ -459,11 +461,12 @@ _nf_write_state() {
       color: $color,
       last_session: $last_session,
       chime_recent_styles: $recent
-    }' 2>&1) && [[ -n "$_new" ]] \
+    }' 2>/dev/null) && [[ -n "$_new" ]] \
     && _werr=$({ printf '%s\n' "$_new" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"; } 2>&1)
   local _wrc=$?
   if (( _wrc != 0 )); then
-    _nf_err "state-write" "$NF_STATE_FILE not written (rc=$_wrc): $(printf '%s' "${_werr:-$_new}" | head -n 1)"
+    _werr="${_werr:-jq failed or produced nothing}"
+    _nf_err "state-write" "$NF_STATE_FILE not written (rc=$_wrc): ${_werr%%$'\n'*}"
     rm -f "$_tmp" 2>/dev/null   # no orphan temp
     return 1
   fi

@@ -31,4 +31,12 @@ out=$(env -i PATH="$W/fj/bin:$PATH" HOME="$W/fj/home" NERDFLAIR_ERR_STAMP_DIR="$
   _nf_write_state; echo "rc=$?"' _ "$REPO/scripts/lib.sh" 2>/dev/null | tail -1)
 check "bash: a failing jq returns 1" "rc=1" "$out"
 check "bash: ...and leaves no temp file" 0 "$(ls "$W/fj/home/.claude/nerdflair" | rg -c 'tmp' || echo 0)"
+# bash only: a jq that warns on stderr but succeeds must not put the warning into state.json
+mkdir -p "$W/wj/home/.claude/nerdflair" "$W/wj/bin"
+REALJQ=$(command -v jq)
+printf '#!/bin/sh\necho "jq: warning: noisy" >&2\nexec "%s" "$@"\n' "$REALJQ" > "$W/wj/bin/jq"; chmod +x "$W/wj/bin/jq"
+env -i PATH="$W/wj/bin:$PATH" HOME="$W/wj/home" NERDFLAIR_ERR_STAMP_DIR="$W/wj/st" bash -c '
+  . "$1"; NF_CUR_MODE=full NF_CUR_WIDTH=auto NF_CUR_TERMINAL_BELL=on NF_CUR_CHIME_SOUND=G NF_CUR_CHIME_VOLUME=l NF_CUR_CHIME_STYLE=r NF_CUR_CHIME_EVENTS=S NF_CUR_COLOR=v NF_CUR_LAST_SESSION=x
+  _nf_write_state' _ "$REPO/scripts/lib.sh" >/dev/null 2>&1
+check "bash: a jq warning on success does not land in state.json" ok "$("$REALJQ" -e . "$W/wj/home/.claude/nerdflair/state.json" >/dev/null 2>&1 && echo ok || echo bad)"
 exit $fail

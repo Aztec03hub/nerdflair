@@ -3007,7 +3007,7 @@ fn norm_key_dir(s: &str) -> String {
 /// At most once a day, delete per-project probe files (`nerdflair-mcphealth-UID-<crc>` and its siblings) whose
 /// mtime is 14+ days old: a probe touches its cache every few minutes while the project is in use, so these
 /// are projects nobody has opened. The same pass drops per-session repo-cost stamps and orphan
-/// `*.tmp.*` files 14+ days old. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
+/// `nerdflair-*.tmp.*` files as old as the MCP files. Never in `--json`. Twin of `_nf_prune_mcp` in statusline.sh.
 fn prune_mcp_caches(cache: &Path, uid: u32) {
     if json_mode() || std::env::var("NERDFLAIR_MCP_CACHE").map_or(false, |p| !p.is_empty()) {
         return;
@@ -3027,12 +3027,12 @@ fn prune_mcp_caches(cache: &Path, uid: u32) {
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         // Also 14+ days old: per-session repo-cost stamps and orphan `*.tmp.<pid>` files (a writer
-        // killed between create and rename). symlink_metadata: a link is judged and removed itself,
-        // never followed; a directory is never touched.
-        let swept = (name.starts_with(&rc_prefix) || name.contains(".tmp."))
-            && e.path().symlink_metadata().ok().filter(|m| !m.is_dir())
+        // killed between create and rename). Symlinks and directories are skipped entirely, like the
+        // other prune. Same NERDFLAIR_MCP_PRUNE_DAYS age as the MCP files.
+        let swept = (name.starts_with(&rc_prefix) || (name.starts_with("nerdflair-") && name.contains(".tmp.")))
+            && e.metadata().ok().filter(|m| m.is_file()) // DirEntry::metadata does not follow: symlinks and dirs are skipped
                 .and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok())
-                .map_or(false, |a| a.as_secs() as i64 >= 14 * 86400);
+                .map_or(false, |a| a.as_secs() as i64 >= max_age);
         if swept || (name.starts_with(&prefix) && file_age(&e.path()) >= max_age) {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);

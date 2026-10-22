@@ -272,20 +272,22 @@ pub fn note(key: &str, reason: &str) {
 
 /// `note` with a reason that may contain a non-UTF-8 path.
 pub fn note_bytes(key: &str, reason: &[u8]) {
-    note_bytes_every(key, reason, RATE_SECS)
+    note_bytes_every(key, reason, RATE_SECS, false)
 }
 
 /// `note` for a condition a long-lived session hits on every refresh: once per `secs`
-/// (callers use 86400). Twin of lib.sh `_nf_err KEY REASON SECS`.
+/// (callers use 86400) PER REASON TEXT: the stamp key is `key-reason`, so two causes under one
+/// key, or a changed reason, each get their own line. Twin of lib.sh `_nf_err KEY REASON SECS`.
 pub fn note_every(key: &str, reason: &str, secs: i64) {
-    note_bytes_every(key, reason.as_bytes(), secs)
+    note_bytes_every(key, reason.as_bytes(), secs, true)
 }
 
-fn note_bytes_every(key: &str, reason: &[u8], secs: i64) {
-    if mem_seen(key) {
+fn note_bytes_every(key: &str, reason: &[u8], secs: i64, per_reason: bool) {
+    let skey = if per_reason { format!("{}-{}", key, String::from_utf8_lossy(reason)) } else { key.to_string() };
+    if mem_seen(&skey) {
         return;
     }
-    let stamp = stamp_path(key);
+    let stamp = stamp_path(&skey);
     if let Some(st) = &stamp {
         if st.exists() && file_age(st) < secs {
             return;

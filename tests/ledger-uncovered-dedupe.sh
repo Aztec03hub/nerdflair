@@ -25,14 +25,16 @@ for impl in rust bash; do
   r() {
     if [[ $impl == rust ]]; then cmd=("$BIN"); else cmd=(bash "$REPO/scripts/statusline.sh"); fi
     printf '%s' "$PAY" | env -i PATH="$PATH" HOME="$D/home" NERDFLAIR_CACHE_DIR="$D/c" NERDFLAIR_ERR_STAMP_DIR="$D/stamps" \
-      NERDFLAIR_REPO_COST_FILE="$W/l.tsv" NERDFLAIR_REPO_COST=0 NERDFLAIR_LEDGER_TAIL_BYTES=4096 COLUMNS=400 "${cmd[@]}" >/dev/null 2>&1
+      NERDFLAIR_REPO_COST_FILE="$W/l.tsv" NERDFLAIR_REPO_COST=0 NERDFLAIR_MCP_HEALTH=0 NERDFLAIR_LEDGER_TAIL_BYTES="${CAP:-4096}" COLUMNS=400 "${cmd[@]}" >/dev/null 2>&1
   }
-  n() { rg -c 'ledger-uncovered' "$D/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0; }
-  r; check "$impl: first render logs once" 1 "$(n)"
-  st=$(ls "$D/stamps"/*ledger?uncovered* 2>/dev/null | head -1)
-  [[ -n "$st" ]] || { echo "  FAIL  $impl: no stamp"; fail=1; continue; }
-  touch -d '5 hours ago' "$st"; r; check "$impl: 5 h later (a new process) stays silent" 1 "$(n)"
-  touch -d '23 hours ago' "$st"; r; check "$impl: 23 h later stays silent" 1 "$(n)"
-  touch -d '25 hours ago' "$st"; r; check "$impl: 25 h later logs again" 2 "$(n)"
+  n() { rg -c 'billing block start' "$D/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0; }
+  # One stamp per reason text. Only the block cause is counted: both renderers hit it
+  # deterministically here (the burn cause depends on how each one widens the tail).
+  r; n0=$(n); check "$impl: first render logs the block line once" 1 "$n0"
+  stamps=("$D"/stamps/*ledger?uncovered*block*)
+  touch -d '5 hours ago' "${stamps[@]}"; r; check "$impl: 5 h later (a new process) stays silent" 1 "$(n)"
+  touch -d '23 hours ago' "${stamps[@]}"; r; check "$impl: 23 h later stays silent" 1 "$(n)"
+  touch -d '25 hours ago' "${stamps[@]}"; r; check "$impl: 25 h later logs again" 2 "$(n)"
+  CAP=5000 r; check "$impl: a changed reason (new cap) under the same key logs at once" 3 "$(n)"
 done
 exit $fail
