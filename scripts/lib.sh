@@ -432,9 +432,10 @@ _nf_write_state() {
     fi
   fi
 
-  local _tmp="${NF_STATE_FILE}.tmp.$$" _werr
-  # stdout to the temp file, stderr (2>&1 first) into the variable.
-  _werr=$(jq -n \
+  # jq to a variable first (as _nf_update_field does): the temp file is only created on the
+  # path that immediately renames it, so a failed jq or a kill never leaves an empty one.
+  local _tmp="${NF_STATE_FILE}.tmp.$$" _werr _new
+  _new=$(jq -n \
     --arg mode "$NF_CUR_MODE" \
     --arg width "$NF_CUR_WIDTH" \
     --argjson flair "${NF_CUR_FLAIR:-true}" \
@@ -458,10 +459,11 @@ _nf_write_state() {
       color: $color,
       last_session: $last_session,
       chime_recent_styles: $recent
-    }' 2>&1 > "$_tmp") && _werr=$(mv "$_tmp" "$NF_STATE_FILE" 2>&1)
+    }' 2>&1) && [[ -n "$_new" ]] \
+    && _werr=$({ printf '%s\n' "$_new" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"; } 2>&1)
   local _wrc=$?
   if (( _wrc != 0 )); then
-    _nf_err "state-write" "$NF_STATE_FILE not written (rc=$_wrc): ${_werr%%$'\n'*}"
+    _nf_err "state-write" "$NF_STATE_FILE not written (rc=$_wrc): $(printf '%s' "${_werr:-$_new}" | head -n 1)"
     rm -f "$_tmp" 2>/dev/null   # no orphan temp
     return 1
   fi
@@ -474,6 +476,10 @@ _nf_write_state() {
 # as state.json.corrupt, so the evidence survives, and log that it happened.
 _nf_state_heal() {
   local _herr
+  # A kill between creating a state temp and the rename leaves it behind for good: sweep
+  # the stale ones (regular files only, so a planted symlink is not followed). Twin of
+  # state.rs sweep_stale_tmp.
+  find "$(dirname "$NF_STATE_FILE")" -maxdepth 1 -type f -name "$(basename "$NF_STATE_FILE").tmp.*" -mmin +60 -delete 2>/dev/null || true
   if [[ ! -f "$NF_STATE_FILE" ]]; then
     _nf_read_state
     _nf_write_state
