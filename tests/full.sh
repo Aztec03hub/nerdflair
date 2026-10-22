@@ -10,6 +10,8 @@ cd "$here/.." || exit 2
 real_home="$HOME"
 R=$(mktemp -d) || exit 2
 trap 'rm -rf "$R"' EXIT
+# This run's own scratch root (see quick.sh): the guard blames a log line on this run only if it names this dir.
+export TMPDIR="$R"
 n=0
 HEAVY="${NF_HEAVY:-$(command -v heavy || true)}"
 [[ -z $HEAVY || -x $HEAVY ]] || { echo "full: NF_HEAVY is not executable: $HEAVY"; exit 2; }

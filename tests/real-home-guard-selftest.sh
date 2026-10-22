@@ -6,6 +6,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 W=$(mktemp -d "${TMPDIR:-/tmp}/nf-rhgself-XXXXXX") || exit 1
 trap 'rm -rf -- "$W"' EXIT
 fail=0
+# This run's scratch root: a line is blamed on the run only if it names this exact dir. Set before anything is sourced,
+# so the rows below ("$TMPDIR/nf-x" is ours, "/tmp/nf-x" is another session's) hold whatever TMPDIR the caller had.
+mkdir -p "$W/run"; export TMPDIR="$W/run"
 unset NF_REAL_HOME   # the runner exports it; run() below must watch its own HOME
 check() { if [[ "$3" == "$2" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 mkdir -p "$W/home/.claude"; L="$W/home/.claude/nerdflair-errors.log"
@@ -62,4 +65,48 @@ seed; out '2026-10-22T01:00:00Z 999 tmp-write:/home/phil/secret-dir: panic' >/de
 seed; o=$(out "2026-10-22T01:00:00Z 777 t: ${TMPDIR:-/tmp}/nf-x"); [[ "$o" == *'>> tmp: '* ]] && check "marker names the temp-path rule" ok ok || check "marker names the temp-path rule" ok "$o"
 seed; o=$(NF_GUARD_VERBOSE=1 out "2026-10-22T01:00:00Z 777 t: $(printf '\xc3\xa9%.0s' {1..150}) panic"); [[ "$o" == *'>> panic:'* && "$o" != *$'\xc3'$'\n'* ]] && check "verbose cut keeps multibyte characters whole" ok ok || check "verbose cut keeps multibyte characters whole" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
+# The real ~/.local/state/nerdflair/: the live system writes there during a run, so growth alone passes (and is
+# printed); only a new line naming this run's scratch paths fails, and it is marked.
+SD="$W/home/.local/state/nerdflair"; mkdir -p "$SD"; SL="$SD/tmux-watch.log"
+sout() { # home-dir appended-line file -> guard output; the line is appended between snapshot and check
+  ( HOME="$1"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%s\n' "$2" >> "$1/.local/state/nerdflair/$3"; rhg_check; echo "rc=$?"; rhg_done ); }
+soutu() { ( unset TMPDIR; sout "$@" ); }   # the default case: a bare run, TMPDIR unset
+LIVE='2026-10-22 04:34:04 ss: cannot run ss: timed out after 5 seconds'
+seed; echo old > "$SL"; o=$(sout "$W/home" "$LIVE" tmux-watch.log)
+[[ "$o" == *'rc=0'* && "$o" == *'gained'* ]] && check "state dir: a live path-free line passes, and is printed" ok ok || check "state dir: a live path-free line passes, and is printed" ok "$o"
+o=$(sout "$W/home" "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x/tmux-1000" tmux-watch.log)
+[[ "$o" == *'rc=1'* && "$o" == *'>> '* && "$o" == *'wrote into the real'* ]] && check "state dir: a line naming a suite scratch dir fails, marked >>" ok ok || check "state dir: a line naming a suite scratch dir fails, marked >>" ok "$o"
+# Other sessions share /tmp and use the same /tmp/nf-* and /tmp/tmp.* names: none of their lines is ours, wherever it shows up.
+for other in "DELETED: /tmp/tmp.AbCdEf/nf-noleaks-1/run-x/tmux-1000" "DELETED: /tmp/r5review-x/tmp/tmp.edRg/tmux-1000" \
+  "     pid=77 ppid=1 age=3s user=u bash /tmp/nf-noleaks-ABC/run.sh" "     pid=78 ppid=1 age=3s user=u flock /tmp/tmp.XyZ/lock" "nfpty: x failed /tmp/nf-work/x"; do
+  o=$(soutu "$W/home" "2026-10-22 04:34:05 $other" tmux-watch.log)
+  [[ "$o" == *'rc=0'* ]] && ! rg -q '^ +>> ' <<<"$o" && check "state dir: another session's line passes unmarked ($other)" ok ok || check "state dir: another session's line passes unmarked ($other)" ok "$o"
+done
+o=$(soutu "$W/home" "x /tmp/tmp.AbC/nf-noleaks-1/tmux-1000" launcher.log)
+[[ "$o" == *'rc=0'* ]] && check "state dir: a new file with another session's /tmp/tmp.* path passes" ok ok || check "state dir: a new file with another session's /tmp/tmp.* path passes" ok "$o"
+o=$(sout "$W/home" "x $TMPDIR/tmp.AbC/y" launcher.log)
+[[ "$o" == *'rc=1'* && "$o" == *'>> '* ]] && check "state dir: a line naming this run's TMPDIR fails, marked >>" ok ok || check "state dir: a line naming this run's TMPDIR fails, marked >>" ok "$o"
+seed; check "errors.log: another session's /tmp/nf-* line passes" 0 "$(run '2026-10-22T01:00:00Z 999 cache-dir: /tmp/nf-x/c')"
+# Run alone (TMPDIR unset) the guard makes this run's root itself, before the test makes any scratch, and rhg_done removes it.
+o=$( ( unset TMPDIR; HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; r=$TMPDIR
+  [[ -d "$r" && "$r" != /tmp ]] && echo made || echo notmade
+  printf '2026-10-22 04:34:05 DELETED: %s/nf-x/tmux-1000\n' "$r" >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "rc=$?"
+  rhg_done; [[ -d "$r" ]] && echo left || echo removed ) )
+[[ "$o" == *made* && "$o" == *rc=1* && "$o" == *removed* ]] && check "TMPDIR unset: the guard makes its own root, blames lines naming it, removes it" ok ok || check "TMPDIR unset: the guard makes its own root, blames lines naming it, removes it" ok "$o"
+# TMPDIR=/tmp is every session's, so the guard treats it as unset: another session's /tmp line passes, its own root's fails.
+o=$( ( export TMPDIR=/tmp; HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; r=$TMPDIR
+  [[ -d "$r" && "$r" != /tmp ]] && echo made || echo notmade
+  printf '2026-10-22 04:34:05 DELETED: /tmp/nf-other-x/tmux-1000\n' >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "other=$?"
+  printf '2026-10-22 04:34:05 DELETED: %s/nf-x/tmux-1000\n' "$r" >> "$SD/tmux-watch.log"; rhg_check >/dev/null; echo "ours=$?"
+  rhg_done; [[ -d "$r" ]] && echo left || echo removed ) )
+[[ "$o" == *made* && "$o" == *other=0* && "$o" == *ours=1* && "$o" == *removed* ]] && check "TMPDIR=/tmp: the guard makes its own root; another session's /tmp line passes, its own fails" ok ok || check "TMPDIR=/tmp: the guard makes its own root; another session's /tmp line passes, its own fails" ok "$o"
+# One failing check must not hide the other.
+seed; o=$( ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot
+  printf '2026-10-22T01:00:00Z 999 panic: boom\n' >> "$L"; echo "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x" >> "$SL"; rhg_check; echo "rc=$?" ) )
+[[ "$o" == *'the real'*'errors.log'*'matching'* || "$o" == *'nerdflair-errors.log gained'* ]] && [[ "$o" == *'wrote into the real'* && "$o" == *'rc=1'* ]] \
+  && check "both guard checks report in one run" ok ok || check "both guard checks report in one run" ok "$o"
+# $HOME with a space.
+SP="$W/home sp"; mkdir -p "$SP/.local/state/nerdflair" "$SP/.claude"; echo old > "$SP/.local/state/nerdflair/tmux-watch.log"
+o=$(sout "$SP" "$LIVE" tmux-watch.log); [[ "$o" == *'rc=0'* && "$o" != *'integer expression'* ]] && check "state dir: HOME with a space, live line passes" ok ok || check "state dir: HOME with a space, live line passes" ok "$o"
+o=$(sout "$SP" "2026-10-22 04:34:05 DELETED: ${TMPDIR:-/tmp}/nf-heal-x" tmux-watch.log); [[ "$o" == *'rc=1'* ]] && check "state dir: HOME with a space, scratch line fails" ok ok || check "state dir: HOME with a space, scratch line fails" ok "$o"
 exit $fail

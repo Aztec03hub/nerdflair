@@ -192,7 +192,7 @@ start_watcher() { # ss-stub-file [extra env...] -> sets WPID; PATH has that ss f
   local ssfile=$1; shift
   rm -f "$ROOT/wbin/ss"; mkdir -p "$ROOT/wbin"; ln -sf "$ssfile" "$ROOT/wbin/ss"
   : > "$WL"; resetlog
-  env "$@" PATH="$ROOT/wbin:$ROOT/bin-full" NF_TMUX_WATCH_LOG="$WL" NF_TMUX_WATCH_RESCAN=1 \
+  env "$@" PATH="$ROOT/wbin:$ROOT/bin-full" NF_TMUX_WATCH_LOG="$WL" NF_TMUX_WATCH_RESCAN=1 NF_TMUX_WATCH_SCRATCH=1 \
     NF_TMUX_HEAL="$ROOT/stub/heal-stub" python3 "$WATCH" >/dev/null 2>"$ROOT/watch.err" &
   WPID=$!
 }

@@ -10,7 +10,7 @@ BIN="$REPO/rust/target/release/nerdflair-statusline"
 . "$REPO/tests/real-home-guard.sh"; rhg_snapshot
 [[ -x "$BIN" ]] || { echo "rc-sync: not built: $BIN" >&2; exit 2; }
 W=$(mktemp -d "${TMPDIR:-/tmp}/nf-rcsync-XXXXXX") || exit 1
-trap 'rm -rf -- "$W"' EXIT
+trap 'rm -rf -- "$W"; rhg_done' EXIT
 mkdir -p "$W/home/.claude/nerdflair"
 fail=0
 check() { if [[ "$3" == "$2" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s\n        want: %s\n        got:  %s\n' "$1" "$2" "$3"; fail=1; fi; }

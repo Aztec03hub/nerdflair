@@ -115,7 +115,7 @@ fi
 # porting session can edit it underneath a run. --bash-rev extracts the script
 # and its lib from a named revision so the gate has a stable reference.
 if [[ -n "$BASH_REV" ]]; then
-  _revdir=$(mktemp -d /tmp/nerdflair-difftest-rev.XXXXXX)
+  _revdir=$(mktemp -d "${TMPDIR:-/tmp}/nerdflair-difftest-rev.XXXXXX")
   git -C "$REPO_ROOT" show "${BASH_REV}:scripts/statusline.sh" > "$_revdir/statusline.sh" || exit 2
   git -C "$REPO_ROOT" show "${BASH_REV}:scripts/lib.sh"        > "$_revdir/lib.sh"        || exit 2
   chmod +x "$_revdir/statusline.sh"
@@ -145,7 +145,7 @@ fi
 # ── Shared /tmp caches the script hard-codes: snapshot and restore ───────────
 # The (retired) ccusage cache is a hard-coded /tmp path. It is Phil's LIVE cache. Save them now, restore on
 # exit, so a difftest run never leaves the real statusline holding our fixtures.
-RUN_DIR=$(mktemp -d /tmp/nerdflair-difftest.XXXXXX)
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/nerdflair-difftest.XXXXXX")
 SHARED_CACHES=("/tmp/nerdflair-ccusage-${UID}")
 # Every renderer cache lives in a private per-case dir (CACHE_DIR = $RUN_DIR/<case>/cache, set in
 # run_case), so parallel cases can't see each other's files, and never in the user's real one.

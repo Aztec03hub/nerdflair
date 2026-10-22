@@ -11,6 +11,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 B="$HERE/band/bridge"
+. "$HERE/tests/real-home-guard.sh"; rhg_snapshot   # first: it may make this run's TMPDIR, which D must live under
 D=$(mktemp -d "${TMPDIR:-/tmp}/nf-noleaks-XXXXXX") || exit 1
 fail=0
 
@@ -22,6 +23,7 @@ cleanup() {   # only the dir mktemp made; live servers found under it are killed
     rm -rf -- "$D"
     rm -f -- "$D.out"
   fi
+  rhg_done
 }
 trap cleanup EXIT
 trap 'exit 143' TERM
@@ -54,5 +56,6 @@ run logcheck.py python3 "$B/logcheck.py"
 run cells-table.py python3 "$B/cells-table.py"
 run "hover-highlight-e2e resized" python3 "$B/hover-highlight-e2e.py" resized
 run tmux-heal.sh bash "$HERE/tests/tmux-heal.sh"
+rhg_check || fail=1
 if (( fail )); then echo "no-leaks: FAIL"; exit 1; fi
 echo "no-leaks: PASS"

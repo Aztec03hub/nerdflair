@@ -5,7 +5,7 @@
 #   rhg_snapshot   at the top, before any temp HOME is exported. quick.sh / full.sh run each check under a temp
 #                  HOME and export NF_REAL_HOME (the HOME they started with); the guard watches that one.
 #   rhg_check      at the end; returns 1 only if a line appended since the snapshot contains
-#                  `panic`, this suite's temp prefix (${TMPDIR:-/tmp}/nf-) or this script's pid.
+#                  `panic`, this run's scratch root ($TMPDIR/, see rhg_snapshot) or this script's pid.
 #                  Other appended lines are a printed warning count. If the log shrank or its last
 #                  line changed (trimmed/rotated) the check is skipped with a note.
 #                  The count and each appended line's time, pid and tag are printed (a match marked >>); the full
@@ -13,13 +13,28 @@
 #                  log that does not exist and says so ("skipped").
 # Read-only on the real HOME; skipped when the log does not exist.
 rhg_snapshot() {
+  # Every run owns one scratch root, and a log line is blamed on this run only if it names that exact root. The runners
+  # (quick.sh, full.sh) export a per-run TMPDIR; run alone, with TMPDIR unset or the shared /tmp or /var/tmp, the guard
+  # makes one here, before the test makes any scratch. rhg_done removes it (rmdir: only when the test left it empty).
+  # ponytail: another shared TMPDIR (a sandbox dir several sessions use) still counts as this run's root; the runners avoid it.
+  if [[ -z "${TMPDIR:-}" || "${TMPDIR%/}" == /tmp || "${TMPDIR%/}" == /var/tmp ]]; then
+    RHG_MADE_TMP=$(mktemp -d) || return 1
+    export TMPDIR="$RHG_MADE_TMP"
+  fi
   RHG_LOG="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.claude/nerdflair-errors.log"
   RHG_PID=$$
   RHG_SIZE=-1
+  # The real ~/.local/state/nerdflair/ is watched too (see rhg_check_state). Associative array: $HOME may hold a space.
+  RHG_STATE="${NF_REAL_HOME:-${HOME:-/nonexistent}}/.local/state/nerdflair"
+  RHG_REAL_HOME="${NF_REAL_HOME:-${HOME:-/nonexistent}}"
+  declare -gA RHG_SNAP=()
+  local f
+  while IFS= read -r -d '' f; do RHG_SNAP["$f"]=$(stat -c %s "$f"); done < <(find "$RHG_STATE" -maxdepth 1 -type f -print0 2>/dev/null)
   [[ -f "$RHG_LOG" ]] || return 0
   RHG_SIZE=$(stat -c %s "$RHG_LOG")
   RHG_LAST=$(head -c "$RHG_SIZE" "$RHG_LOG" | tail -n 1 | cksum)
 }
+rhg_done() { [[ -n "${RHG_MADE_TMP:-}" ]] && rmdir -- "$RHG_MADE_TMP" 2>/dev/null; return 0; }
 # Log line format: "<ISO time> <pid> <tag> <reason>". The reason carries paths and session ids from the real
 # session, so only time, pid and the tag's part before the first ':' are shown unless NF_GUARD_VERBOSE=1.
 # Display only (the match is made on the full line before this): 200 chars in verbose mode; otherwise time, pid and the
@@ -40,7 +55,36 @@ rhg_show() {
   else t='?'; p='?'; k='?'; fi
   printf '%s %s %s' "$t" "$p" "$k"; [[ $k == '?' ]] || printf ':'
 }
-rhg_check() {
+# The live system writes into the same dir while a suite runs (launcher.log, nfpty-error.log, tmux-watch.log
+# events such as "ss timed out"), so growth alone proves nothing. Every new line is printed (time, pid and tag
+# only, like the errors.log guard); the run FAILS only on a new line that names this run's scratch paths:
+# $TMPDIR/ (this run's own scratch root, see rhg_snapshot) and, under a temp HOME, that HOME. Another session's
+# /tmp/nf-* or /tmp/tmp.* lines never match.
+# ponytail: a test that leaks a path-free line into the real dir is not caught; add a marker if one ever does.
+rhg_check_state() {
+  local f old new l t m q rc=0 pats=("${TMPDIR%/}/")
+  [[ "$HOME" != "$RHG_REAL_HOME" ]] && pats+=("$HOME/")
+  while IFS= read -r -d '' f; do
+    old=${RHG_SNAP["$f"]:--1}; new=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    (( new > old )) || continue
+    (( old < 0 )) && old=0
+    printf '  NOTE  %s gained %s byte(s); new line(s), >> marks one naming this run'"'"'s scratch paths:\n' "$f" "$(( new - old ))"
+    while IFS= read -r l; do
+      m=""; for q in "${pats[@]}"; do [[ "$l" == *"$q"* ]] && m=1; done
+      t=$(rhg_show "$l")
+      if [[ -n $m ]]; then printf '      >> %s\n' "$t"; rc=1; else printf '         %s\n' "$t"; fi
+    done < <(tail -c +$(( old + 1 )) "$f")
+  done < <(find "$RHG_STATE" -maxdepth 1 -type f -print0 2>/dev/null)
+  (( rc )) && printf '  FAIL  this run wrote into the real %s\n' "$RHG_STATE"
+  return $rc
+}
+rhg_check() { # both checks always run, so one failure never hides the other
+  local a=0 b=0
+  rhg_check_state || a=1
+  rhg_check_errlog || b=1
+  return $(( a || b ))
+}
+rhg_check_errlog() {
   [[ "$RHG_SIZE" == -1 ]] && { printf '  NOTE  no real error log at %s; guard skipped (start the runner with your real HOME)\n' "$RHG_LOG"; return 0; }
   local now last new bad warn m q
   now=$(stat -c %s "$RHG_LOG" 2>/dev/null || echo 0)
@@ -51,15 +95,15 @@ rhg_check() {
   fi
   new=$(tail -c +$(( RHG_SIZE + 1 )) "$RHG_LOG")
   [[ -z "$new" ]] && { printf '  PASS  the real error log gained no lines\n'; return 0; }
-  local pat=(-e 'panic' -e "${TMPDIR:-/tmp}/nf-" -e " ${RHG_PID} ")
-  bad=$(printf '%s\n' "$new" | rg -c "${pat[@]}" || true)
+  local pat=(-e 'panic' -e "${TMPDIR%/}/" -e " ${RHG_PID} ")
+  bad=$(printf '%s\n' "$new" | rg -cF "${pat[@]}" || true)
   warn=$(printf '%s\n' "$new" | wc -l)
   if [[ -n "$bad" && "$bad" != 0 ]]; then
     printf '  FAIL  the real %s gained %s matching line(s) from this run (panic, temp path or this pid); all %s appended line(s), >> marks a match:\n' "$RHG_LOG" "$bad" "$warn"
     printf '%s\n' "$new" | while IFS= read -r l; do
       t=$(rhg_show "$l")
-      m=""; for q in panic "${TMPDIR:-/tmp}/nf-" " ${RHG_PID} "; do
-        if printf '%s\n' "$l" | rg -qF -e "$q"; then case $q in panic) m="${m:+$m,}panic";; *nf-) m="${m:+$m,}tmp";; *) m="${m:+$m,}pid";; esac; fi; done
+      m=""; for q in panic "${TMPDIR%/}/" " ${RHG_PID} "; do
+        if printf '%s\n' "$l" | rg -qF -e "$q"; then case $q in panic) m="${m:+$m,}panic";; */) m="${m:+$m,}tmp";; *) m="${m:+$m,}pid";; esac; fi; done
       if [[ -n $m ]]; then printf '      >> %s: %s\n' "$m" "$t"; else printf '         %s\n' "$t"; fi; done
     return 1
   fi
