@@ -171,6 +171,7 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair install` | Install or upgrade (font check, settings.json config; preserves existing settings) |
 | `/nerdflair uninstall` | Remove nerdflair from settings and clean up data |
 | `/nerdflair info` | Show current settings without changing anything |
+| `/nerdflair doctor [--json]` | Check the whole install and print what's wrong, with the fix (changes nothing) |
 | `/nerdflair chime-events` | Show/toggle which events play chimes |
 | `/nerdflair chime-session [style]` | Set chime style for this session only (plays preview) |
 | `/nerdflair chime-style [style]` | Set or cycle global chime style (random, BalladPiano, ...) |
@@ -182,6 +183,19 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair width [auto\|50-150]` | Set layout width |
 
 </details>
+
+### Checking the install
+
+Every piece of nerdflair is a copy: the renderer in `~/.local/bin`, the hover shim in `~/.nerdflair`, the band plugin in Claude Code's cache. Any of them can quietly fall behind the checkout, and a stale one draws errors that were fixed days ago. `nerdflair doctor` checks them all:
+
+```bash
+bash scripts/nerdflair.sh doctor          # table plus a verdict; exit 1 when something is BROKEN
+bash scripts/nerdflair.sh doctor --json   # the same as JSON
+```
+
+It compares the installed renderer's `--version` source hash with the checkout, reads `statusLine` from settings.json (nothing else), checks the plugin's published and installed versions, the hover files and PATH order, the tmux server (env, umask, socket), the cache dir's owner and mode, the user units, and the last 24 h of the error logs (key, count and newest time only). Every line that isn't ok carries the one command that fixes it. It never writes anything.
+
+After a pull, `bash scripts/deploy.sh` runs only the steps whose stamp differs (`build-rust.sh`, `band/hover/install.sh`, `band/sync-local-plugin.sh`), then doctor, and names the follow-ups (`/reload-plugins`, new shells). `--dry-run` prints the plan and changes nothing.
 
 
 ## Cursor / VS Code Extension

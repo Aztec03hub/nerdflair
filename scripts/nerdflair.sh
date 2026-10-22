@@ -25,6 +25,8 @@ set -euo pipefail
 # The statusline script reads this file on every render.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Before anything below: doctor is pure read, and the state setup further down writes.
+[[ "${1:-}" == doctor ]] && { shift; exec bash "$SCRIPT_DIR/doctor.sh" "$@"; }
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 _nf_require_jq
@@ -448,7 +450,7 @@ while [[ $# -gt 0 ]]; do
       if [[ -z "$next_mode" ]]; then
         if ! echo "$NF_VALID_MODES" | grep -qw "$1"; then
           printf '%b✗ Unknown command "%s"%b\n' "$NF_RED" "$1" "$NF_RST"
-          printf '  Commands: chime-events, chime-session, chime-style, chime-volume,\n'
+          printf '  Commands: chime-events, chime-session, chime-style, chime-volume, doctor,\n'
           printf '            color-palette, layout, spinner-verbs, terminal-bell, uninstall, width\n'
           exit 1
         fi

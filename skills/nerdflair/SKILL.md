@@ -36,6 +36,7 @@ Commands:
   /nerdflair chime-style [style]   Set or cycle global chime style (random, BalladPiano, ...)
   /nerdflair chime-volume [0-100]  Set chime volume (0 = muted)
   /nerdflair color-palette [mode]  Set or cycle palette (vibrant, muted, mono)
+  /nerdflair doctor             Check the whole install; prints what's wrong and the fix (changes nothing)
   /nerdflair layout [mode]      Set or cycle layout (full, compact, minimal)
   /nerdflair install             Install or upgrade (font check, settings.json; preserves settings)
   /nerdflair uninstall           Remove nerdflair from settings and clean up data
@@ -164,6 +165,11 @@ Tell the user to restart Claude Code for the changes to take effect.
 Run the appropriate command based on what the user asked for. After running it, briefly confirm the change. The effect is visible on the next statusline render.
 
 ### Examples
+
+Check the install (read only; exit 1 when something is BROKEN). Show the table as printed, then offer to run each `fix:` line it names:
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" doctor
+```
 
 Cycle to the next layout:
 ```bash

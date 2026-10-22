@@ -30,6 +30,12 @@ const MULTI_SEP_W: i64 = 3;
 
 fn main() {
     errlog::install_panic_hook();
+    // Which sources this binary came from: `nerdflair doctor` compares the hash with the checkout.
+    if std::env::args_os().nth(1).map_or(false, |a| a == "--version") {
+        // One literal (concat!), so doctor can find the stamp in the file without running an old build.
+        println!(concat!("nerdflair-statusline ", env!("CARGO_PKG_VERSION"), " src:", env!("NF_SRC_HASH")));
+        return;
+    }
     // TEST ONLY: tests/silent-failures.sh has no natural way to make the
     // renderer panic, so this env var does. Never set it outside that test.
     if std::env::var_os("NERDFLAIR_TEST_PANIC").is_some() {
