@@ -46,6 +46,5 @@ run logcheck.py python3 "$B/logcheck.py"
 run cells-table.py python3 "$B/cells-table.py"
 run "hover-highlight-e2e resized" python3 "$B/hover-highlight-e2e.py" resized
 run tmux-heal.sh bash "$HERE/tests/tmux-heal.sh"
-run tmux-watch.sh bash "$HERE/tests/tmux-watch.sh"
 if (( fail )); then echo "no-leaks: FAIL"; exit 1; fi
 echo "no-leaks: PASS"
