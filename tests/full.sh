@@ -12,9 +12,13 @@ R=$(mktemp -d) || exit 2
 trap 'rm -rf "$R"' EXIT
 n=0
 HEAVY="${NF_HEAVY:-$(command -v heavy || true)}"
-gate=(); [[ -n $HEAVY && -x $HEAVY ]] && gate=("$HEAVY")
+[[ -z $HEAVY || -x $HEAVY ]] || { echo "full: NF_HEAVY is not executable: $HEAVY"; exit 2; }
+gate=(); [[ -n $HEAVY ]] && gate=("$HEAVY")
 # build first (outside any check), so no check runs against a stale binary; a failed build is exit 2
-"${gate[@]}" cargo build --release --manifest-path rust/Cargo.toml >"$R/build.out" 2>&1 || { echo "full: cargo build --release FAILED"; tail -n 20 "$R/build.out"; exit 2; }
+# the test profile is built too, so a `cargo test` heavy check starts warm
+for sub in "build --release" "test --release --no-run"; do
+  "${gate[@]}" cargo $sub --manifest-path rust/Cargo.toml >"$R/build.out" 2>&1 || { echo "full: cargo $sub FAILED"; tail -n 20 "$R/build.out"; exit 2; }
+done
 bad=0
 while IFS= read -r line; do
   cmd="${line%%   #*}"

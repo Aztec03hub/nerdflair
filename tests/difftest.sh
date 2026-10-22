@@ -96,7 +96,8 @@ for _f in "$PAYLOAD_DIR"/*.json; do
   _id=$(basename "$_f" .json)
   _selected "$_id" && SEL+=("$_id") || SKIPPED=$((SKIPPED+1))
 done
-(( ${#SEL[@]} )) || { echo "difftest: --only '$ONLY' matches no case in the corpus" >&2; exit 2; }
+# --list ignores --only (it prints the whole corpus index), so a no-match filter is only an error when cases would run
+(( ${#SEL[@]} || LIST_ONLY )) || { echo "difftest: --only '$ONLY' matches no case in the corpus" >&2; exit 2; }
 # Seeding (MCP health, RC records) asks the Rust binary for the cache file names: without it both sides would run unseeded and pass vacuously.
 if [[ ! -x "$RUST_IMPL" ]]; then
   for _id in "${SEL[@]}"; do
@@ -161,6 +162,14 @@ _cleanup() {
     fi
     rm -f "${f}.tmp" 2>/dev/null; rmdir "${f}.lock" 2>/dev/null
   done
+  # Stop the workers THIS run started (their own process group, led by the xargs PID) and reap them before the rm,
+  # or a dying worker is still creating $RUN_DIR/<case> entries and rm -rf loses the race (ENOTEMPTY, dir leaked).
+  # xargs is our child (wait reaps it) but the workers are its children, so wait for the whole group to empty (bounded: KILL after 5 s).
+  if [[ -n ${XPID:-} ]]; then
+    kill -TERM -- "-$XPID" 2>/dev/null; wait "$XPID" 2>/dev/null
+    for _ in {1..100}; do kill -0 -- "-$XPID" 2>/dev/null || break; sleep 0.05; done
+    kill -KILL -- "-$XPID" 2>/dev/null
+  fi
   if (( KEEP )); then
     printf '%srun dir kept: %s%s\n' "$C_DIM" "$RUN_DIR" "$C_RST" >&2
   else
@@ -673,8 +682,11 @@ else
   # Each case reports into its own file; the reports are printed below in case order.
   # One progress line per finished case on stderr (the reports themselves print at the end, in case order).
   export TOTAL
-  printf '%s\n' "${SEL[@]}" | xargs -P "$JOBS" -I{} bash -c \
-    'run_case "$1" > "$RUN_DIR/$1.report" 2>&1; echo "$1" >> "$RUN_DIR/progress"; printf "difftest: %s/%s cases done\n" "$(wc -l < "$RUN_DIR/progress")" "$TOTAL" >&2' _ {}
+  set -m   # job control puts the background xargs in its own process group (pgid = XPID) so _cleanup can signal all workers by PID
+  xargs -P "$JOBS" -I{} bash -c \
+    'run_case "$1" > "$RUN_DIR/$1.report" 2>&1; echo "$1" >> "$RUN_DIR/progress"; printf "difftest: %s/%s cases done\n" "$(wc -l < "$RUN_DIR/progress")" "$TOTAL" >&2' _ {} <<<"$(printf '%s\n' "${SEL[@]}")" &
+  XPID=$!; set +m
+  wait "$XPID"; XPID=
   for id in "${SEL[@]}"; do cat "$RUN_DIR/$id.report" 2>/dev/null; done
   # a crashed case is caught below by its missing `done` marker (xargs' own status is the last printf's, always 0)
 fi
