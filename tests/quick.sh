@@ -23,13 +23,13 @@ for f in "$here"/*; do
 done
 (( missing )) && exit 1
 HEAVY="${NF_HEAVY:-$(command -v heavy || true)}"
-# shellcheck disable=SC2086
-${HEAVY:+$HEAVY} cargo build --release --manifest-path rust/Cargo.toml >/dev/null 2>"${TMPDIR:-/tmp}/nf-quick-build.$$" \
-  || { echo "quick: cargo build --release FAILED"; tail -n 20 "${TMPDIR:-/tmp}/nf-quick-build.$$"; rm -f "${TMPDIR:-/tmp}/nf-quick-build.$$"; exit 2; }
-rm -f "${TMPDIR:-/tmp}/nf-quick-build.$$"
 # One fresh temp dir per check: a shared HOME / cache let one check's leftovers fail the next (transcript-tail).
+# The build log lives in it too: a fixed /tmp name could be a planted symlink.
 R=$(mktemp -d) || exit 2
 trap 'rm -rf "$R"' EXIT
+# shellcheck disable=SC2086
+${HEAVY:+$HEAVY} cargo build --release --manifest-path rust/Cargo.toml >/dev/null 2>"$R/build.log" \
+  || { echo "quick: cargo build --release FAILED"; tail -n 20 "$R/build.log"; exit 2; }
 printf '%-52s %-8s %s\n' CHECK RESULT SECONDS
 bad=0; n=0
 while IFS= read -r line; do
