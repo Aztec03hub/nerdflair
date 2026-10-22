@@ -13,6 +13,7 @@ test can fail and that the shadow is what fixes it.
 """
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,14 +23,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import leakcheck  # noqa: E402
 WIN = "nf-stale"
-FLAG = leakcheck.file("/tmp/nf-stale.flag")
-leakcheck.file("/tmp/nf-stale.errlog")
+FLAG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.flag"))
+ERRLOG = leakcheck.file(os.path.join(leakcheck.e2e_tmp(), "nf-stale.errlog"))
 ROW = 46                     # inside the card (rows 45-47, columns from 4), which sits just above the status line on row 48
 
 FAKE = r'''
 import os, sys, time
 os.system("stty raw -echo")  # fixed string, no input: safe
-F, G = "/tmp/nf-stale.flag", "\U000f024b"
+F, G = os.environ["NF_FLAG"], "\U000f024b"   # the runner passes the flag path in the environment
 def draw(word):
     sys.stdout.write("\033[46;6H" + word.ljust(12)); sys.stdout.flush()
 sys.stdout.write("\033[2J\033[48;1H  " + G + " nerdflair · \U000f062c main · x")
@@ -53,13 +54,13 @@ def run(shadow):
     with open(FLAG, "w") as f:
         f.write("alpha")
     fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
-                                       dir=os.path.expanduser("~/.claude"))
+                                       dir=leakcheck.e2e_tmp())
     leakcheck.file(fake.name)
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)
     tmux("new-window", "-d", "-n", WIN,
-         f"NFPTY_ERRLOG=/tmp/nf-stale.errlog NFPTY_LOG={os.environ.get('NFPTY_LOG', '/dev/null')} NFPTY_SHADOW={1 if shadow else 0} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
+         f"NF_FLAG={shlex.quote(os.path.join(leakcheck.e2e_tmp(), 'nf-stale.flag'))} NFPTY_ERRLOG={shlex.quote(ERRLOG)} NFPTY_LOG={os.environ.get('NFPTY_LOG', '/dev/null')} NFPTY_SHADOW={1 if shadow else 0} CLAUDE_BIN=/usr/bin/python3 python3 {HERE}/nfpty.py {fake.name}")
     target = f"{tmux('display-message', '-p', '-t', WIN, '#{session_name}').strip()}:{WIN}"
     try:
         time.sleep(2)

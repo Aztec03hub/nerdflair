@@ -2,8 +2,8 @@
 # One command per line, run from the repo root by tests/full.sh. The comment is the measured or estimated time.
 bash tests/difftest.sh -j 4   # estimate: minutes at -j 1 (whole corpus), not measured
 bash tests/difftest-repeat.sh   # TIMEOUT at 15 s (it runs difftest 20 times), not measured to the end
-bash tests/silent-failures.sh   # ~34 s whole (loaded machine); its 5 parts run in quick.list
-bash tests/git-head-fallback.sh   # ~16 s whole; its 3 parts run in quick.list
+bash tests/silent-failures.sh   # ~34 s whole (loaded machine); its 10 parts run in quick.list, but cargo-test only here
+bash tests/git-head-fallback.sh   # ~16 s whole; its 4 parts run in quick.list
 bash tests/launcher-logging.sh   # 11.8s measured, near the limit so heavy
 bash tests/log-sanitizers.sh   # 12.9s measured, near the limit so heavy
 bash tests/bridge-selfchecks.sh   # 14.2s measured; its parts run singly in quick.list
@@ -17,3 +17,4 @@ python3 band/bridge/hover-stale-e2e.py   # estimate: minutes, not measured, need
 bash tests/tmux-watch.sh   # 7.2s, load-flaky when it sleeps; private TMUX_TMPDIR server
 bash tests/golden-mutation.sh   # 7 s alone, moved from quick.list so load can't time it out
 bash tests/nfpty-exit.sh   # 7 s alone, moved from quick.list so load can't time it out
+bash tests/no-leaks.sh   # about 25 s (4 children, each capped at 15 s); the leak check for the tmux scripts it runs

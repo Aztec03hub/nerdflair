@@ -22,7 +22,8 @@
 #   no argument   run every case (the default; what the full gate runs)
 #   --part N/M    run the units whose position (1-based, in script order) satisfies (pos-1) % M == N-1,
 #                 so --part 1/2 and --part 2/2 together run every unit exactly once, each in about half the time
-#   --list        print the unit names (one per line, with --part: only that part's) and run nothing
+#   --list        print the unit names (one per line, with --part: only that part's) and run nothing.
+#                 `cargo-test` is listed and run only without --part (see cargo_test_on); parts + cargo-test == the plain --list
 set -uo pipefail
 PART_N=1; PART_M=1; LIST=0
 while (( $# )); do
@@ -41,6 +42,15 @@ unit_on() { # name -> true when this part runs the unit; --list prints it instea
   (( (UNIT_POS - 1) % PART_M == PART_N - 1 )) || return 1
   if (( LIST )); then printf '%s\n' "$1" >&3; return 1; fi
   [[ -z "${SF_TIMES:-}" ]] || printf '  [t=%s] %s\n' "$(date +%s.%N)" "$1" >&2
+  return 0
+}
+# cargo-test is a build that runs as a test, so it is NOT a unit of any --part (it blows 15 s after a Rust edit):
+# only the no-argument run (PART_M == 1, heavy.list) runs it, and --list prints it only then. The coverage proof is:
+# (union of every --part N/M --list) + cargo-test == the no-argument --list.
+cargo_test_on() {
+  (( PART_M == 1 )) || return 1
+  if (( LIST )); then printf 'cargo-test\n' >&3; return 1; fi
+  [[ -z "${SF_TIMES:-}" ]] || printf '  [t=%s] cargo-test\n' "$(date +%s.%N)" >&2
   return 0
 }
 
@@ -774,7 +784,7 @@ fi
 
 # The Rust unit tests (util::tests, the chmod fallback) run here, because this script already needs the build.
 if command -v cargo >/dev/null; then
-  if unit_on cargo-test; then
+  if cargo_test_on; then
   check "cargo test --release: the Rust unit tests pass" ok "$(cargo test --release --manifest-path "$REPO/rust/Cargo.toml" >"$WORK/cargo-test.out" 2>&1 && echo ok || { tail -n 5 "$WORK/cargo-test.out" >&2; echo fail; })"
   fi
   if unit_on log-sanitizers; then
@@ -782,10 +792,12 @@ if command -v cargo >/dev/null; then
   if (( _san == 0 )); then printf '  PASS  log-sanitizers.sh: the five filter copies agree on every case\n'
   else printf '  FAIL  log-sanitizers.sh (rc %s)\n' "$_san"; rg '^  FAIL|log-sanitizers:' "$WORK/sanitizers.out" | head -n 12 | sed 's/^/        /'; fail=1; fi
   fi
-elif [[ "${NF_ALLOW_SKIP_CARGO:-0}" == 1 ]]; then
-  printf '  SKIP  cargo test and log-sanitizers (cargo not found; NF_ALLOW_SKIP_CARGO=1)\n'; SKIPS=$((SKIPS + 1))
-else
-  printf '  FAIL  cargo not found: the Rust unit tests cannot run (set NF_ALLOW_SKIP_CARGO=1 to skip them on purpose)\n'; fail=1
+elif unit_on log-sanitizers; then   # no cargo: report once (in the part that owns log-sanitizers), not in every part
+  if [[ "${NF_ALLOW_SKIP_CARGO:-0}" == 1 ]]; then
+    printf '  SKIP  cargo test and log-sanitizers (cargo not found; NF_ALLOW_SKIP_CARGO=1)\n'; SKIPS=$((SKIPS + 1))
+  else
+    printf '  FAIL  cargo not found: the Rust unit tests cannot run (set NF_ALLOW_SKIP_CARGO=1 to skip them on purpose)\n'; fail=1
+  fi
 fi
 
 echo
