@@ -3038,15 +3038,16 @@ fn prune_mcp_caches(cache: &Path, uid: u32) {
     let rc_prefix = format!("nerdflair-repocost-{}-", uid); // per-session stamps (not the -total- memo)
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // Symlinks and directories are skipped (never aged, never removed), like bash. Also pruned at the
-        // same age: the old shared file `nerdflair-mcphealth-UID`, per-session repo-cost stamps and
-        // orphan `nerdflair-*.tmp.<pid>` files (a writer killed between create and rename).
-        let is_link = e.file_type().map_or(true, |t| t.is_symlink());
-        let swept = !is_link
-            && (name.starts_with(&rc_prefix) || (name.starts_with("nerdflair-") && name.contains(".tmp.")))
-            && e.metadata().ok().map_or(false, |m| m.is_file())
-            && file_age(&e.path()) >= max_age;
-        if swept || (!is_link && (name.starts_with(&prefix) || name == format!("nerdflair-mcphealth-{}", uid)) && file_age(&e.path()) >= max_age) {
+        // ONE rule for every file in this pass (and for the rc prune): regular files only (directories and
+        // symlinks are never aged or removed), and a future-dated file reads as "infinitely old" in file_age,
+        // which is not a reason to delete it, so it is kept. Also pruned at the same age: the old shared file
+        // `nerdflair-mcphealth-UID`, per-session repo-cost stamps and orphan `nerdflair-*.tmp.<pid>` files.
+        let is_file = e.file_type().map_or(false, |t| t.is_file());
+        let mine = name.starts_with(&rc_prefix)
+            || (name.starts_with("nerdflair-") && name.contains(".tmp."))
+            || name.starts_with(&prefix)
+            || name == format!("nerdflair-mcphealth-{}", uid);
+        if is_file && mine && (max_age..i64::MAX / 8).contains(&file_age(&e.path())) {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 errlog::note_io("mcp-prune", &e.path().display().to_string(), &err);
             }

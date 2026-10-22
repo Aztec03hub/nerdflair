@@ -132,11 +132,16 @@ pub fn segment(session: &str) -> String {
         errlog::note("rc", &format!("{} is corrupt; remote control state unknown", p.display()));
         return draw(St::Unknown, "");
     };
-    if rec.state != St::Unknown && file_age(&p) > STALE_SECS {
+    if rec.state != St::Unknown && is_stale(file_age(&p)) {
         errlog::note("rc-stale", &format!("{} is over {} s old; the band plugin is not refreshing it, remote control state unknown", p.display(), STALE_SECS));
         return draw(St::Unknown, "");
     }
     draw(rec.state, &rec.label)
+}
+
+/// A record is stale at 121 s and up (120 s still counts); a future-dated one arrives as a huge age.
+fn is_stale(age: i64) -> bool {
+    age > STALE_SECS
 }
 
 /// Records of sessions long gone: at most once a day (a stamp file beside them), drop `rc-*` files
@@ -253,6 +258,12 @@ mod tests {
         assert!(rc_name("\u{e9}".as_bytes()).starts_with("rc-__~"), "per byte, not per char");
         assert!(rc_name(b"\xff\xfe").starts_with("rc-__~"), "not UTF-8 is still an id");
         assert!(!rc_name(b"../../evil").contains('/') && !rc_name(b"../../evil").contains('.'));
+    }
+
+    #[test]
+    fn stale_bound_is_exactly_120_s() {
+        assert!(!is_stale(0) && !is_stale(119) && !is_stale(120));
+        assert!(is_stale(121) && is_stale(i64::MAX / 4), "a future mtime reads as a huge age");
     }
 
     #[test]

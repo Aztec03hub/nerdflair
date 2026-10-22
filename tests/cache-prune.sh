@@ -33,6 +33,9 @@ seed() { # cachedir
   : > "$c/foreign.tmp.5";                 touch -d '20 days ago' "$c/foreign.tmp.5"
   mkdir "$c/nerdflair-dir.tmp.1";                   touch -d '20 days ago' "$c/nerdflair-dir.tmp.1"
   : > "$W/outside"; touch -d '20 days ago' "$W/outside"
+  : > "$c/nerdflair-mcphealth-$U-future";  touch -d '30 days' "$c/nerdflair-mcphealth-$U-future"
+  : > "$c/nerdflair-mcphealth-$U-past";    touch -d '20 days ago' "$c/nerdflair-mcphealth-$U-past"
+  mkdir "$c/nerdflair-mcphealth-$U-dir";   touch -d '20 days ago' "$c/nerdflair-mcphealth-$U-dir"
   ln -s "$W/outside" "$c/nerdflair-link.tmp.9";     touch -h -d '20 days ago' "$c/nerdflair-link.tmp.9"
 }
 for impl in rust bash; do
@@ -49,6 +52,10 @@ for impl in rust bash; do
   check "$impl: recent per-session stamp is kept" present "$(here "$c/nerdflair-repocost-$U-newsid")"
   check "$impl: the -total- memo is kept" present "$(here "$c/nerdflair-repocost-total-$U-memo")"
   check "$impl: a directory is kept" present "$(here "$c/nerdflair-dir.tmp.1")"
+  check "$impl: a future-dated mcphealth file is kept" present "$(here "$c/nerdflair-mcphealth-$U-future")"
+  check "$impl: an old mcphealth file is pruned" absent "$(here "$c/nerdflair-mcphealth-$U-past")"
+  check "$impl: a directory named like a probe file is kept" present "$(here "$c/nerdflair-mcphealth-$U-dir")"
+  check "$impl: ...and no mcp-prune log line for it" 0 "$(rg -c 'mcp-prune' "$W/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
   check "$impl: an old symlink is skipped (like the MCP prune)" present "$(here "$c/nerdflair-link.tmp.9")"
   check "$impl: ...and its target is untouched" present "$(here "$W/outside")"
   check "$impl: a tmp file not named nerdflair-* is kept" present "$(here "$c/foreign.tmp.5")"
