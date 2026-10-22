@@ -30,21 +30,35 @@ seed; check "NF_REAL_HOME: an unrelated line passes" 0 "$(runr '2026-10-22T01:00
 # The report names every appended line and marks the matching one, so a live session's line is told apart from a test's.
 out() { ( HOME="$W/home"; . "$REPO/tests/real-home-guard.sh"; rhg_snapshot; printf '%b\n' "$1" >> "$L"; rhg_check ); }
 seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: x\n2026-10-22T01:00:01Z 999 panic: boom')
-[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic:'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *'>> 2026-10-22T01:00:00Z 777'* ]] \
+[[ "$o" == *'>> panic: 2026-10-22T01:00:01Z 999 panic:'* && "$o" == *'   2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *'>> '*'777'* ]] \
   && check "FAIL output lists the live session's line unmarked and the panic line marked" ok ok || check "FAIL output lists appended lines with a match marker" ok "$o"
 seed; o=$(out '2026-10-22T01:00:00Z 777 other-session: secret/path-abc')
 [[ "$o" == *'2026-10-22T01:00:00Z 777 other-session:'* && "$o" != *secret* ]] && check "PASS output shows time, pid, tag and hides the text" ok ok || check "PASS output shows time, pid, tag and hides the text" ok "$o"
 o=$(NF_GUARD_VERBOSE=1 out '2026-10-22T01:00:00Z 777 other-session: secret/path-abc')
 [[ "$o" == *'secret/path-abc'* ]] && check "NF_GUARD_VERBOSE=1 shows the full line" ok ok || check "NF_GUARD_VERBOSE=1 shows the full line" ok "$o"
 seed; o=$(out '2026-10-22T01:00:01Z 999 panic: secret/path-abc')
-[[ "$o" == *'>> 2026-10-22T01:00:01Z 999 panic:'* && "$o" != *secret* ]] && check "FAIL output hides the text too" ok ok || check "FAIL output hides the text too" ok "$o"
+[[ "$o" == *'>> panic: 2026-10-22T01:00:01Z 999 panic:'* && "$o" != *secret* ]] && check "FAIL output hides the text too" ok ok || check "FAIL output hides the text too" ok "$o"
 seed; o=$(out '2026-10-22T01:00:00Z 777 tmp-write:/home/x/secret-name: y')
 [[ "$o" == *' 777 tmp-write:'* && "$o" != *secret-name* ]] && check "a tag's runtime data (tmp-write:<path>) is hidden" ok ok || check "a tag's runtime data (tmp-write:<path>) is hidden" ok "$o"
 o=$(NF_GUARD_VERBOSE=1 out '2026-10-22T01:00:00Z 777 tmp-write:/home/x/secret-name: y')
 [[ "$o" == *secret-name* ]] && check "NF_GUARD_VERBOSE=1 keeps the full tag" ok ok || check "NF_GUARD_VERBOSE=1 keeps the full tag" ok "$o"
 seed; o=$(out 'secret-no-space-line')
-[[ "$o" == *'(unparsed line)'* && "$o" != *secret* ]] && check "a line with no space is not printed" ok ok || check "a line with no space is not printed" ok "$o"
+[[ "$o" == *'? ? ?'* && "$o" != *secret* ]] && check "a line with no space is not printed" ok ok || check "a line with no space is not printed" ok "$o"
 seed; o=$(out "2026-10-22T01:00:00Z 777 other-session: $(printf 'x%.0s' {1..250}) panic")
-[[ "$o" == *'>> 2026-10-22T01:00:00Z 777 other-session:'* ]] && check "a match past column 200 is still marked >>" ok ok || check "a match past column 200 is still marked >>" ok "$o"
+[[ "$o" == *'>> panic: 2026-10-22T01:00:00Z 777 other-session:'* ]] && check "a match past column 200 is still marked >>" ok ok || check "a match past column 200 is still marked >>" ok "$o"
+# Strict-pattern output: time, pid and tag kind print only if they match; everything else is `?`.
+seed; o=$(out '/home/phil/clients/acme/repo failed to read x'); [[ "$o" == *'? ? ?'* && "$o" != *phil* && "$o" != *acme* && "$o" != *failed* ]] \
+  && check "a wrong-format line (no time) shows only ?" ok ok || check "a wrong-format line (no time) shows only ?" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z 777 /home/phil/secret-dir/file reason'); [[ "$o" == *'2026-10-22T01:00:00Z 777 ?'* && "$o" != *phil* && "$o" != *secret* ]] \
+  && check "a colon-less tag carrying a path shows ?" ok ok || check "a colon-less tag carrying a path shows ?" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z 777\ttmp-write:/home/phil/secret-dir: y'); [[ "$o" == *'2026-10-22T01:00:00Z 777 tmp-write:'* && "$o" != *phil* && "$o" != *secret* ]] \
+  && check "a tab-separated line shows time, pid and kind only" ok ok || check "a tab-separated line shows time, pid and kind only" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z\t/home/phil/secret-dir\ttag: y'); [[ "$o" == *'2026-10-22T01:00:00Z ? tag:'* && "$o" != *phil* && "$o" != *secret* ]] \
+  && check "a tab line with a path as its second word shows ?" ok ok || check "a tab line with a path as its second word shows ?" ok "$o"
+seed; o=$(out '2026-10-22T01:00:00Z /home/phil/secret-dir tag: y'); [[ "$o" == *'2026-10-22T01:00:00Z ? tag:'* && "$o" != *phil* && "$o" != *secret* ]] \
+  && check "a line whose second word is a path shows ?" ok ok || check "a line whose second word is a path shows ?" ok "$o"
+seed; out '2026-10-22T01:00:00Z 999 tmp-write:/home/phil/secret-dir: panic' >/dev/null; check "a leak in a tab/odd-shaped line still FAILs" 1 "$(run '2026-10-22T01:00:00Z\t999\tx: panic')"
+seed; o=$(out "2026-10-22T01:00:00Z 777 t: ${TMPDIR:-/tmp}/nf-x"); [[ "$o" == *'>> tmp: '* ]] && check "marker names the temp-path rule" ok ok || check "marker names the temp-path rule" ok "$o"
+seed; o=$(NF_GUARD_VERBOSE=1 out "2026-10-22T01:00:00Z 777 t: $(printf '\xc3\xa9%.0s' {1..150}) panic"); [[ "$o" == *'>> panic:'* && "$o" != *$'\xc3'$'\n'* ]] && check "verbose cut keeps multibyte characters whole" ok ok || check "verbose cut keeps multibyte characters whole" ok "$o"
 rm -f "$L"; o=$(out ''); [[ "$o" == *'NOTE'*'guard skipped'* ]] && check "an absent log says it was skipped" ok ok || check "an absent log says it was skipped" ok "$o"
 exit $fail
