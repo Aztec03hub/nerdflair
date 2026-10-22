@@ -50,7 +50,8 @@ fn main() {
     }
     let input = String::from_utf8_lossy(&buf).into_owned();
     let mut out = render(&input);
-    if colors::clamp256_active() {
+    // --json is the band plugin's call: its `ansi` field is never drawn, so leave it untouched.
+    if colors::clamp256_active() && !json_mode() {
         out = colors::safe256_sgr(&out);
     }
     let mut so = std::io::stdout().lock();
