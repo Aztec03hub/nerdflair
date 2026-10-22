@@ -11,6 +11,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leakcheck  # noqa: E402
 import mklayout  # noqa: E402
 
 M, W, G, B = "\U0001f468", "\U0001f469", "\U0001f467", "\U0001f466"      # man woman girl boy
@@ -30,7 +31,7 @@ TABLE = [
 
 
 def measure(seqs):
-    sock, d = f"nf-cells-{os.getpid()}", tempfile.mkdtemp(prefix="nf-cells-")
+    sock, d = leakcheck.tmux_L(f"nf-cells-{os.getpid()}"), leakcheck.mkdtemp("nf-cells-")
     env = {k: v for k, v in os.environ.items() if k != "TMUX"}
     t = lambda *a: subprocess.run(["tmux", "-L", sock, "-f", "/dev/null", *a], capture_output=True, text=True, env=env).stdout
     out = {}
@@ -72,4 +73,5 @@ def main():
 
 
 if __name__ == "__main__":
+    leakcheck.install()
     sys.exit(main())

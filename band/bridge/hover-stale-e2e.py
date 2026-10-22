@@ -19,8 +19,11 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import leakcheck  # noqa: E402
 WIN = "nf-stale"
-FLAG = "/tmp/nf-stale.flag"
+FLAG = leakcheck.file("/tmp/nf-stale.flag")
+leakcheck.file("/tmp/nf-stale.errlog")
 ROW = 46                     # inside the card (rows 45-47, columns from 4), which sits just above the status line on row 48
 
 FAKE = r'''
@@ -51,6 +54,7 @@ def run(shadow):
         f.write("alpha")
     fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
                                        dir=os.path.expanduser("~/.claude"))
+    leakcheck.file(fake.name)
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)
@@ -87,6 +91,7 @@ def run(shadow):
 def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
+    leakcheck.install()
     fails = 0
     for label, shadow, want in (("with the shadow screen", True, "bravo"),
                                 ("control, shadow off (old behaviour)", False, "alpha")):

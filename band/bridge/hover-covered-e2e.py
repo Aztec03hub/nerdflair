@@ -20,8 +20,10 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import leakcheck  # noqa: E402
 WIN = "nf-covered"
-ERRLOG = "/tmp/nf-covered.errlog"
+ERRLOG = leakcheck.file("/tmp/nf-covered.errlog")
 
 FAKE = r'''
 import os, sys, time
@@ -54,7 +56,8 @@ def card_open(target):
 def main():
     if not os.environ.get("TMUX"):
         sys.exit("run this inside tmux")
-    flag = "/tmp/nf-covered.flag"
+    leakcheck.install()
+    flag = leakcheck.file("/tmp/nf-covered.flag")
     try:
         os.unlink(ERRLOG)
     except FileNotFoundError:
@@ -63,6 +66,7 @@ def main():
         f.write("status")
     fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False,
                                        dir=os.path.expanduser("~/.claude"))
+    leakcheck.file(fake.name)
     fake.write(FAKE)
     fake.close()
     tmux("kill-window", "-t", WIN)

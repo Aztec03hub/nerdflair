@@ -11,14 +11,16 @@
 # stdin at EOF nfpty correctly treats it as a hangup and takes the child down.
 set -uo pipefail
 # These tests kill and hang up children on purpose: keep their expected log lines out of the real log.
-export NFPTY_ERRLOG="${TMPDIR:-/tmp}/nfpty-exit.errlog"
 
 NFPTY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/band/bridge/nfpty.py"
 fail=0
 # nfpty's stderr goes to this file (not /dev/null) so a traceback shows on FAIL.
 NF_ERRF=$(mktemp "${TMPDIR:-/tmp}/nf-nfptyexit-XXXXXX") || exit 1
 export NF_ERRF
-trap 'rm -f "$NF_ERRF"' EXIT
+export NFPTY_ERRLOG="$NF_ERRF.errlog"   # named from the mktemp file, so one rm of two exact names
+trap 'rm -f -- "$NF_ERRF" "$NFPTY_ERRLOG"' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 check() {
   if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"
   else
