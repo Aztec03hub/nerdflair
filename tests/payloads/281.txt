@@ -1,0 +1,1 @@
+row1 right edge: dirty, long model + effort + thinking, COLUMNS=80

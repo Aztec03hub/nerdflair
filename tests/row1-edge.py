@@ -30,7 +30,21 @@ for case in sorted(os.listdir(run)):
         if not os.path.isfile(f): continue
         lines = ansi.sub("", open(f, encoding="utf-8", errors="replace").read()).split("\n")
         if len(lines) < 2: continue
-        has_right = bool(re.search(r"(\[\+\d+ -\d+\]|[↑↓]\d+)\s*$", lines[0]))
+        # the dirty glyph (a count-only readout has no brackets) or an ahead/behind arrow
+        has_right = "" in lines[0] or bool(re.search(r"[↑↓]\d+\s*$", lines[0]))
+        dfile = os.path.join(here, "payloads", case + ".txt")
+        if "right edge" in (open(dfile).read() if os.path.isfile(dfile) else "") and not has_right:
+            print(f"{case} {side} right readout MISSING (fixture is dirty)"); bad += 1   # never dropped
+        desc = open(dfile).read() if os.path.isfile(dfile) else ""
+        mm = re.match(r"row1 multi: (\S+) at COLUMNS=(\d+)", desc)
+        if mm:   # the model keeps its effort beside the branches; the peek reads cleanly
+            repo, cols = mm.group(1), int(mm.group(2))
+            checks = []
+            if repo == "wrap-many" and cols >= 60: checks.append((" high" in lines[0], "effort word dropped"))
+            if repo == "wrap-short" and cols >= 100: checks.append(("\u00b7 c:d " in lines[0] + " ", "short second entry not whole and clean"))
+            if repo == "wrap-longfirst" and cols >= 100: checks.append(("zeta\u2026" in lines[0] and "zeta:" not in lines[0], "peek ends on the colon"))
+            for good, why in checks:
+                if not good: print(f"{case} {side} {why}: {lines[0]!r}"); bad += 1
         w1, w2 = len(lines[0]), len(lines[1])
         ok = (not has_right) or w1 == w2
         seen += has_right; bad += not ok

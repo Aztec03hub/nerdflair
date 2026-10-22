@@ -751,9 +751,17 @@ _fit_multi_branches() {
   if [[ "$_multi_branch_list" == *", "* ]]; then
     local _e2="${_multi_branch_list#*, }"
     _e2="${_e2%%, *}"
-    _e2="${_e2:0:$_MULTI_PEEK}"
-    _peek="${_MULTI_SEP}${_e2}${ELLIPSIS}"
-    _peek_w=$(( 3 + ${#_e2} + 1 ))  # sep + chars + ELLIPSIS (names are ASCII)
+    # Exactly two entries and a short second one: whole, no ellipsis. Never end on the colon.
+    # Width is counted in characters, as vis_len does for the rest of the row.
+    if [[ "$_multi_branch_list" != *", "*", "* ]] && (( ${#_e2} <= _MULTI_PEEK )); then
+      _peek="${_MULTI_SEP}${_e2}"
+      _peek_w=$(( 3 + ${#_e2} ))
+    else
+      _e2="${_e2:0:$_MULTI_PEEK}"
+      _e2="${_e2%:}"
+      _peek="${_MULTI_SEP}${_e2}${ELLIPSIS}"
+      _peek_w=$(( 3 + ${#_e2} + 1 ))
+    fi
   fi
   local _rp="${_e1%%:*}" _bp="${_e1#*:}"
   local _rmin=${#_rp} _bmin=${#_bp}
@@ -1269,26 +1277,39 @@ fi
 # Multi-repo list overflow: fit it (folder keeps full length, list gets the
 # rest minus the model floor), or collapse to "N branches". Recompute budget
 # terms afterward since the model may reclaim freed space.
-if (( _branch_is_multi == 1 )) && (( path_len + branch_len > pb_budget )); then
-  _multi_min=$(( _MULTI_SIDE_MIN + 1 + _MULTI_SIDE_MIN ))  # one minimal entry
-  # Prefer reserving room for the effort label: shrink the list further to keep
-  # effort visible, but only if it still fits after giving up that width. If the
-  # reserved target would force a collapse to "N branches", fall back to the
-  # plain min_model target so we keep the list rather than the effort label.
-  _model_reserve=$min_model
-  if (( effort_suffix_len > 0 )); then
-    _reserve_with_effort=$(( min_model + effort_suffix_len + 2 ))  # + OPT_BULLET
-    _target_effort=$(( text_budget - path_len - _reserve_with_effort ))
-    (( _target_effort < _multi_min )) && _target_effort=$_multi_min
-    [[ -n "$(_fit_multi_branches "$_target_effort")" ]] && _model_reserve=$_reserve_with_effort
-  fi
-  _branch_target=$(( text_budget - path_len - _model_reserve ))
-  (( _branch_target < _multi_min )) && _branch_target=$_multi_min
-  _fitted=$(_fit_multi_branches "$_branch_target")
-  if [[ -n "$_fitted" ]]; then
-    branch="$_fitted"
+# Several repos: the model keeps ALL its suffixes (effort, thinking, style, fast) and the
+# branch summary takes what is left: the first entry shrunk, then the peek dropped, then
+# "N branches". Only if even "N branches" plus the whole model can't fit does the older
+# rule below apply (list over effort).
+if (( _branch_is_multi == 1 )) && (( path_len + branch_len + model_text_len > text_budget )); then
+  _full_target=$(( text_budget - path_len - model_text_len ))
+  _fitted_full=$(_fit_multi_branches "$_full_target")
+  _nb="${_multi_off_count} branches"
+  if [[ -n "$_fitted_full" ]]; then
+    branch="$_fitted_full"
+  elif (( ${#_nb} <= _full_target )); then
+    branch="$_nb"
   else
-    branch="${_multi_off_count} branches"
+    _multi_min=$(( _MULTI_SIDE_MIN + 1 + _MULTI_SIDE_MIN ))  # one minimal entry
+    # Prefer reserving room for the effort label: shrink the list further to keep
+    # effort visible, but only if it still fits after giving up that width. If the
+    # reserved target would force a collapse to "N branches", fall back to the
+    # plain min_model target so we keep the list rather than the effort label.
+    _model_reserve=$min_model
+    if (( effort_suffix_len > 0 )); then
+      _reserve_with_effort=$(( min_model + effort_suffix_len + 2 ))  # + OPT_BULLET
+      _target_effort=$(( text_budget - path_len - _reserve_with_effort ))
+      (( _target_effort < _multi_min )) && _target_effort=$_multi_min
+      [[ -n "$(_fit_multi_branches "$_target_effort")" ]] && _model_reserve=$_reserve_with_effort
+    fi
+    _branch_target=$(( text_budget - path_len - _model_reserve ))
+    (( _branch_target < _multi_min )) && _branch_target=$_multi_min
+    _fitted=$(_fit_multi_branches "$_branch_target")
+    if [[ -n "$_fitted" ]]; then
+      branch="$_fitted"
+    else
+      branch="${_multi_off_count} branches"
+    fi
   fi
   _branch_is_multi=0
   branch_len=$(_vis_len "$branch")

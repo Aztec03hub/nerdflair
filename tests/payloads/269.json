@@ -37,7 +37,7 @@
   },
   "transcript_path": "/nonexistent/transcript.jsonl",
   "workspace": {
-    "current_dir": "@@REPO:diverged@@",
-    "project_dir": "@@REPO:diverged@@"
+    "current_dir": "@@REPO:longdiv@@",
+    "project_dir": "@@REPO:longdiv@@"
   }
 }

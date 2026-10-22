@@ -1173,29 +1173,42 @@ fn render_inner(input: &str) -> Result<String, String> {
         pb_budget = text_budget - model_budget;
     }
 
-    if branch_is_multi == 1 && path_len + branch_len > pb_budget {
-        let multi_min = MULTI_SIDE_MIN + 1 + MULTI_SIDE_MIN;
-        let mut model_reserve = min_model;
-        if effort_len > 0 {
-            let reserve_with_effort = min_model + effort_len + 2;
-            let mut target = text_budget - path_len - reserve_with_effort;
-            if target < multi_min {
-                target = multi_min;
-            }
-            if !fit_multi_branches(&multi_branch_list, target).is_empty() {
-                model_reserve = reserve_with_effort;
-            }
-        }
-        let mut branch_target = text_budget - path_len - model_reserve;
-        if branch_target < multi_min {
-            branch_target = multi_min;
-        }
-        let fitted = fit_multi_branches(&multi_branch_list, branch_target);
-        branch = if !fitted.is_empty() {
-            fitted
+    // Several repos: the model keeps ALL its suffixes (effort, thinking, style, fast) and the
+    // branch summary takes what is left: the first entry shrunk, then the peek dropped, then
+    // "N branches". Only if even "N branches" plus the whole model can't fit does the older
+    // rule below apply (list over effort).
+    if branch_is_multi == 1 && path_len + branch_len + model_text_len > text_budget {
+        let full_target = text_budget - path_len - model_text_len;
+        let fitted_full = fit_multi_branches(&multi_branch_list, full_target);
+        let nb = format!("{} branches", multi_off_count);
+        if !fitted_full.is_empty() {
+            branch = fitted_full;
+        } else if (char_len(&nb) as i64) <= full_target {
+            branch = nb;
         } else {
-            format!("{} branches", multi_off_count)
-        };
+            let multi_min = MULTI_SIDE_MIN + 1 + MULTI_SIDE_MIN;
+            let mut model_reserve = min_model;
+            if effort_len > 0 {
+                let reserve_with_effort = min_model + effort_len + 2;
+                let mut target = text_budget - path_len - reserve_with_effort;
+                if target < multi_min {
+                    target = multi_min;
+                }
+                if !fit_multi_branches(&multi_branch_list, target).is_empty() {
+                    model_reserve = reserve_with_effort;
+                }
+            }
+            let mut branch_target = text_budget - path_len - model_reserve;
+            if branch_target < multi_min {
+                branch_target = multi_min;
+            }
+            let fitted = fit_multi_branches(&multi_branch_list, branch_target);
+            branch = if !fitted.is_empty() {
+                fitted
+            } else {
+                format!("{} branches", multi_off_count)
+            };
+        }
         branch_is_multi = 0;
         branch_len = vis_len(&branch) as i64;
         path_branch_len = path_len + branch_len;
@@ -2635,7 +2648,13 @@ fn fit_multi_branches(list: &str, target: i64) -> String {
     let mut peek = String::new();
     if entries.len() > 1 {
         let e2 = entries[1];
-        peek = format!("{}{}{}", MULTI_SEP, char_slice(e2, 0, MULTI_PEEK as usize), ELLIPSIS);
+        // exactly two entries and a short second one: whole, no ellipsis. Never end on the colon.
+        if entries.len() == 2 && (char_len(e2) as i64) <= MULTI_PEEK {
+            peek = format!("{}{}", MULTI_SEP, e2);
+        } else {
+            let cut = char_slice(e2, 0, MULTI_PEEK as usize);
+            peek = format!("{}{}{}", MULTI_SEP, cut.strip_suffix(':').unwrap_or(&cut), ELLIPSIS);
+        }
     }
     let peek_w = vis_len(&peek) as i64;
     let w = target - peek_w;

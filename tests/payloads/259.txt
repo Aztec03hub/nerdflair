@@ -1,1 +1,1 @@
-row1 right edge: bigdirty, long model + effort + thinking, COLUMNS=70
+row1 multi: wrap-short at COLUMNS=70, effort high

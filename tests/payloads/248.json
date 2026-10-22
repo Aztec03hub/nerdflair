@@ -37,7 +37,7 @@
   },
   "transcript_path": "/nonexistent/transcript.jsonl",
   "workspace": {
-    "current_dir": "@@REPO:wrap-longfirst@@",
-    "project_dir": "@@REPO:wrap-longfirst@@"
+    "current_dir": "@@REPO:wrap-four@@",
+    "project_dir": "@@REPO:wrap-four@@"
   }
 }

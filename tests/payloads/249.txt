@@ -1,1 +1,1 @@
-row1 right edge: longdiv, long model + effort + thinking, COLUMNS=50
+row1 multi: wrap-four at COLUMNS=100, effort high

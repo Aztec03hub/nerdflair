@@ -388,14 +388,14 @@ emit "256 clamp: logo splash 0%, TMUX set, opt-in set (truecolor as before)" "$(
 emit "256 clamp: bar 37%, TMUX set, opt-in empty" "$(mut '.')" "${E_FULL[@]}" "CASE_TMUX=%3"
 emit "256 clamp: full bar 100%, TMUX set, opt-in empty" "$(mut '.context_window.used_percentage=100')" "${E_FULL[@]}" "CASE_TMUX=%3"
 # ═══ row 1 layout: multi-repo peek, and the right readout pinned to the bar edge ═══
-for r in wrap-two wrap-many wrap-four wrap-longfirst; do
-  for w in 50 60 100 150; do
+for r in wrap-two wrap-many wrap-four wrap-longfirst wrap-short; do
+  for w in 50 60 70 80 100 150; do
     emit "row1 multi: $r at COLUMNS=$w, effort high" \
       "$(mut ".workspace={\"current_dir\":\"@@REPO:$r@@\",\"project_dir\":\"@@REPO:$r@@\"}")" \
       "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w"
   done
 done
-for r in longdiv bigdirty diverged; do
+for r in longdiv bigdirty dirty; do
   for w in 50 56 60 70 80 100 150; do
     emit "row1 right edge: $r, long model + effort + thinking, COLUMNS=$w" \
       "$(mut ".workspace={\"current_dir\":\"@@REPO:$r@@\",\"project_dir\":\"@@REPO:$r@@\"} | .model.display_name=\"Mythos Experimental Preview Edition 12.5\" | .effort.level=\"xhigh\" | .thinking.enabled=true | .output_style.name=\"Explanatory\"")" \

@@ -325,6 +325,10 @@ build_fixtures() {
   mkrepo "$FIXROOT/nfdt-wrap-four/koboldcpp"         "concedo"
   mkrepo "$FIXROOT/nfdt-wrap-four/vllm-gguf-plugin"  "wsl-headroom-and-mi-extra-long"
 
+  mkdir -p "$FIXROOT/nfdt-wrap-short"
+  mkrepo "$FIXROOT/nfdt-wrap-short/alpha" "release"
+  mkrepo "$FIXROOT/nfdt-wrap-short/c" "d"
+
   mkdir -p "$FIXROOT/nfdt-wrap-longfirst"
   mkrepo "$FIXROOT/nfdt-wrap-longfirst/a-very-long-repository-name-indeed" "feature/a-very-long-branch-name-for-the-first-entry"
   mkrepo "$FIXROOT/nfdt-wrap-longfirst/zeta" "second-branch"
