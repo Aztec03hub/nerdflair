@@ -248,6 +248,7 @@ pub const TIME_ICON: &str = "\u{f017}"; // fa-clock_o
 pub const MCP_ICON: &str = "\u{f1e6}"; // ef 87 a6
 pub const STYLE_EXPLANATORY: &str = "\u{f05a}"; // ef 81 9a
 pub const STYLE_LEARNING: &str = "\u{f059}"; // ef 81 99
+pub const STYLE_CONCISE: &str = "\u{f056}"; // ef 81 96
 pub const STYLE_PROACTIVE: &str = "\u{f0df8}"; // f3 b0 b7 b8
 pub const THINK_ICON: &str = "\u{f0820}"; // f3 b0 a0 a0
 pub const FAST_ICON: &str = "\u{f1807}"; // f3 b1 a0 87

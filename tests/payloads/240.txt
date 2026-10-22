@@ -1,0 +1,1 @@
+output_style custom Learning Mode: initial L, not the Learning icon

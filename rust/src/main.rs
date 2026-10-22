@@ -1154,13 +1154,17 @@ fn render_inner(input: &str) -> Result<String, String> {
     let mut model_text = model.clone();
     let mut style_suffix = String::new();
     if !f.output_style.is_empty() && f.output_style != "default" {
-        let first = f.output_style.chars().next().unwrap_or(' ');
-        let lower: String = first.to_lowercase().collect();
-        style_suffix = match lower.as_str() {
-            "e" => format!(" {}", STYLE_EXPLANATORY),
-            "l" => format!(" {}", STYLE_LEARNING),
-            "p" => format!(" {}", STYLE_PROACTIVE),
-            other => format!(" {}", other.to_uppercase()),
+        // Full-name match, as bash `case "${output_style,,}"`.
+        style_suffix = match f.output_style.to_lowercase().as_str() {
+            "explanatory" => format!(" {}", STYLE_EXPLANATORY),
+            "learning" => format!(" {}", STYLE_LEARNING),
+            "concise" => format!(" {}", STYLE_CONCISE),
+            "proactive" => format!(" {}", STYLE_PROACTIVE),
+            _ => {
+                let first = f.output_style.chars().next().unwrap_or(' ');
+                let lower: String = first.to_lowercase().collect();
+                format!(" {}", lower.to_uppercase())
+            }
         };
     }
     let mut effort_suffix = String::new();

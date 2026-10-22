@@ -1,0 +1,1 @@
+output_style custom pirate: initial P, not the Proactive icon

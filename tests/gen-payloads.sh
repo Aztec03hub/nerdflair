@@ -398,4 +398,11 @@ MJ_ESC='{"mcpServers":{"a\u001b[5mb\u0007c\rd\u007fe\tf\\\\g":{"command":"x"},"p
 emit "sanitize: .mcp.json server name with ESC, BEL, CR, DEL, tab and a backslash" "$PROJ_P" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_MCPJSON=$MJ_ESC"
 emit "sanitize: session chime label with ESC and BEL (random style, no cost yet)" "$(mut '.cost.total_cost_usd=0')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_SESSION_CHIME=$(printf 'Ch\033[5mi\007me')"
 emit "sanitize: model display_name with ESC and a C1 CSI (C1 kept, as upstream)" "$(mut '.model.display_name="Op\u001b[31mus\u009b x" | .model.id="custom-\u001b[5m"')" "${E_FULL[@]}"
+# ═══ 20. output style matched on the full name (upstream hunk 17, 742339d) ═
+emit "output_style Concise: its own icon" "$(mut '.output_style.name="Concise"')" "${E_FULL[@]}"
+emit "output_style PROACTIVE in caps: still the built-in icon" "$(mut '.output_style.name="PROACTIVE"')" "${E_FULL[@]}"
+emit "output_style custom eager: initial E, not the Explanatory icon" "$(mut '.output_style.name="eager"')" "${E_FULL[@]}"
+emit "output_style custom Learning Mode: initial L, not the Learning icon" "$(mut '.output_style.name="Learning Mode"')" "${E_FULL[@]}"
+emit "output_style custom pirate: initial P, not the Proactive icon" "$(mut '.output_style.name="pirate"')" "${E_FULL[@]}"
+emit "output_style custom concise-ish: initial C" "$(mut '.output_style.name="concise-ish"')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"

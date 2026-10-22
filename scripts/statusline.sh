@@ -1162,12 +1162,15 @@ printf -v model_icon '\xef\x94\x9b'  # U+F51B
 model_text="$model"
 style_suffix=""  # icon suffix appended after model_text in the segment
 if [[ -n "$output_style" && "$output_style" != "default" ]]; then
-  _style_lower="${output_style:0:1}"; _style_lower="${_style_lower,,}"
-  case "$_style_lower" in
-    e) style_suffix=" $(printf '\xef\x81\x9a')" ;;  # U+F05A for Explanatory
-    l) style_suffix=" $(printf '\xef\x81\x99')" ;;  # U+F059 for Learning
-    p) style_suffix=" $(printf '\xf3\xb0\xb7\xb8')" ;;  # U+F0DF8 for Proactive
-    *) style_suffix=" ${_style_lower^^}" ;;
+  # Match the full name, not the first letter: a custom style starting with
+  # e/l/p/c would otherwise get a built-in's icon. Unknown styles still show
+  # their capitalized initial.
+  case "${output_style,,}" in
+    explanatory) style_suffix=" "$'\xef\x81\x9a' ;;    # U+F05A
+    learning)    style_suffix=" "$'\xef\x81\x99' ;;    # U+F059
+    concise)     style_suffix=" "$'\xef\x81\x96' ;;    # U+F056
+    proactive)   style_suffix=" "$'\xf3\xb0\xb7\xb8' ;;  # U+F0DF8
+    *) _style_lower="${output_style:0:1}"; _style_lower="${_style_lower,,}"; style_suffix=" ${_style_lower^^}" ;;
   esac
 fi
 
