@@ -3,14 +3,17 @@ set -uo pipefail
 
 # Width math (wc -m, ${#var}, ${var:i:1}) needs a UTF-8 locale, but Claude Code
 # spawns the statusline without LANG. _fmt_num stays locale-free on purpose.
-# Probe the ctype actually in effect (one multibyte character must count as 1): a UTF-8 name
-# that is not installed leaves bash counting bytes, and `locale -a | grep` cost two forks a render.
+# Probe the locale actually in effect, not its name: one multibyte character must count as 1
+# (a UTF-8 name that is not installed leaves bash counting bytes), and the decimal point must be
+# "." (printf '%.2f' and awk parse the payload's "4.73" with it, so de_DE gave "4,00" or
+# "4,,00.4,00"). No `locale -a | grep` forks. If the probe fails, fall back to C.UTF-8, then en_US.UTF-8.
 _nf_probe=$'\xc3\xa9'
-if (( ${#_nf_probe} != 1 )); then
+_nf_loc_ok() { printf -v _nf_dec '%.1f' 1; (( ${#_nf_probe} == 1 )) && [[ "$_nf_dec" == 1.0 ]]; }
+if ! _nf_loc_ok; then
   { export LC_ALL=C.UTF-8; } 2>/dev/null
-  (( ${#_nf_probe} == 1 )) || { export LC_ALL=en_US.UTF-8; } 2>/dev/null
+  _nf_loc_ok || { export LC_ALL=en_US.UTF-8; } 2>/dev/null
 fi
-unset _nf_probe
+unset -f _nf_loc_ok; unset _nf_probe _nf_dec
 # Note: -e is intentionally omitted because arithmetic expressions like
 # (( x == 0 )) return exit code 1, which would cause spurious termination.
 

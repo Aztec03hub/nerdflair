@@ -508,6 +508,32 @@ test_renderer_rows_match_columns_in_any_locale() {
   _teardown
 }
 
+# A decimal-comma locale must not change the numbers: printf '%.2f' parses the payload's
+# "5.73" with the locale's decimal point, so the cost came out "5,00" (or "5,,00.5,00").
+# Needs de_DE.UTF-8: the installed one, else one built into a temp LOCPATH with localedef.
+test_renderer_numbers_use_dot_decimal_in_a_comma_locale() {
+  _setup
+  local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
+  local locpath="" ok=0
+  if locale -a 2>/dev/null | grep -qiE '^de_DE\.utf-?8$'; then
+    ok=1
+  elif command -v localedef >/dev/null 2>&1 && [[ -d /usr/share/i18n/locales ]] \
+       && mkdir -p "$TMPDIR_ROOT/loc" && localedef -i de_DE -f UTF-8 "$TMPDIR_ROOT/loc/de_DE.UTF-8" >/dev/null 2>&1; then
+    locpath="$TMPDIR_ROOT/loc"; ok=1
+  fi
+  if (( ok )); then
+    echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
+    local out err="$TMPDIR_ROOT/err"
+    out=$(_make_input 42 5.73 | LOCPATH="$locpath" LC_ALL=de_DE.UTF-8 COLUMNS=100 HOME="$FAKE_HOME" bash "$RENDERER" 2>"$err" | _strip_ansi)
+    assert_not_contains "no decimal comma in the rendered numbers under de_DE" "$out" "5,"
+    assert_contains "cost keeps its dot decimal under de_DE" "$out" "5.73"
+    assert_equals "no printf complaint on stderr under de_DE" "$(cat "$err")" ""
+  else
+    echo "  SKIP: no de_DE.UTF-8 locale and no localedef to build one"
+  fi
+  _teardown
+}
+
 # Rewriting state.json on every render races with the configurator's writes.
 test_renderer_does_not_rewrite_state_when_session_unchanged() {
   _setup
