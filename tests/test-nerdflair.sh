@@ -1140,7 +1140,7 @@ EOF
 test_bell_picks_random_style_on_session_start() {
   _setup
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
-{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
+{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
   # Private cache dir: the overlap lock lives there, and a lock held in a shared XDG_CACHE_HOME (a real chime in the last 6 s)
   # would make the hook skip the player and fail this test for no reason.
