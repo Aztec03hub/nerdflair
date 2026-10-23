@@ -36,6 +36,19 @@ def _wrap(line, n):
         return [line]
     out, cur = [], ""
     for word in line.split():
+        if cells(word) > n and "/" in word[:-1]:     # a path wider than the card breaks after a slash
+            chunks = []
+            while cells(word) > n:
+                k = max((i + 1 for i, ch in enumerate(word[:-1]) if ch == "/" and cells(word[:i + 1]) <= n), default=0)
+                if not k:
+                    break
+                chunks.append(word[:k])
+                word = word[k:]
+            if cur:
+                out.append(cur)
+            out += chunks
+            cur = word
+            continue
         if cur and cells(cur) + 1 + cells(word) > n:
             out.append(cur)
             cur = word
@@ -404,6 +417,12 @@ def demo():
     wr.reset()
     wr.show("w2", "T", ["y" * 130], (1, 2, 3), 10, 40)
     assert [a[0] for a in warned] == ["card-clipped"] and len(wr.body[0]) == wr.rect[2] - 4, (warned, wr.body)
+    # A long path (no spaces) wraps after slashes: nothing is cut, no warning.
+    warned.clear()
+    lp = "~/" + "/".join("seg%02d" % i for i in range(20)) + "/proj"
+    wr.reset()
+    wr.show("p", "T", [lp], (1, 2, 3), 10, 40)
+    assert not warned and "".join(wr.body) == lp and all(cells(b) <= wr.rect[2] - 4 for b in wr.body), (warned, wr.body)
     # Tall card: capped, last line ends "...", logged, and clear of the anchor row.
     warned.clear()
     tl = Panel(lambda *a, **k: None, rows=24, cols=30)

@@ -185,15 +185,17 @@ def folder_path(text, cwd, home=None):
 
     `cwd` is the bridge's own working directory, which is claude's launch directory and so its
     workspace.project_dir (the renderer resolves both with pwd -P, as os.getcwd does). It's shown only
-    when the readout's name is the start of cwd's basename (the renderer may cut it with an ellipsis),
+    when the readout's name is cwd's basename, or its tail after a leading ellipsis (cut from the front),
     so a card never shows a path the line didn't draw. Home draws a glyph and no name."""
     home = home if home is not None else os.path.expanduser("~")
     if not cwd:
         return []
-    name = PUA.sub("", text).strip().rstrip("…")
+    name = PUA.sub("", text).strip()
     if cwd == home:
         return ["~"] if not name else []
-    if not name or not os.path.basename(cwd.rstrip("/")).startswith(name):
+    base = (os.path.basename(cwd) or cwd).replace("\\", "")     # the renderer's _sanitize drops backslashes
+    # The renderer cuts a long name from the FRONT: an ellipsis, then the tail (statusline.sh ELLIPSIS${name:..}).
+    if name != base and not (name[:1] == "…" and len(name) > 1 and base.endswith(name[1:])):
         return []
     return ["~" + cwd[len(home):] if cwd.startswith(home + "/") else cwd]
 
@@ -497,7 +499,10 @@ def selfcheck():
     # readout that names another dir (or none) gets no path.
     H = "/home/u"
     assert folder_path("\U000f024b sallie_mae", H + "/claude_projects/sallie_mae", H) == ["~/claude_projects/sallie_mae"]
-    assert folder_path("\U000f024b sallie_m\u2026", H + "/claude_projects/sallie_mae", H) == ["~/claude_projects/sallie_mae"]
+    assert folder_path("\U000f024b \u2026ie_mae", H + "/claude_projects/sallie_mae", H) == ["~/claude_projects/sallie_mae"]
+    assert folder_path("\U000f024b sallie", H + "/sallie_mae", H) == []      # a bare prefix is another dir
+    assert folder_path("\U000f024b ab", H + "/a\\b", H) == ["~/a\\b"]        # _sanitize strips the backslash
+    assert folder_path("\U000f024b /", "/", H) == ["/"]
     assert folder_path("\U000f024b srv", "/srv", H) == ["/srv"]
     assert folder_path("\U000f024b u2", "/home/u2/x/u2", H) == ["/home/u2/x/u2"]   # /home/u2 isn't under /home/u
     assert folder_path("\uf1bb ", H, H) == ["~"]
