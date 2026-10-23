@@ -445,5 +445,5 @@ for c in 12.50 1234567.89; do
 done
 # ═══ model display_name: a "(...)" suffix is never searched for a version (bash _model_core) ═══
 emit "model display_name Sonnet (1M context): no version, so no 'Sonnet 1'" "$(mut '.model={"display_name":"Sonnet (1M context)","id":"claude-sonnet"}')" "${E_FULL[@]}"
-emit "model display_name Haiku 5 (preview 2): bare major from before the paren" "$(mut '.model={"display_name":"Haiku 5 (preview 2)","id":"claude-haiku"}')" "${E_FULL[@]}"
+emit "model display_name Haiku (preview 2): the only digit sits inside the paren, so no version" "$(mut '.model={"display_name":"Haiku (preview 2)","id":"claude-haiku"}')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"
