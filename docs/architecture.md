@@ -29,7 +29,7 @@ There are two renderers and they have to agree byte for byte:
 - `rust/src/main.rs` builds `nerdflair-statusline`, the one that's installed. It's about 2 ms a render where bash was about 54 ms (commit "Add a Rust implementation of the statusline").
 - `scripts/statusline.sh` is the bash twin and the reference. Upstream nerdflair was bash, and the bash copy is still the easiest place to read what a readout means.
 
-`tests/difftest.sh` runs both over every payload in `tests/payloads/` (228 of them, each a `.json` with an optional `.env`) and fails on any byte of difference. It runs each payload in private git fixtures, keeps the first attempt's diff, and fails the run when a payload renders differently on a retry (`UNSTABLE`). `tests/difftest-unstable-guard.sh` proves that last rule can fire.
+`tests/difftest.sh` runs both over every payload in `tests/payloads/` (307 of them, each a `.json` with an optional `.env`) and fails on any byte of difference. It runs each payload in private git fixtures, keeps the first attempt's diff, and fails the run when a payload renders differently on a retry (`UNSTABLE`). `tests/difftest-unstable-guard.sh` proves that last rule can fire.
 
 A change to either renderer without the matching change in the other is a broken build, full stop. That's also why some things that would be easy in Rust (a column tracker, for one) live somewhere else instead.
 
@@ -145,7 +145,7 @@ Every test runs against a temp `HOME` and `NERDFLAIR_CACHE_DIR`, never the real 
 | Gate | What it holds |
 |---|---|
 | `cargo test --release` (in `rust/`) | Rust unit tests |
-| `tests/difftest.sh` | Rust and bash byte-identical over 228 payloads |
+| `tests/difftest.sh` | Rust and bash byte-identical over 307 payloads |
 | `tests/silent-failures.sh` | one failure class per case in both renderers, exactly one log line, same stdout; forks counted in a private namespace |
 | `tests/burn-block-golden.sh`, `tests/golden-mutation.sh` | burn and block arithmetic against hand-computed answers, and proof the golden can fail |
 | `tests/ledger-concurrency.sh`, `ledger-big.sh`, `ledger-widen.sh` | no row lost under compaction, bounded reads on a huge ledger, the one 16x widen |

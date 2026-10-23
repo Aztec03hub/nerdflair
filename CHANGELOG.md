@@ -5,7 +5,7 @@
 Phil LaFayette's fork. How it all fits together is in [docs/architecture.md](docs/architecture.md).
 
 ### Added
-- A Rust renderer, `nerdflair-statusline`, about 2 ms a render against 54 ms for bash. The bash script stays as its twin and `tests/difftest.sh` holds them byte-identical over 228 payloads
+- A Rust renderer, `nerdflair-statusline`, about 2 ms a render against 54 ms for bash. The bash script stays as its twin and `tests/difftest.sh` holds them byte-identical over 307 payloads
 - Burn rate, billing block and 5h / 7d plan limits, from our own spend ledger (`~/.claude/nerdflair-usage.tsv`) instead of ccusage
 - Cost per repo across sessions, MCP health, git ahead/behind, the tmux session name and a compaction ETA
 - Plan limits that stay up between payloads, from a last-known `limits-last` record, dim when derived
@@ -41,11 +41,11 @@ Phil LaFayette's fork. How it all fits together is in [docs/architecture.md](doc
 
 #### Fixed
 - Numbers over 999 (lines added/removed, cost, dirty files) now show thousands separators regardless of locale
-- Statusline caches moved from `/tmp` to `~/.claude/nerdflair/cache` and validated before use
+- Statusline caches moved out of `/tmp` and are validated before use (the fork's private cache dir, see above, not upstream's `~/.claude/nerdflair/cache`)
 - `chime-style` and `chime-session` no longer crash on macOS `/bin/bash` 3.2; `layout` rejects invalid names instead of corrupting state
 - MCP servers from a project `.mcp.json` were listed twice; they now also honour Claude Code approval
 - Fractional `used_percentage`, escape bytes in server/folder names, and a missing `LANG` no longer break rendering or width
-- Auto width rows are exactly `$COLUMNS` wide; the worktree icon survives a repo without `origin`
+- Auto width rows follow `$COLUMNS` (minus the 4-column inset) in any locale; the worktree icon survives a repo without `origin`
 - State fields are read with a delimiter that preserves empty values; state writes are locked and atomic
 - Post-compaction `SessionStart` is detected from the hook `source` field instead of a global marker
 - Linux TTY detection, `chime-volume 08`, and non-English locales no longer misbehave
