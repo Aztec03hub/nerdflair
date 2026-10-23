@@ -22,7 +22,7 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nf-launcher-XXXXXX") || exit 1
 chmod 755 "$ROOT"
 export HOME="$ROOT/home" NF_STATE_DIR="$ROOT/state"
 LOG="$NF_STATE_DIR/launcher.log"
-mkdir -p "$HOME" "$ROOT/real" "$ROOT/stub"
+mkdir -p "$ROOT/home" "$ROOT/real" "$ROOT/stub"
 unset TMUX NFPTY NERDFLAIR_HOVER
 
 fail=0
@@ -48,7 +48,7 @@ printf '#!/bin/sh\necho "REAL-CLAUDE $*"\necho "TRUECOLOR=${CLAUDE_CODE_TMUX_TRU
 
 # A fake ~/.nerdflair as install.sh would lay it out, with a stubbed heal so the
 # shim tests never signal a real tmux server.
-NFB="$HOME/.nerdflair/bin"
+NFB="$ROOT/home/.nerdflair/bin"
 mkdir -p "$NFB"
 cp "$HOVER_SRC/claude-shim" "$NFB/claude"; cp "$HOVER_SRC/nf-log.sh" "$NFB/nf-log.sh"
 printf '#!/bin/sh\nexit 0\n' > "$NFB/nf-tmux-heal"; chmod +x "$NFB/claude" "$NFB/nf-tmux-heal"
@@ -92,9 +92,9 @@ $o2")"
 
 echo "shim"
 # H2: python3 missing
-rm -rf "$HOME/.nerdflair/hover"; mkdir -p "$ROOT/hover-ok"
+rm -rf "$ROOT/home/.nerdflair/hover"; mkdir -p "$ROOT/hover-ok"
 printf '' > "$ROOT/hover-ok/mklayout.py"; printf '' > "$ROOT/hover-ok/panel.py"; printf 'pass\n' > "$ROOT/hover-ok/nfpty.py"
-ln -sfn "$ROOT/hover-ok" "$HOME/.nerdflair/hover"
+ln -sfn "$ROOT/hover-ok" "$ROOT/home/.nerdflair/hover"
 shim_case "python3 missing" "shim: python3 not on PATH" "$NFB:$ROOT/real:$ROOT/bin-nopy"
 check "shim: claude starts with CLAUDE_CODE_TMUX_TRUECOLOR=1 (no 256-colour clamp inside tmux)" 1 "$(run_tty "$NFB:$ROOT/real:$ROOT/bin-nopy" | grep -c 'TRUECOLOR=1')"
 
@@ -106,21 +106,21 @@ for _c in "unset|unset|TRUECOLOR=1" "empty||TRUECOLOR=1" "1|1|TRUECOLOR=1" "true
 done
 
 # H2: dangling hover link
-rm -f "$HOME/.nerdflair/hover"; ln -sfn "$ROOT/gone" "$HOME/.nerdflair/hover"
+rm -f "$ROOT/home/.nerdflair/hover"; ln -sfn "$ROOT/gone" "$ROOT/home/.nerdflair/hover"
 shim_case "hover link dangling" "shim: nfpty.py not found" "$NFB:$ROOT/real:$ROOT/bin-full"
 
 # H1: an import in the wrapper is broken
 mkdir -p "$ROOT/hover-badimport"
 printf '' > "$ROOT/hover-badimport/mklayout.py"; printf '' > "$ROOT/hover-badimport/panel.py"
 printf 'raise ImportError("boom import")\n' > "$ROOT/hover-badimport/nfpty.py"
-ln -sfn "$ROOT/hover-badimport" "$HOME/.nerdflair/hover"
+ln -sfn "$ROOT/hover-badimport" "$ROOT/home/.nerdflair/hover"
 shim_case "nfpty import broken" "shim: hover import check failed (ImportError: boom import)" "$NFB:$ROOT/real:$ROOT/bin-full"
 
 # H7: imports fine, nfpty dies at START (before it forks claude)
 mkdir -p "$ROOT/hover-badstart"
 printf '' > "$ROOT/hover-badstart/mklayout.py"; printf '' > "$ROOT/hover-badstart/panel.py"
 printf 'if __name__ == "__main__":\n    raise RuntimeError("startup boom")\n' > "$ROOT/hover-badstart/nfpty.py"
-ln -sfn "$ROOT/hover-badstart" "$HOME/.nerdflair/hover"
+ln -sfn "$ROOT/hover-badstart" "$ROOT/home/.nerdflair/hover"
 shim_case "nfpty fails at start" "shim: hover failed to start (RuntimeError: startup boom)" "$NFB:$ROOT/real:$ROOT/bin-full"
 
 # A failing logger must never stop claude: unwritable state dir.
@@ -134,7 +134,7 @@ HEAL="$HOVER_SRC/nf-tmux-heal"
 cp "$HOVER_SRC/nf-log.sh" "$ROOT/stub/nf-log.sh"
 healrun() { # PATH-dir -> prints "<rc>|<stderr>"
   local err rc
-  err=$(env -i HOME="$HOME" NF_STATE_DIR="$NF_STATE_DIR" PATH="$1" bash "$HEAL" 2>&1 >/dev/null); rc=$?
+  err=$(env -i HOME="$ROOT/home" NF_STATE_DIR="$NF_STATE_DIR" PATH="$1" bash "$HEAL" 2>&1 >/dev/null); rc=$?
   printf '%s|%s' "$rc" "$err"
 }
 uid=$(id -u)

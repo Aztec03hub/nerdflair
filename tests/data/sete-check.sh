@@ -7,7 +7,7 @@
 set -eu
 REPO=$1 W=$2
 export HOME="$W/home" NF_STATE_DIR="$W/state" NF_LOG_NOSTAMP=1 NERDFLAIR_ERR_STAMP_DIR="$W/stamps"
-mkdir -p "$HOME/.claude" "$NF_STATE_DIR" "$NERDFLAIR_ERR_STAMP_DIR"
+mkdir -p "$W/home/.claude" "$NF_STATE_DIR" "$NERDFLAIR_ERR_STAMP_DIR"
 . "$REPO/scripts/lib.sh"
 . "$REPO/band/hover/nf-log.sh"
 _nf_log_line setekey "a$(printf '\x9b')b"
