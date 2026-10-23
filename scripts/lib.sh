@@ -430,18 +430,26 @@ _nf_read_state() {
 # milliseconds of each other on session start. mkdir is atomic and works on
 # macOS bash 3.2, which has no flock. Best effort only: wait up to ~0.5s,
 # break a lock older than 5s, and never block a render indefinitely.
+# On timeout the caller writes WITHOUT the lock (a lost update is rarer than losing the user's
+# change) and the unlock leaves the holder's lock alone: it only removes a lock this process took.
 _NF_STATE_LOCK="${NF_STATE_FILE}.lock"
+_NF_LOCK_HELD=0
 _nf_state_lock() {
   local _i _age
   for (( _i=0; _i<50; _i++ )); do
-    mkdir "$_NF_STATE_LOCK" 2>/dev/null && return 0
+    mkdir "$_NF_STATE_LOCK" 2>/dev/null && { _NF_LOCK_HELD=1; return 0; }
     _age=$(( $(date +%s) - $(stat -c %Y "$_NF_STATE_LOCK" 2>/dev/null || stat -f %m "$_NF_STATE_LOCK" 2>/dev/null || echo 0) ))
     (( _age > 5 )) && rmdir "$_NF_STATE_LOCK" 2>/dev/null
     sleep 0.01
   done
+  _nf_err state-lock "could not take $_NF_STATE_LOCK in ~0.5s; writing without it"
   return 0
 }
-_nf_state_unlock() { rmdir "$_NF_STATE_LOCK" 2>/dev/null || true; }
+_nf_state_unlock() {
+  (( _NF_LOCK_HELD )) && rmdir "$_NF_STATE_LOCK" 2>/dev/null
+  _NF_LOCK_HELD=0
+  return 0
+}
 
 # ── Atomic JSON write ────────────────────────────────────────────
 # Usage: _nf_jq_write <target> <jq args...>

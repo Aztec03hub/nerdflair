@@ -63,6 +63,22 @@ test_config_state_lock_is_never_fatal() {
   _teardown
 }
 
+# A lock held by another process must survive our write (the timeout path used to rmdir it).
+test_config_state_lock_held_by_another_survives() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  local err_file="$TMPDIR_ROOT/err" rc=0
+  _configure layout minimal >/dev/null 2>"$err_file" || rc=$?
+  assert_exit_code "configure exits 0 on a held lock" "0" "$rc"
+  assert_equals "silent on stderr" "" "$(cat "$err_file")"
+  assert_equals "write still lands" "$(_state_field mode)" "minimal"
+  local kept="yes"; [[ -d "$FAKE_HOME/.claude/nerdflair/state.json.lock" ]] || kept="no"
+  assert_equals "holder's lock survives our write" "$kept" "yes"
+  assert_contains "timeout is logged" "$(cat "$FAKE_HOME/.claude/nerdflair-errors.log" 2>/dev/null)" "state-lock"
+  _teardown
+}
+
 # Exercise the empty-bar (logo) and full-bar paths, which most tests skip.
 test_renderer_bar_at_zero_and_full() {
   _setup
