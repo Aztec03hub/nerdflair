@@ -435,11 +435,14 @@ _nf_read_state() {
 _NF_STATE_LOCK="${NF_STATE_FILE}.lock"
 _NF_LOCK_HELD=0
 _nf_state_lock() {
-  local _i _age
+  local _i _mt
   for (( _i=0; _i<50; _i++ )); do
     mkdir "$_NF_STATE_LOCK" 2>/dev/null && { _NF_LOCK_HELD=1; return 0; }
-    _age=$(( $(date +%s) - $(stat -c %Y "$_NF_STATE_LOCK" 2>/dev/null || stat -f %m "$_NF_STATE_LOCK" 2>/dev/null || echo 0) ))
-    (( _age > 5 )) && rmdir "$_NF_STATE_LOCK" 2>/dev/null
+    # Stale only when the mtime was READ: if the holder released between our mkdir and this stat
+    # (stat fails), a fallback of 0 made the lock look 50 years old and we rmdir'd the NEXT
+    # holder's live lock, so two writers ran at once and lost updates.
+    _mt=$(stat -c %Y "$_NF_STATE_LOCK" 2>/dev/null || stat -f %m "$_NF_STATE_LOCK" 2>/dev/null) || _mt=""
+    [[ "$_mt" =~ ^[0-9]+$ ]] && (( $(date +%s) - _mt > 5 )) && rmdir "$_NF_STATE_LOCK" 2>/dev/null || true
     sleep 0.01
   done
   _nf_err state-lock "could not take $_NF_STATE_LOCK in ~0.5s; writing without it"

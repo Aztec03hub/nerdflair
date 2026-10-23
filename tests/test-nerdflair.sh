@@ -79,6 +79,22 @@ test_config_state_lock_held_by_another_survives() {
   _teardown
 }
 
+# A failed stat of the lock (the holder released between our mkdir and the stat) is not "50 years
+# old": it used to read as mtime 0, so the waiter rmdir'd the NEXT holder's live lock and two
+# writers ran at once. Simulated with a stat that always fails against a live, fresh lock.
+test_config_state_lock_stat_failure_is_not_stale() {
+  _setup
+  _configure layout full >/dev/null 2>&1
+  local bin="$TMPDIR_ROOT/fakebin"; mkdir -p "$bin"
+  printf '#!/bin/sh\nexit 1\n' > "$bin/stat"; chmod +x "$bin/stat"
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  PATH="$bin:$PATH" _configure layout minimal >/dev/null 2>&1 || true
+  local kept="yes"; [[ -d "$FAKE_HOME/.claude/nerdflair/state.json.lock" ]] || kept="no"
+  assert_equals "a lock whose mtime cannot be read is not broken" "$kept" "yes"
+  assert_equals "write still lands" "$(_state_field mode)" "minimal"
+  _teardown
+}
+
 # The renderer's last_session update (_nf_update_field) is a read-modify-write: it must wait on
 # the state lock like _nf_write_state does. A held fresh lock makes it log state-lock and leave the lock alone.
 test_renderer_last_session_update_takes_the_state_lock() {
