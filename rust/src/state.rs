@@ -273,6 +273,39 @@ pub fn update_field(path: &Path, state: &State, field: &str, value: &str) {
             return;
         }
     }
+    let held = lock(path);
+    update_field_locked(path, state, field, value);
+    if held {
+        let _ = std::fs::remove_dir(lock_path(path));
+    }
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".lock");
+    PathBuf::from(p)
+}
+
+/// Twin of lib.sh `_nf_state_lock`: mkdir is atomic; wait up to ~0.5 s, break a lock older than 5 s,
+/// never block a render. True only when WE took it, so only then do we remove it. On timeout the
+/// caller writes without the lock (a lost update is rarer than losing the change) and it is logged.
+fn lock(path: &Path) -> bool {
+    let lp = lock_path(path);
+    for _ in 0..50 {
+        if std::fs::create_dir(&lp).is_ok() {
+            return true;
+        }
+        let stale = std::fs::metadata(&lp).ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map_or(false, |a| a.as_secs() > 5);
+        if stale {
+            let _ = std::fs::remove_dir(&lp);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    errlog::note("state-lock", &format!("could not take {} in ~0.5s; writing without it", lp.display()));
+    false
+}
+
+fn update_field_locked(path: &Path, state: &State, field: &str, value: &str) {
     if !path.is_file() {
         write_state(path, state);
     }
@@ -314,6 +347,26 @@ pub fn update_field(path: &Path, state: &State, field: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// A lock held by another process is waited on (~0.5 s), the update still lands, and the holder's
+    /// lock survives (twin of tests/test-nerdflair.sh test_renderer_last_session_update_takes_the_state_lock).
+    #[test]
+    fn update_field_waits_on_a_held_lock_and_leaves_it() {
+        let dir = std::env::temp_dir().join(format!("nf-state-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, "{\"mode\":\"full\"}").unwrap();
+        std::fs::create_dir(dir.join("state.json.lock")).unwrap();
+        let t = std::time::Instant::now();
+        super::update_field(&path, &super::read_state(&path), "last_session", "s1");
+        let waited = t.elapsed();
+        let kept = dir.join("state.json.lock").is_dir();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(waited >= std::time::Duration::from_millis(400), "did not wait on the lock: {:?}", waited);
+        assert!(kept, "removed a lock it did not take");
+        assert_eq!(v["last_session"], "s1");
+    }
+
     /// bash's `_nf_write_state` keys, in its order: no `flair`, `spinner_verbs` before the history.
     #[test]
     fn write_state_matches_bash_keys() {
