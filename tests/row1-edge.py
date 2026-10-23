@@ -23,7 +23,8 @@ if run is None:
         print(r.stdout[-2000:], r.stderr[-2000:]); sys.exit(2)
     run = m.group(1); cleanup = True
 ansi = re.compile(r"\x1b\[[0-9;:]*m")
-bad = seen = 0
+bad = seen = gaps = 0
+GAP_FLOOR = 9   # longdiv outputs with a truncated model on 2026-10-22; fewer means the gap check stopped matching
 for case in sorted(os.listdir(run)):
     for side in ("A", "B"):
         f = os.path.join(run, case, side + ".out")
@@ -48,11 +49,13 @@ for case in sorted(os.listdir(run)):
                 if not good: print(f"{case} {side} {why}: {lines[0]!r}"); bad += 1
         if desc.startswith("row1 right edge: longdiv"):   # a truncated model keeps the 2-column gap, not 3
             g = re.search(r"Mythos[^\u2026]*\u2026( +)\S", lines[0])
+            gaps += bool(g)
             if g and len(g.group(1)) != 2: print(f"{case} {side} gap after the truncated model is {len(g.group(1))}, not 2: {lines[0]!r}"); bad += 1
         w1, w2 = len(lines[0]), len(lines[1])
         ok = (not has_right) or w1 == w2
         seen += has_right; bad += not ok
         if has_right: print(f"{case} {side} row1={w1} bar={w2} {'ok' if ok else 'MISS'}")
 if cleanup: shutil.rmtree(run, ignore_errors=True)
+if gaps < GAP_FLOOR: print(f"gap check matched {gaps} truncated-model outputs, expected at least {GAP_FLOOR}"); bad += 1
 print(f"row1-edge: {seen} outputs with a right readout, {bad} misses")
 sys.exit(1 if bad or seen == 0 else 0)
