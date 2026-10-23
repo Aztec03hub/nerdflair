@@ -691,8 +691,10 @@ test_bell_picks_random_style_on_session_start() {
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
+  # Private cache dir: the overlap lock lives there, and a lock held in a shared XDG_CACHE_HOME (a real chime in the last 6 s)
+  # would make the hook skip the player and fail this test for no reason.
   local played="$TMPDIR_ROOT/played"
-  echo '{"session_id":"test-new-session"}' | NF_TEST_PLAYED="$played" HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  echo '{"session_id":"test-new-session"}' | NF_TEST_PLAYED="$played" NERDFLAIR_CACHE_DIR="$TMPDIR_ROOT/cache" HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionStart >/dev/null 2>&1 || true
   # The player is started in the background: wait for its line (at most 2 s), so it can't write after _teardown.
   for _ in {1..20}; do [[ -s "$played" ]] && break; sleep 0.1; done
   assert_equals "the chime went to a stub player, never the real one" "$([[ -s "$played" ]] && echo yes || echo no)" "yes"
