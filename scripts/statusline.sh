@@ -710,7 +710,7 @@ _MULTI_PEEK=5
 # Truncates repo and/or branch independently (start kept, ELLIPSIS appended),
 # each floored at _MULTI_SIDE_MIN, colon always kept. Whichever side fits whole
 # yields its surplus to the other; otherwise the budget (minus colon) splits
-# evenly. Names are ASCII and ELLIPSIS is one column, so char count == width.
+# evenly. Width is counted in characters (as _vis_len does), so wide characters (CJK repo or branch names) overflow the cells; display width is a separate change.
 _render_multi_entry() {
   local _e="$1" _width=$2
   local _repo="${_e%%:*}" _br="${_e#*:}"
