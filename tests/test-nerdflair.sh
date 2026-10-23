@@ -44,7 +44,6 @@ _setup() {
   # install/uninstall run band/hover/install.sh, which calls the REAL `systemctl --user`
   # (HOME does not isolate it). This stub reads as "no user manager" and logs each call,
   # so a test can prove it was reached and the host's units are never touched.
-  mkdir -p "$TMPDIR_ROOT/stub"
   printf '#!/bin/sh\necho "$*" >> "%s/systemctl.calls"\nexit 1\n' "$TMPDIR_ROOT" > "$TMPDIR_ROOT/stub/systemctl"
   chmod +x "$TMPDIR_ROOT/stub/systemctl"
 
