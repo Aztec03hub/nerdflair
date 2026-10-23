@@ -367,6 +367,11 @@ mod tests {
         assert_eq!(v["last_session"], "s1");
         let real = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".claude/nerdflair-errors.log");
         assert_ne!(crate::errlog::log_path(), real, "a unit test's lock timeout must not reach the real error log");
+        // log_path() is <tmp>/nf-errlog-test-<pid>/.claude/nerdflair-errors.log; this test's lock timeout is the only
+        // unit-test log writer, and a per-pid dir would otherwise pile up in the temp dir on every `cargo test`.
+        let per_process = crate::errlog::log_path().ancestors().nth(2).unwrap().to_path_buf();
+        assert!(per_process.file_name().unwrap().to_string_lossy().starts_with("nf-errlog-test-"), "unexpected test log layout: {:?}", per_process);
+        std::fs::remove_dir_all(&per_process).unwrap();
     }
 
     /// bash's `_nf_write_state` keys, in its order: no `flair`, `spinner_verbs` before the history.
