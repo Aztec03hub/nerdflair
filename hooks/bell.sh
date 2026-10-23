@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-EVENT="${1:-Stop}"
+EVENT="${1:-}"
 
 # Read stdin payload (Claude Code passes JSON with session context)
 _stdin_data=""
@@ -27,6 +27,13 @@ AUDIO_DIR="$PLUGIN_ROOT/assets/audio"
 # shellcheck source=../scripts/lib.sh
 source "$PLUGIN_ROOT/scripts/lib.sh"
 _nf_require_jq
+
+# Only known hook events do anything; a missing or unknown name is a no-op.
+[[ -n "$EVENT" ]] || exit 0
+case " $NF_ALL_CHIME_EVENTS " in
+  *" $EVENT "*) ;;
+  *) exit 0 ;;
+esac
 
 # Read state (populates NF_CUR_* with legacy migration)
 _nf_read_state
@@ -50,19 +57,18 @@ _session_id=""
 if [[ -n "$_stdin_data" ]]; then
   _session_id=$(echo "$_stdin_data" | jq -r '.session_id // empty' 2>/dev/null || true)
 fi
+_nf_valid_session_id "$_session_id" || _session_id=""
 
 # Suppress SessionStart for resumed sessions and post-compaction restarts.
-# Three checks:
-#   1. source == "resume" (explicit /resume command)
+# Two checks:
+#   1. source is "resume" (/resume) or "compact" (restart after compaction)
 #   2. session_id == last_session (same session already seen by statusline)
-#   3. PreCompact marker file exists (compaction just happened, SessionStart is a restart)
-_COMPACT_MARKER="$HOME/.claude/nerdflair/.pre-compact"
 if [[ "$EVENT" == "SessionStart" ]]; then
   _source=""
   if [[ -n "$_stdin_data" ]]; then
     _source=$(echo "$_stdin_data" | jq -r '.source // empty' 2>/dev/null || true)
   fi
-  if [[ "$_source" == "resume" ]]; then
+  if [[ "$_source" == "resume" || "$_source" == "compact" ]]; then
     exit 0
   fi
   if [[ -n "$_session_id" && -n "$NF_CUR_LAST_SESSION" ]]; then
@@ -70,17 +76,6 @@ if [[ "$EVENT" == "SessionStart" ]]; then
       exit 0
     fi
   fi
-  # Check PreCompact marker: if it exists, this SessionStart follows compaction
-  if [[ -f "$_COMPACT_MARKER" ]]; then
-    rm -f "$_COMPACT_MARKER"
-    exit 0
-  fi
-fi
-
-# On PreCompact, write a marker file so the subsequent SessionStart is suppressed
-if [[ "$EVENT" == "PreCompact" ]]; then
-  mkdir -p "$(dirname "$_COMPACT_MARKER")"
-  printf '%s' "$(date +%s)" > "$_COMPACT_MARKER"
 fi
 
 # ── Resolve chime style (per-session) ──
@@ -152,9 +147,11 @@ fi
 # Write session file as JSON
 if [[ -n "$_session_file" ]]; then
   if [[ "$EVENT" == "SessionStart" ]]; then
-    printf '{"chime":"%s"}\n' "$_resolved_style" > "$_session_file"
+    jq -n --arg c "$_resolved_style" '{chime:$c}' > "$_session_file"
   elif [[ "$_resolved_style" != "random" && ! -f "$_session_file" ]]; then
-    printf '{"chime":"%s"}\n' "$_resolved_style" > "$_session_file"
+    jq -n --arg c "$_resolved_style" '{chime:$c}' > "$_session_file"
+  elif [[ -f "$_session_file" ]]; then
+    touch "$_session_file" 2>/dev/null || true  # keep the 7-day prune from removing a live session
   fi
 fi
 
@@ -216,6 +213,7 @@ if [[ "$_chime_muted" != "1" ]] && echo ",$chime_events," | grep -q ",$EVENT,"; 
     _nf_play_audio "$_audio_file" "$chime_volume"
   else
     # Fallback to macOS system sound
+    [[ "$chime_sound" =~ ^[A-Za-z0-9_-]+$ ]] || chime_sound="Glass"  # state value becomes a path segment
     _sys_sound="/System/Library/Sounds/${chime_sound}.aiff"
     if [[ -f "$_sys_sound" ]]; then
       _nf_play_audio "$_sys_sound" "$chime_volume"

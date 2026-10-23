@@ -3,7 +3,6 @@
 
 use crate::errlog;
 use crate::jqx;
-use crate::util::read_ifs_whitespace;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +20,6 @@ pub const DEFAULT_CHIME_VOLUME: &str = "1";
 pub struct State {
     pub mode: String,
     pub width: String,
-    pub flair: String,
     pub color: String,
     pub terminal_bell: String,
     pub chime_sound: String,
@@ -29,6 +27,7 @@ pub struct State {
     pub chime_events: String,
     pub chime_volume: String,
     pub last_session: String,
+    pub spinner_verbs: String,
 }
 
 pub fn state_file() -> PathBuf {
@@ -57,7 +56,6 @@ pub fn read_state(path: &Path) -> State {
                 let keys = [
                     "mode",
                     "width",
-                    "flair",
                     "color",
                     "terminal_bell",
                     "chime_sound",
@@ -65,6 +63,7 @@ pub fn read_state(path: &Path) -> State {
                     "chime_events",
                     "chime_volume",
                     "last_session",
+                    "spinner_verbs",
                     "bell",
                     "audio_style",
                     "audio_events",
@@ -74,7 +73,7 @@ pub fn read_state(path: &Path) -> State {
                 let mut fields = Vec::with_capacity(14);
                 for k in keys {
                     match jqx::path(&v, &[k]) {
-                        Ok(node) => fields.push(jqx::tsv_escape(&jqx::alt_str(node))),
+                        Ok(node) => fields.push(jqx::alt_str(node)),
                         Err(_) => {
                             ok = false;
                             break;
@@ -82,9 +81,13 @@ pub fn read_state(path: &Path) -> State {
                     }
                 }
                 if ok {
-                    // `IFS=$'\t' read`: tab is IFS whitespace, so empty fields
-                    // collapse and later fields shift left. Reproduced.
-                    vals = read_ifs_whitespace(&fields.join("\t"), 14);
+                    // `IFS=$'\x1f' read -r` (upstream 89c0af3): a non-whitespace
+                    // separator keeps empty fields in place; read stops at the
+                    // first newline.
+                    let joined = fields.join("\u{1f}");
+                    let line = joined.split('\n').next().unwrap_or("");
+                    let mut it = line.split('\u{1f}').map(String::from);
+                    vals = (0..14).map(|_| it.next().unwrap_or_default()).collect();
                     errlog::ok("state-corrupt");
                 } else {
                     errlog::note(
@@ -100,14 +103,14 @@ pub fn read_state(path: &Path) -> State {
     let mut s = State {
         mode: vals[0].clone(),
         width: vals[1].clone(),
-        flair: vals[2].clone(),
-        color: vals[3].clone(),
-        terminal_bell: vals[4].clone(),
-        chime_sound: vals[5].clone(),
-        chime_style: vals[6].clone(),
-        chime_events: vals[7].clone(),
-        chime_volume: vals[8].clone(),
-        last_session: vals[9].clone(),
+        color: vals[2].clone(),
+        terminal_bell: vals[3].clone(),
+        chime_sound: vals[4].clone(),
+        chime_style: vals[5].clone(),
+        chime_events: vals[6].clone(),
+        chime_volume: vals[7].clone(),
+        last_session: vals[8].clone(),
+        spinner_verbs: vals[9].clone(),
     };
     let old_bell = &vals[10];
     let old_audio_style = &vals[11];
@@ -119,9 +122,6 @@ pub fn read_state(path: &Path) -> State {
     }
     if s.width.is_empty() {
         s.width = DEFAULT_WIDTH.into();
-    }
-    if s.flair.is_empty() {
-        s.flair = "true".into();
     }
     if s.color.is_empty() {
         s.color = DEFAULT_COLOR.into();
@@ -171,7 +171,8 @@ pub fn read_state(path: &Path) -> State {
     s
 }
 
-/// `_nf_write_state` — the canonical 11-key object jq -n builds.
+/// `_nf_write_state`: the 11-key object jq -n builds, in its key order. No
+/// `flair` (bash dropped it); an old file that has one still reads fine.
 fn write_state(path: &Path, s: &State) {
     let mut recent = Value::Array(vec![]);
     match std::fs::read_to_string(path) {
@@ -196,18 +197,9 @@ fn write_state(path: &Path, s: &State) {
             }
         },
     }
-    let flair_src = if s.flair.is_empty() { "true" } else { &s.flair };
-    let flair: Value = match serde_json::from_str(flair_src) {
-        Ok(v) => v,
-        Err(e) => {
-            errlog::note("state-flair", &format!("flair value {:?} is not JSON ({}); written as true", flair_src, e));
-            Value::Bool(true)
-        }
-    };
     let mut obj = serde_json::Map::new();
     obj.insert("mode".into(), Value::String(s.mode.clone()));
     obj.insert("width".into(), Value::String(s.width.clone()));
-    obj.insert("flair".into(), flair);
     obj.insert(
         "terminal_bell".into(),
         Value::String(s.terminal_bell.clone()),
@@ -218,6 +210,7 @@ fn write_state(path: &Path, s: &State) {
     obj.insert("chime_events".into(), Value::String(s.chime_events.clone()));
     obj.insert("color".into(), Value::String(s.color.clone()));
     obj.insert("last_session".into(), Value::String(s.last_session.clone()));
+    obj.insert("spinner_verbs".into(), Value::String(s.spinner_verbs.clone()));
     obj.insert("chime_recent_styles".into(), recent);
     atomic_write(path, &jqx::pretty(&Value::Object(obj)));
 }
@@ -316,5 +309,25 @@ pub fn update_field(path: &Path, state: &State, field: &str, value: &str) {
         errlog::clear("state-write-retry");
     } else {
         errlog::touch("state-write-retry");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// bash's `_nf_write_state` keys, in its order: no `flair`, `spinner_verbs` before the history.
+    #[test]
+    fn write_state_matches_bash_keys() {
+        let dir = std::env::temp_dir().join(format!("nf-state-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        super::write_state(&path, &super::read_state(&path));
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["mode", "width", "terminal_bell", "chime_sound", "chime_volume", "chime_style", "chime_events", "color", "last_session", "spinner_verbs", "chime_recent_styles"]
+        );
     }
 }

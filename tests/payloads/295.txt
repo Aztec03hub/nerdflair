@@ -1,0 +1,1 @@
+sanitize: .mcp.json server name with ESC, BEL, CR, DEL, tab and a backslash

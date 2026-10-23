@@ -117,6 +117,7 @@ Things that are normal are not logged: a closed window, tmux lock contention, a 
 - **Audio chimes (macOS, Linux)**: 20 styles, configurable per-event, adjustable volume
 - **Project folder display:** always shows the launch directory, not the current subdirectory Claude may have navigated to
 - Git branch, files edited, and lines added/removed
+- **Multi-repo folders and worktrees:** launched in a folder that wraps several repos, the branch segment shows each repo that is off `main` as `repo:branch` (collapsing to "N branches", or "N repos" when all are on `main`); linked worktrees get a tree icon
 - Model name with indicators for output style, reasoning effort, extended thinking, and fast mode
 - Active MCP servers
 - Session cost, API duration, and token throughput
@@ -178,7 +179,7 @@ Use the `/nerdflair` command to configure the statusline:
 | `/nerdflair chime-volume [0-100]` | Set chime volume (0 = muted) |
 | `/nerdflair color-palette [mode]` | Set or cycle palette (vibrant, muted, mono) |
 | `/nerdflair layout [mode]` | Set or cycle layout (full, compact, minimal) |
-| `/nerdflair spinner-verbs` | Toggle custom spinner verbs on/off |
+| `/nerdflair spinner-verbs [enable\|disable]` | Toggle custom spinner verbs on/off |
 | `/nerdflair terminal-bell` | Toggle terminal bell on/off (tab indicator) |
 | `/nerdflair width [auto\|50-150]` | Set layout width |
 
@@ -263,7 +264,7 @@ Search "nerdflair" in Settings to configure:
 
 ## How It Works (Claude Code)
 
-Three bash scripts and one JSON state file.
+Three bash scripts, a shared library (`scripts/lib.sh`), and one JSON state file.
 
 ![NerdFlair architecture](assets/images/architecture.svg)
 
@@ -271,7 +272,7 @@ Three bash scripts and one JSON state file.
 - **Configurator** (`scripts/nerdflair.sh`) — Handles `/nerdflair` commands. Reads and writes the state file.
 - **Hook Handler** (`hooks/bell.sh`) — Fired on Claude Code events. Sends terminal bell and plays audio chimes (macOS, Linux) based on user-defined config.
 
-All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically.
+All settings persist in `~/.claude/nerdflair/state.json`. Per-session data (chime style) is stored as JSON in `~/.claude/nerdflair/sessions/` and cleaned up automatically. Git status is cached for a few seconds in `~/.claude/nerdflair/cache/`.
 
 
 ## Running the tests

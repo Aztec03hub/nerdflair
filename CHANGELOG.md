@@ -37,6 +37,23 @@ Phil LaFayette's fork. How it all fits together is in [docs/architecture.md](doc
 - A state file written relative to the working directory when HOME was empty
 - Silent failures: every fallback in the renderers, bridge, plugin and launcher now logs its reason once
 
+### Merged from upstream (67fa0e4), as of this merge
+
+#### Fixed
+- Numbers over 999 (lines added/removed, cost, dirty files) now show thousands separators regardless of locale
+- Statusline caches moved from `/tmp` to `~/.claude/nerdflair/cache` and validated before use
+- `chime-style` and `chime-session` no longer crash on macOS `/bin/bash` 3.2; `layout` rejects invalid names instead of corrupting state
+- MCP servers from a project `.mcp.json` were listed twice; they now also honour Claude Code approval
+- Fractional `used_percentage`, escape bytes in server/folder names, and a missing `LANG` no longer break rendering or width
+- Auto width rows are exactly `$COLUMNS` wide; the worktree icon survives a repo without `origin`
+- State fields are read with a delimiter that preserves empty values; state writes are locked and atomic
+- Post-compaction `SessionStart` is detected from the hook `source` field instead of a global marker
+- Linux TTY detection, `chime-volume 08`, and non-English locales no longer misbehave
+
+#### Removed
+- Clickable OSC 8 hyperlinks (removed earlier; the changelog still listed them)
+- Dead code: `flair` state field, wind gradient, unused colors and helpers
+
 ## 1.1.0 — 2026-03-19
 
 ### Added
@@ -48,7 +65,7 @@ Phil LaFayette's fork. How it all fits together is in [docs/architecture.md](doc
 - Worktree branch display when running with `--worktree`
 - `PreCompact` and `UserPromptSubmit` hook events registered in hooks.json
 - `PreCompact` added to default chime events
-- `install` command to reset all settings to defaults
+- `install` command (idempotent: initializes defaults on first run, preserves existing settings on upgrade)
 - This changelog
 
 ### Changed

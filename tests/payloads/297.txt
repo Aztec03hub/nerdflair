@@ -1,0 +1,1 @@
+sanitize: model display_name with ESC and a C1 CSI (C1 kept, as upstream)

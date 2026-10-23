@@ -412,4 +412,31 @@ done
 emit "row1 multi: wrap-two at COLUMNS=59, effort high" \
   "$(mut ".workspace={\"current_dir\":\"@@REPO:wrap-two@@\",\"project_dir\":\"@@REPO:wrap-two@@\"}")" \
   "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=59"
+# ═══ 18. project .mcp.json approval (upstream 921835d) ═══════════════════
+# @@PROJ@@ is a fresh non-git dir per case; CASE_MCPJSON is its .mcp.json,
+# CASE_CLAUDE_PROJ is merged into ~/.claude.json .projects[project_dir],
+# CASE_SETTINGS is ~/.claude/settings.json.
+PROJ_P=$(mut '.workspace.current_dir="@@PROJ@@" | .workspace.project_dir="@@PROJ@@"')
+MJ='{"mcpServers":{"alpha":{"command":"x"},"beta":{"command":"x"}}}'
+E_MJ=("CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_MCP=one" "CASE_MCPJSON=$MJ")
+emit "mcpjson: no approval data anywhere: every .mcp.json server listed, read once" "$PROJ_P" "${E_MJ[@]}"
+emit "mcpjson: project enabledMcpjsonServers [alpha]: alpha only" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":["alpha"]}'
+emit "mcpjson: project disabledMcpjsonServers [beta] only: policy exists, nothing approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"disabledMcpjsonServers":["beta"]}'
+emit "mcpjson: enableAllProjectMcpServers with beta disabled: alpha only" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enableAllProjectMcpServers":true,"disabledMcpjsonServers":["beta"]}'
+emit "mcpjson: settings.json enabledMcpjsonServers [beta]: beta only" "$PROJ_P" "${E_MJ[@]}" 'CASE_SETTINGS={"enabledMcpjsonServers":["beta"]}'
+emit "mcpjson: empty enabled list: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":[]}'
+emit "mcpjson: enabled list with a number: jq stops there, alpha kept, disabled list never read" "$PROJ_P" "${E_MJ[@]}" 'CASE_CLAUDE_PROJ={"enabledMcpjsonServers":["alpha",5,"beta"],"disabledMcpjsonServers":["alpha"]}'
+emit "mcpjson: enableAllProjectMcpServers false is still a policy: none approved" "$PROJ_P" "${E_MJ[@]}" 'CASE_SETTINGS={"enableAllProjectMcpServers":false}'
+# ═══ 19. control bytes stripped by _sanitize (upstream 43c42f5) ════════════
+MJ_ESC='{"mcpServers":{"a\u001b[5mb\u0007c\rd\u007fe\tf\\\\g":{"command":"x"},"plain":{"command":"x"}}}'
+emit "sanitize: .mcp.json server name with ESC, BEL, CR, DEL, tab and a backslash" "$PROJ_P" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_MCPJSON=$MJ_ESC"
+emit "sanitize: session chime label with ESC and BEL (random style, no cost yet)" "$(mut '.cost.total_cost_usd=0')" "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=160" "CASE_SESSION_CHIME=$(printf 'Ch\033[5mi\007me')"
+emit "sanitize: model display_name with ESC and a C1 CSI (C1 kept, as upstream)" "$(mut '.model.display_name="Op\u001b[31mus\u009b x" | .model.id="custom-\u001b[5m"')" "${E_FULL[@]}"
+# ═══ 20. output style matched on the full name (upstream hunk 17, 742339d) ═
+emit "output_style Concise: its own icon" "$(mut '.output_style.name="Concise"')" "${E_FULL[@]}"
+emit "output_style PROACTIVE in caps: still the built-in icon" "$(mut '.output_style.name="PROACTIVE"')" "${E_FULL[@]}"
+emit "output_style custom eager: initial E, not the Explanatory icon" "$(mut '.output_style.name="eager"')" "${E_FULL[@]}"
+emit "output_style custom Learning Mode: initial L, not the Learning icon" "$(mut '.output_style.name="Learning Mode"')" "${E_FULL[@]}"
+emit "output_style custom pirate: initial P, not the Proactive icon" "$(mut '.output_style.name="pirate"')" "${E_FULL[@]}"
+emit "output_style custom concise-ish: initial C" "$(mut '.output_style.name="concise-ish"')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"

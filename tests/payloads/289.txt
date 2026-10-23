@@ -1,0 +1,1 @@
+mcpjson: project disabledMcpjsonServers [beta] only: policy exists, nothing approved

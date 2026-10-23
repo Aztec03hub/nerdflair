@@ -47,10 +47,12 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
-/// `_sanitize`: strip every backslash.
+/// `_sanitize`: strip every backslash and every control byte except newline
+/// (0x00-0x09, 0x0b-0x1f, 0x7f).
 pub fn sanitize(s: &str) -> String {
-    if s.contains('\\') {
-        s.chars().filter(|c| *c != '\\').collect()
+    let drop = |c: char| c == '\\' || (c < ' ' && c != '\n') || c == '\x7f';
+    if s.contains(drop) {
+        s.chars().filter(|c| !drop(*c)).collect()
     } else {
         s.to_string()
     }
@@ -70,15 +72,9 @@ pub fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
-/// `printf "%'d"`.
-///
-/// glibc only groups when LC_NUMERIC supplies a `thousands_sep`. The C and
-/// C.UTF-8 locales do not, so on this machine `%'d` == `%d`. Grouping is
-/// applied only when a non-C numeric locale is in effect.
+/// Locale-independent thousands grouping, twin of `_fmt_num` in statusline.sh
+/// (upstream 88dbdc1: `printf "%'d"` is a no-op under the C locale hooks run in).
 pub fn fmt_num(n: i64) -> String {
-    if !numeric_locale_groups() {
-        return n.to_string();
-    }
     let neg = n < 0;
     let digits = n.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
@@ -94,16 +90,6 @@ pub fn fmt_num(n: i64) -> String {
     } else {
         out
     }
-}
-
-fn numeric_locale_groups() -> bool {
-    let loc = std::env::var("LC_ALL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("LC_NUMERIC").ok().filter(|s| !s.is_empty()))
-        .or_else(|| std::env::var("LANG").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_default();
-    !(loc.is_empty() || loc == "C" || loc == "POSIX" || loc.starts_with("C."))
 }
 
 /// POSIX `cksum` CRC value (the first field of cksum's output).

@@ -5,6 +5,7 @@
 # ── Paths ────────────────────────────────────────────────────────
 NF_STATE_FILE="$HOME/.claude/nerdflair/state.json"
 NF_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
+NF_CACHE_DIR="$HOME/.claude/nerdflair/cache"
 NF_SETTINGS_FILE="$HOME/.claude/settings.json"
 
 # ── Defaults ─────────────────────────────────────────────────────
@@ -19,6 +20,19 @@ NF_DEFAULT_CHIME_VOLUME="1"
 
 NF_ALL_CHIME_EVENTS="Notification PermissionRequest PreCompact SessionEnd SessionStart Stop UserPromptSubmit"
 NF_VALID_MODES="full compact minimal"
+
+# Exact-match check against NF_VALID_MODES (never treat user input as a regex).
+_nf_valid_mode() {
+  local m
+  for m in $NF_VALID_MODES; do [[ "$1" == "$m" ]] && return 0; done
+  return 1
+}
+
+# Lowercase without ${var,,}, which bash 3.2 (macOS /bin/bash) lacks.
+_nf_lower() { printf "%s" "$1" | tr "[:upper:]" "[:lower:]"; }
+
+# Session ids become filenames under NF_SESSION_DIR; allow only safe characters.
+_nf_valid_session_id() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 
 # ── ANSI colors (shared across scripts) ──────────────────────────
 NF_CYAN='\033[38;2;86;182;194m'
@@ -324,11 +338,10 @@ _nf_read_recent_styles() {
 _nf_read_state() {
   if [[ -f "$NF_STATE_FILE" ]]; then
     # Read all fields in a single jq call
-    local _json
+    local _json _jrc=0
     _json=$(jq -r '[
       .mode // "",
       .width // "",
-      .flair // "",
       .color // "",
       .terminal_bell // "",
       .chime_sound // "",
@@ -336,24 +349,26 @@ _nf_read_state() {
       .chime_events // "",
       .chime_volume // "",
       .last_session // "",
+      .spinner_verbs // "",
       .bell // "",
       .audio_style // "",
       .audio_events // "",
       .bell_volume // ""
-    ] | @tsv' "$NF_STATE_FILE" 2>/dev/null)
+    ] | map(tostring) | join("\u001f")' "$NF_STATE_FILE" 2>/dev/null) || _jrc=$?
     # A state file that EXISTS but will not parse silently reverts every
     # setting to its default. Degrade (defaults) AND say so. A missing file
     # is first run and stays silent.
-    if (( $? != 0 )); then
+    if (( _jrc != 0 )); then
       _nf_err "state-corrupt" "$NF_STATE_FILE is not a valid JSON object ($(jq . "$NF_STATE_FILE" 2>&1 >/dev/null | head -n 1)); using defaults"
     else
       _nf_ok "state-corrupt"
     fi
 
-    IFS=$'\t' read -r \
-      NF_CUR_MODE NF_CUR_WIDTH NF_CUR_FLAIR NF_CUR_COLOR \
+    # Unit separator, not tab: tab is IFS whitespace and collapses empty fields.
+    IFS=$'\x1f' read -r \
+      NF_CUR_MODE NF_CUR_WIDTH NF_CUR_COLOR \
       NF_CUR_TERMINAL_BELL NF_CUR_CHIME_SOUND NF_CUR_CHIME_STYLE \
-      NF_CUR_CHIME_EVENTS NF_CUR_CHIME_VOLUME NF_CUR_LAST_SESSION \
+      NF_CUR_CHIME_EVENTS NF_CUR_CHIME_VOLUME NF_CUR_LAST_SESSION NF_CUR_SPINNER_VERBS \
       _old_bell _old_audio_style _old_audio_events _old_bell_volume \
       <<< "$_json"
   fi
@@ -361,7 +376,6 @@ _nf_read_state() {
   # Apply defaults
   NF_CUR_MODE="${NF_CUR_MODE:-$NF_DEFAULT_MODE}"
   NF_CUR_WIDTH="${NF_CUR_WIDTH:-$NF_DEFAULT_WIDTH}"
-  NF_CUR_FLAIR="${NF_CUR_FLAIR:-true}"
   NF_CUR_COLOR="${NF_CUR_COLOR:-$NF_DEFAULT_COLOR}"
   NF_CUR_TERMINAL_BELL="${NF_CUR_TERMINAL_BELL:-}"
   NF_CUR_CHIME_SOUND="${NF_CUR_CHIME_SOUND:-$NF_DEFAULT_CHIME_SOUND}"
@@ -369,13 +383,14 @@ _nf_read_state() {
   NF_CUR_CHIME_EVENTS="${NF_CUR_CHIME_EVENTS:-}"
   NF_CUR_CHIME_VOLUME="${NF_CUR_CHIME_VOLUME:-}"
   NF_CUR_LAST_SESSION="${NF_CUR_LAST_SESSION:-}"
+  NF_CUR_SPINNER_VERBS="${NF_CUR_SPINNER_VERBS:-}"  # on|off; empty = predates the marker
 
-  # Legacy migration: "default" color → "vibrant"
+  # Legacy migration: "default" color becomes "vibrant"
   if [[ "$NF_CUR_COLOR" == "default" ]]; then
     NF_CUR_COLOR="vibrant"
   fi
 
-  # Legacy migration: old "bell" field → terminal_bell + chime_volume
+  # Legacy migration: old "bell" field becomes terminal_bell + chime_volume
   if [[ -z "$NF_CUR_TERMINAL_BELL" && -n "${_old_bell:-}" ]]; then
     case "$_old_bell" in
       both)   NF_CUR_TERMINAL_BELL="on" ;;
@@ -386,19 +401,19 @@ _nf_read_state() {
   fi
   NF_CUR_TERMINAL_BELL="${NF_CUR_TERMINAL_BELL:-$NF_DEFAULT_TERMINAL_BELL}"
 
-  # Legacy migration: audio_style → chime_style
+  # Legacy migration: audio_style becomes chime_style
   if [[ -z "$NF_CUR_CHIME_STYLE" && -n "${_old_audio_style:-}" ]]; then
     NF_CUR_CHIME_STYLE="$_old_audio_style"
   fi
   NF_CUR_CHIME_STYLE="${NF_CUR_CHIME_STYLE:-$NF_DEFAULT_CHIME_STYLE}"
 
-  # Legacy migration: audio_events → chime_events
+  # Legacy migration: audio_events becomes chime_events
   if [[ -z "$NF_CUR_CHIME_EVENTS" && -n "${_old_audio_events:-}" ]]; then
     NF_CUR_CHIME_EVENTS="$_old_audio_events"
   fi
   NF_CUR_CHIME_EVENTS="${NF_CUR_CHIME_EVENTS:-$NF_DEFAULT_CHIME_EVENTS}"
 
-  # Legacy migration: bell_volume → chime_volume
+  # Legacy migration: bell_volume becomes chime_volume
   if [[ -z "$NF_CUR_CHIME_VOLUME" && -n "${_old_bell_volume:-}" ]]; then
     NF_CUR_CHIME_VOLUME="$_old_bell_volume"
   fi
@@ -411,14 +426,51 @@ _nf_read_state() {
   fi
 }
 
+# ── State file lock ──────────────────────────────────────────────
+# statusline.sh, bell.sh and nerdflair.sh can all write state.json within
+# milliseconds of each other on session start. mkdir is atomic and works on
+# macOS bash 3.2, which has no flock. Best effort only: wait up to ~0.5s,
+# break a lock older than 5s, and never block a render indefinitely.
+_NF_STATE_LOCK="${NF_STATE_FILE}.lock"
+_nf_state_lock() {
+  local _i _age
+  for (( _i=0; _i<50; _i++ )); do
+    mkdir "$_NF_STATE_LOCK" 2>/dev/null && return 0
+    _age=$(( $(date +%s) - $(stat -c %Y "$_NF_STATE_LOCK" 2>/dev/null || stat -f %m "$_NF_STATE_LOCK" 2>/dev/null || echo 0) ))
+    (( _age > 5 )) && rmdir "$_NF_STATE_LOCK" 2>/dev/null
+    sleep 0.01
+  done
+  return 0
+}
+_nf_state_unlock() { rmdir "$_NF_STATE_LOCK" 2>/dev/null || true; }
+
+# ── Atomic JSON write ────────────────────────────────────────────
+# Usage: _nf_jq_write <target> <jq args...>
+# Runs jq into a temp file and renames it over <target>. On jq failure the
+# target is untouched and the temp file is removed.
+_nf_jq_write() {
+  local _target="$1"; shift
+  local _tmp="${_target}.tmp.$$"
+  if jq "$@" > "$_tmp"; then
+    mv "$_tmp" "$_target"
+  else
+    rm -f "$_tmp"
+    return 1
+  fi
+}
+
 # ── Write state file atomically using jq ─────────────────────────
-# Usage: _nf_write_state [extra_jq_filter]
-# Writes NF_CUR_* variables to state.json, preserving chime_recent_styles
-# and last_session. Optional jq filter is applied last (e.g. to set
-# additional fields).
+# Usage: _nf_write_state
+# Writes NF_CUR_* variables to state.json, preserving chime_recent_styles.
 _nf_write_state() {
-  local extra_filter="${1:-}"
   mkdir -p "$(dirname "$NF_STATE_FILE")"
+  local _rc=0
+  _nf_state_lock
+  _nf_write_state_unlocked || _rc=$?
+  _nf_state_unlock
+  return $_rc
+}
+_nf_write_state_unlocked() {
 
   # Preserve chime_recent_styles from existing file
   local recent_styles="[]"
@@ -440,7 +492,6 @@ _nf_write_state() {
   _new=$(jq -n \
     --arg mode "$NF_CUR_MODE" \
     --arg width "$NF_CUR_WIDTH" \
-    --argjson flair "${NF_CUR_FLAIR:-true}" \
     --arg terminal_bell "$NF_CUR_TERMINAL_BELL" \
     --arg chime_sound "$NF_CUR_CHIME_SOUND" \
     --arg chime_volume "$NF_CUR_CHIME_VOLUME" \
@@ -448,11 +499,11 @@ _nf_write_state() {
     --arg chime_events "$NF_CUR_CHIME_EVENTS" \
     --arg color "$NF_CUR_COLOR" \
     --arg last_session "$NF_CUR_LAST_SESSION" \
+    --arg spinner_verbs "$NF_CUR_SPINNER_VERBS" \
     --argjson recent "$recent_styles" \
     '{
       mode: $mode,
       width: $width,
-      flair: $flair,
       terminal_bell: $terminal_bell,
       chime_sound: $chime_sound,
       chime_volume: $chime_volume,
@@ -460,6 +511,7 @@ _nf_write_state() {
       chime_events: $chime_events,
       color: $color,
       last_session: $last_session,
+      spinner_verbs: $spinner_verbs,
       chime_recent_styles: $recent
     }' 2>/dev/null) && [[ -n "$_new" ]] \
     && _werr=$({ printf '%s\n' "$_new" > "$_tmp" && mv "$_tmp" "$NF_STATE_FILE"; } 2>&1)
@@ -588,7 +640,7 @@ _nf_play_audio() {
 # ── Update chime_recent_styles array ─────────────────────────────
 # Usage: _nf_update_recent_styles <comma_separated_styles>
 _nf_update_recent_styles() {
-  local styles_csv="$1"
+  local styles_csv="$1" _rc=0
   mkdir -p "$(dirname "$NF_STATE_FILE")"
   # Same two reasons as _nf_update_field: a corrupt file is as unwritable as a
   # missing one, and the temp file is only created on the path that renames it.
