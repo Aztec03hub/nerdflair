@@ -3199,7 +3199,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
   # Calculate available space in the dark zone for right-aligned content
   # Dark zone = bar_area * (100 - compact_mark%) / 100, minus 1 for the right cap
   _bar_area_est=$(( bar_width - 2 ))
-  (( _bar_area_est > MAX_BAR )) && _bar_area_est=$MAX_BAR
+  (( _bar_area_est > 78 )) && _bar_area_est=78
   (( _bar_area_est < 20 )) && _bar_area_est=20
   _dark_zone=$(( _bar_area_est - _bar_area_est * 80 / 100 ))
 

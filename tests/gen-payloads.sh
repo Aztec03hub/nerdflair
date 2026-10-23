@@ -439,4 +439,8 @@ emit "output_style custom eager: initial E, not the Explanatory icon" "$(mut '.o
 emit "output_style custom Learning Mode: initial L, not the Learning icon" "$(mut '.output_style.name="Learning Mode"')" "${E_FULL[@]}"
 emit "output_style custom pirate: initial P, not the Proactive icon" "$(mut '.output_style.name="pirate"')" "${E_FULL[@]}"
 emit "output_style custom concise-ish: initial C" "$(mut '.output_style.name="concise-ish"')" "${E_FULL[@]}"
+# ═══ compact right label: the dark-zone estimate stays capped at 78 columns (the merge once lost the cap in bash only) ═══
+for c in 12.50 1234567.89; do
+  emit "compact right label: COLUMNS=200, api time + cost $c" "$(mut ".cost.total_cost_usd=$c | .cost.total_api_duration_ms=3660000")" "CASE_STATE=$(st compact vibrant)" "CASE_COLUMNS=200"
+done
 echo "generated $N payloads in $OUT"
