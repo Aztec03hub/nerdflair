@@ -241,6 +241,11 @@ class Layout:
     def __init__(self, pane, shadow=None):
         self.pane = pane
         self.shadow = shadow
+        try:
+            self.cwd = os.getcwd()    # claude's launch dir: we exec it from here and never chdir (Folder card path)
+        except OSError as e:          # the dir was removed under us: the card just goes without its path
+            self.cwd = None
+            note_once("layout-cwd", f"layout: os.getcwd() failed ({e}); the Folder card shows no path")
         self.at = 0.0
         self.backoff_until = 0.0     # tmux answered slowly: no reads until then
         self.segs = []
@@ -259,7 +264,7 @@ class Layout:
         if not self.pane or now < self.backoff_until or (not force and now - self.at < self.MIN_INTERVAL):
             return
         self.at = now
-        fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow)
+        fresh, truth = mklayout.build_ex(self.pane, skip=covered, shadow=self.shadow, cwd=self.cwd)
         # tmux is read on the relay loop, so a slow answer is typing lag. If
         # it took long, stop asking for a while rather than stall again. This
         # comes BEFORE the unreadable check: a hung tmux times out (0.5 s) and
@@ -790,7 +795,7 @@ def selfcheck():
     calls = []
     real_ex = mklayout.build_ex
     try:
-        mklayout.build_ex = lambda _p, skip=(), shadow=None: (calls.append(1) or [], False)
+        mklayout.build_ex = lambda _p, skip=(), shadow=None, cwd=None: (calls.append(1) or [], False)
         lay2 = Layout("%0")
         lay2.refresh()
         lay2.refresh()
@@ -805,12 +810,20 @@ def selfcheck():
     # A suspended layout read (slow tmux) must not be judged on: the caller stays dirty.
     calls = []
     try:
-        mklayout.build_ex = lambda _p, skip=(), shadow=None: (calls.append(1) or [], False)
+        mklayout.build_ex = lambda _p, skip=(), shadow=None, cwd=None: (calls.append(1) or [], False)
         lay3 = Layout("%0")
         lay3.backoff_until = time.monotonic() + 5
         assert reread_for_judging(lay3, set()) is False and not calls, "no read, and not judged, while paused"
         lay3.backoff_until = 0.0
         assert reread_for_judging(lay3, set()) is True and len(calls) == 1, "reads resume after the backoff"
+    finally:
+        mklayout.build_ex = real_ex
+    # The Folder card's path line: the layout hands build_ex the directory claude was launched from.
+    seen = []
+    try:
+        mklayout.build_ex = lambda _p, skip=(), shadow=None, cwd=None: (seen.append(cwd) or [], False)
+        Layout("%0").refresh(force=True)
+        assert seen == [os.getcwd()], f"build_ex must get the launch dir, got {seen}"
     finally:
         mklayout.build_ex = real_ex
     # A card is not opened while a card's erase is still queued and the live pane
@@ -878,7 +891,7 @@ def selfcheck():
              ]
     real = mklayout.build_ex
     try:
-        mklayout.build_ex = lambda _pane, skip=(), shadow=None: (shots.pop(0), shadow is not None)
+        mklayout.build_ex = lambda _pane, skip=(), shadow=None, cwd=None: (shots.pop(0), shadow is not None)
         lay = Layout("%0")
         lay.MIN_INTERVAL = 0
         lay.refresh()
