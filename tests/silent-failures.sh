@@ -734,7 +734,7 @@ run_case cache-leaf-symlink       -  0 s_cache_leaf_link chk_cache_leaf_link
 # _nf_err's once-per-process memo must compare keys literally: 'spawn:*' is a new key
 # after 'spawn:abc', not a glob that matches it (nor may it silence later keys).
 if unit_on lib-nf-err-memo; then
-_memo_lines=$( ( export HOME="$WORK/memo-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/memo-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR"
+_memo_lines=$( ( export HOME="$WORK/memo-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/memo-stamps"; mkdir -p "$WORK/memo-home/.claude" "$NERDFLAIR_ERR_STAMP_DIR"
   source "$REPO/scripts/lib.sh"; _nf_err 'spawn:abc' one; _nf_err 'spawn:*' two; _nf_err 'spawn:xyz' three
   wc -l < "$HOME/.claude/nerdflair-errors.log" ) 2>/dev/null )
 check "lib.sh _nf_err memo: keys with glob characters are literal (3 lines)" 3 "${_memo_lines//[[:space:]]/}"
@@ -754,7 +754,7 @@ fi
 
 # _nf_cache_put leaves noclobber and umask as it found them.
 if unit_on cache-put-noclobber; then
-_ncs=$( ( export HOME="$WORK/nc-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/nc-stamps"; mkdir -p "$HOME/.claude" "$NERDFLAIR_ERR_STAMP_DIR" "$WORK/nc-c"
+_ncs=$( ( export HOME="$WORK/nc-home" NERDFLAIR_ERR_STAMP_DIR="$WORK/nc-stamps"; mkdir -p "$WORK/nc-home/.claude" "$NERDFLAIR_ERR_STAMP_DIR" "$WORK/nc-c"
   source "$REPO/scripts/lib.sh"; umask 022
   _nf_cache_put "$WORK/nc-c/a" x; [[ -o noclobber ]] && printf 'on ' || printf 'off '
   set -o noclobber; _nf_cache_put "$WORK/nc-c/b" y; [[ -o noclobber ]] && printf 'on ' || printf 'off '; umask ) 2>/dev/null )
