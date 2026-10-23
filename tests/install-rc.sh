@@ -264,7 +264,7 @@ check "uninstall: and it prints no warning for it" 0 "$(grep -c 'could not stop'
 # enable --now never restarts a running service: install restarts it only when it was running and the installed watcher or
 # unit changed. The stub answers is-active from $SC_ACTIVE, so "was it running" is under the test's control.
 export SC_LOG="$ROOT/systemctl.log" SC_ACTIVE="$ROOT/unit-active"
-printf '#!/bin/sh\ncase "$*" in *is-active*) [ -f "$SC_ACTIVE" ]; exit $? ;; esac\necho "$*" >> "$SC_LOG"\nexit 0\n' > "$ROOT/stub/systemctl"
+printf '#!/bin/sh\ncase "$*" in *is-active*) [ -f "$SC_ACTIVE" ]; exit $? ;; esac\necho "$*" >> "$SC_LOG"\ncase "$*" in *try-restart*) [ -n "${SC_FAIL_RESTART:-}" ] && { echo "Job failed" >&2; exit 1; } ;; esac\nexit 0\n' > "$ROOT/stub/systemctl"
 restarts() { grep -c 'try-restart nf-tmux-watch' "$SC_LOG" 2>/dev/null || true; }
 : > "$SC_LOG"; rm -f "$SC_ACTIVE"; bash "$INSTALL" uninstall >/dev/null 2>&1; : > "$SC_LOG"
 bash "$INSTALL" install >/dev/null 2>&1
@@ -283,6 +283,12 @@ echo '# edited' >> "$U"; bash "$INSTALL" install >/dev/null 2>&1
 check "reinstall: installed unit differed, running unit restarted" 2 "$(restarts)"
 rm -f "$SC_ACTIVE"; echo '# edited' >> "$W"; bash "$INSTALL" install >/dev/null 2>&1
 check "reinstall: changed watcher but the unit was not running: no restart" 2 "$(restarts)"
+# a try-restart that fails is reported, not swallowed
+: > "$SC_ACTIVE"; echo '# edited' >> "$W"
+out=$(SC_FAIL_RESTART=1 bash "$INSTALL" install 2>&1); rc=$?
+check "try-restart fails: install exits non-zero" 1 "$rc"
+check "try-restart fails: the reason is printed" 1 "$(grep -c 'install: WARNING tmux socket watcher not restarted: Job failed' <<<"$out")"
+check "try-restart fails: it is in launcher.log too" 1 "$(grep -c 'install: WARNING tmux socket watcher not restarted: Job failed' "$HOME/.local/state/nerdflair/launcher.log")"
 bash "$INSTALL" uninstall >/dev/null 2>&1
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/stub/systemctl"
 
