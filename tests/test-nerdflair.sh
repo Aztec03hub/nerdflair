@@ -373,6 +373,10 @@ test_renderer_git_cache_lives_under_home() {
   n=$(ls "$cdir" 2>/dev/null | grep -c '^nerdflair-git-' || true)
   assert_equals "git cache written under the private cache dir, not /tmp" "$n" "1"
   assert_equals "cache dir is private (0700)" "$(stat -c %a "$cdir" 2>/dev/null || stat -f %Lp "$cdir")" "700"
+  # Upstream's second, non-private cache dir under HOME must not come back.
+  local second="no"
+  [[ -e "$FAKE_HOME/.claude/nerdflair/cache" ]] && second="yes"
+  assert_equals "no second cache dir under ~/.claude/nerdflair" "$second" "no"
   _teardown
 }
 
@@ -987,8 +991,12 @@ test_config_volume_leading_zero_is_decimal() {
 test_config_volume_uses_dot_decimal_in_any_locale() {
   _setup
   _configure layout full >/dev/null 2>&1
-  LC_ALL=de_DE.UTF-8 _configure chime-volume 50 >/dev/null 2>&1 || true
-  assert_equals "volume written with a dot" "$(_state_field "chime_volume")" "0.50"
+  if locale -a 2>/dev/null | grep -qiE '^de_DE\.utf-?8$'; then
+    LC_ALL=de_DE.UTF-8 _configure chime-volume 50 >/dev/null 2>&1 || true
+    assert_equals "volume written with a dot" "$(_state_field "chime_volume")" "0.50"
+  else
+    echo "  SKIP: de_DE.UTF-8 not installed (locale -a), dot-decimal check not run"
+  fi
   _teardown
 }
 
