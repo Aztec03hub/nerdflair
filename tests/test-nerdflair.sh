@@ -25,6 +25,14 @@ _setup() {
   TMPDIR_ROOT=$(mktemp -d)
   FAKE_HOME="$TMPDIR_ROOT/home"
   mkdir -p "$FAKE_HOME/.claude/nerdflair"
+  # Stub audio players for bell.sh: the real paplay played every chime through the speakers and, backgrounded, wrote
+  # $HOME/.config/pulse/cookie into the fake HOME while _teardown deleted it ("Directory not empty", about 1 run in 4,
+  # 2026-10-23). The stub writes nothing unless NF_TEST_PLAYED names a file, so no test races its own teardown.
+  mkdir -p "$TMPDIR_ROOT/stub"
+  for p in paplay afplay; do
+    printf '#!/bin/sh\n[ -n "$NF_TEST_PLAYED" ] && echo "%s $*" >> "$NF_TEST_PLAYED"\nexit 0\n' "$p" > "$TMPDIR_ROOT/stub/$p"
+    chmod +x "$TMPDIR_ROOT/stub/$p"
+  done
 
   FAKE_CWD="$TMPDIR_ROOT/workspace/my-project"
   mkdir -p "$FAKE_CWD"
@@ -659,7 +667,7 @@ test_bell_exits_early_when_all_disabled() {
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}
 EOF
   local rc=0
-  echo '{}' | HOME="$FAKE_HOME" bash "$BELL" Stop || rc=$?
+  echo '{}' | HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" Stop || rc=$?
   assert_exit_code "bell exits 0 when all disabled" "0" "$rc"
   _teardown
 }
@@ -671,7 +679,7 @@ test_bell_reads_state_correctly() {
 EOF
   # With both off, it should exit cleanly without errors
   local output rc=0
-  output=$(echo '{}' | HOME="$FAKE_HOME" bash "$BELL" Stop 2>&1) || rc=$?
+  output=$(echo '{}' | HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" Stop 2>&1) || rc=$?
   assert_exit_code "bell runs without error" "0" "$rc"
   # Should not produce any output when disabled
   assert_equals "bell silent when disabled" "$output" ""
@@ -683,7 +691,11 @@ test_bell_picks_random_style_on_session_start() {
   cat > "$FAKE_HOME/.claude/nerdflair/state.json" <<'EOF'
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart", "color": "vibrant"}
 EOF
-  echo '{"session_id":"test-new-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  local played="$TMPDIR_ROOT/played"
+  echo '{"session_id":"test-new-session"}' | NF_TEST_PLAYED="$played" HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  # The player is started in the background: wait for its line (at most 2 s), so it can't write after _teardown.
+  for _ in {1..20}; do [[ -s "$played" ]] && break; sleep 0.1; done
+  assert_equals "the chime went to a stub player, never the real one" "$([[ -s "$played" ]] && echo yes || echo no)" "yes"
   # bell.sh should pick a real style on SessionStart and write it to per-session file
   local resolved=""
   local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/test-new-session"
@@ -706,7 +718,7 @@ test_bell_suppresses_resume() {
 EOF
   # source=resume should cause bell.sh to exit early without creating a per-session style file
   local rc=0
-  echo '{"session_id":"old-session","source":"resume"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || rc=$?
+  echo '{"session_id":"old-session","source":"resume"}' | HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionStart >/dev/null 2>&1 || rc=$?
   local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/old-session"
   if [[ ! -f "$_session_file" ]]; then
     (( _pass++ ))
@@ -723,7 +735,7 @@ test_bell_cleans_up_session_file_on_session_end() {
 {"mode": "full", "width": "auto", "flair": true, "terminal_bell": "off", "chime_sound": "Glass", "chime_volume": "0.50", "chime_style": "random", "chime_events": "SessionStart,SessionEnd", "color": "vibrant"}
 EOF
   # Create a session file via SessionStart
-  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionStart >/dev/null 2>&1 || true
+  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionStart >/dev/null 2>&1 || true
   local _session_file="$FAKE_HOME/.claude/nerdflair/sessions/cleanup-session"
   # Verify it exists
   if [[ ! -f "$_session_file" ]]; then
@@ -733,7 +745,7 @@ EOF
     return
   fi
   # SessionEnd should remove it
-  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" bash "$BELL" SessionEnd >/dev/null 2>&1 || true
+  echo '{"session_id":"cleanup-session"}' | HOME="$FAKE_HOME" PATH="$TMPDIR_ROOT/stub:$PATH" bash "$BELL" SessionEnd >/dev/null 2>&1 || true
   if [[ ! -f "$_session_file" ]]; then
     (( _pass++ ))
   else
