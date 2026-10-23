@@ -488,8 +488,11 @@ test_renderer_rows_match_columns_in_any_locale() {
   echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
   local w_c w_utf utf8_loc
   w_c=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=C HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
-  # Use a UTF-8 locale this box really has: the renderer trusts any LC_ALL that names UTF-8, installed or
-  # not, and bash then counts bytes. With none installed the case is skipped (the C case still runs).
+  # A UTF-8 locale that is named but not installed must not leave bash counting bytes.
+  local w_missing
+  w_missing=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=zz_ZZ.UTF-8 HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
+  assert_equals "rows are COLUMNS-4 (96) wide when the named UTF-8 locale is not installed" "$w_missing" "96 96 96 "
+  # And one this box really has. With none installed that case is skipped (the C case still runs).
   utf8_loc=$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.utf-?8$' | head -n 1 || true)
   if [[ -n "$utf8_loc" ]]; then
     w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL="$utf8_loc" HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)

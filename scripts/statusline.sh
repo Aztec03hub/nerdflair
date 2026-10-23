@@ -3,16 +3,14 @@ set -uo pipefail
 
 # Width math (wc -m, ${#var}, ${var:i:1}) needs a UTF-8 locale, but Claude Code
 # spawns the statusline without LANG. _fmt_num stays locale-free on purpose.
-case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
-  *)
-    if locale -a 2>/dev/null | grep -qiE '^C\.UTF-?8$'; then
-      export LC_ALL=C.UTF-8
-    else
-      export LC_ALL=en_US.UTF-8
-    fi
-    ;;
-esac
+# Probe the ctype actually in effect (one multibyte character must count as 1): a UTF-8 name
+# that is not installed leaves bash counting bytes, and `locale -a | grep` cost two forks a render.
+_nf_probe=$'\xc3\xa9'
+if (( ${#_nf_probe} != 1 )); then
+  { export LC_ALL=C.UTF-8; } 2>/dev/null
+  (( ${#_nf_probe} == 1 )) || { export LC_ALL=en_US.UTF-8; } 2>/dev/null
+fi
+unset _nf_probe
 # Note: -e is intentionally omitted because arithmetic expressions like
 # (( x == 0 )) return exit code 1, which would cause spurious termination.
 
