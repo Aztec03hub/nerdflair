@@ -177,6 +177,27 @@ def rc_state(text):
     return next((k for k, v in RC_STATES.items() if text.lstrip().startswith(v[0])), "unknown")
 
 
+PUA = re.compile(r"^\s*[-\U000f0000-\U000ffffd]\s*")
+
+
+def folder_path(text, cwd, home=None):
+    """The Folder card's path line: `cwd` in full, home spelled ~, or [] if the readout doesn't name it.
+
+    `cwd` is the bridge's own working directory, which is claude's launch directory and so its
+    workspace.project_dir (the renderer resolves both with pwd -P, as os.getcwd does). It's shown only
+    when the readout's name is the start of cwd's basename (the renderer may cut it with an ellipsis),
+    so a card never shows a path the line didn't draw. Home draws a glyph and no name."""
+    home = home if home is not None else os.path.expanduser("~")
+    if not cwd:
+        return []
+    name = PUA.sub("", text).strip().rstrip("…")
+    if cwd == home:
+        return ["~"] if not name else []
+    if not name or not os.path.basename(cwd.rstrip("/")).startswith(name):
+        return []
+    return ["~" + cwd[len(home):] if cwd.startswith(home + "/") else cwd]
+
+
 def classify(text):
     for _id, pat, title, rgb, body in CARDS:
         if re.search(pat, text):
@@ -472,6 +493,25 @@ def selfcheck():
         assert classify(txt)[0] == "chime", txt
     # U+F028 inside another readout (a folder or branch name) must not take the Chime card.
     assert classify("\U000f024b dir\uf028x")[0] == "folder" and classify("x\uf028  y")[0] != "chime"
+    # The Folder card's path line: ~ for home, the full path elsewhere, a cut name still matches, a
+    # readout that names another dir (or none) gets no path.
+    H = "/home/u"
+    assert folder_path("\U000f024b sallie_mae", H + "/claude_projects/sallie_mae", H) == ["~/claude_projects/sallie_mae"]
+    assert folder_path("\U000f024b sallie_m\u2026", H + "/claude_projects/sallie_mae", H) == ["~/claude_projects/sallie_mae"]
+    assert folder_path("\U000f024b srv", "/srv", H) == ["/srv"]
+    assert folder_path("\U000f024b u2", "/home/u2/x/u2", H) == ["/home/u2/x/u2"]   # /home/u2 isn't under /home/u
+    assert folder_path("\uf1bb ", H, H) == ["~"]
+    assert folder_path("\U000f024b other", H + "/claude_projects/sallie_mae", H) == []
+    assert folder_path("\U000f024b sallie_mae", None, H) == []
+    assert folder_path("\U000f024b sallie_mae", H, H) == []
+
+    class _Screen:                      # build_ex reads a shadow's capture(): the Folder card gets the path line
+        def capture(self):
+            return subprocess.CompletedProcess([], 0, "\n  \U000f024b sallie_mae · \U000f062c main   5h 2%/4h30m\n", "")
+    home = os.path.expanduser("~")
+    segs, _ = build_ex("%0", shadow=_Screen(), cwd=home + "/claude_projects/sallie_mae")
+    card = next(s for s in segs if s["id"] == "folder")
+    assert card["body"] == ["workspace.project_dir, else current_dir", "~/claude_projects/sallie_mae"], card
     # The guard itself: it reads either quote style and key order, and fails loud on a short parse.
     ours_folder = "#%02x%02x%02x" % tuple(next(c[3] for c in CARDS if c[0] == "folder"))
     mini = lambda body: "const CARDS = {\n" + body + "\n}\n"  # noqa: E731
@@ -501,7 +541,7 @@ def build(target, skip=(), shadow=None):
     return build_ex(target, skip, shadow)[0] or []
 
 
-def build_ex(target, skip=(), shadow=None):
+def build_ex(target, skip=(), shadow=None, cwd=None):
     """(segments, truth): every readout on the status line, and whether they
     were read from the engine's own screen (`shadow`), in which case no row is
     ever covered by a card and `skip` is not applied.
@@ -559,6 +599,8 @@ def build_ex(target, skip=(), shadow=None):
             continue
         for col, w, text in row_pieces(clean):
             sid, title, rgb, body = classify(text)
+            if sid == "folder":
+                body = body + folder_path(text, cwd)
             segs.append({
                 "id": sid or f"row{row}-col{col}",
                 "row": row,
