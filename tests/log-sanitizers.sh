@@ -21,7 +21,7 @@ trap 'python3 -I -c "import shutil,sys; d=sys.argv[1]; assert d.startswith(\"/\"
 # cargo/rustup find their toolchain through HOME: pin it before HOME becomes the temp dir
 export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export HOME="$W/home" NF_STATE_DIR="$W/state" NF_LOG_NOSTAMP=1 NERDFLAIR_ERR_STAMP_DIR="$W/stamps"
-mkdir -p "$HOME/.claude" "$NF_STATE_DIR" "$NERDFLAIR_ERR_STAMP_DIR"
+mkdir -p "$W/home/.claude" "$NF_STATE_DIR" "$NERDFLAIR_ERR_STAMP_DIR"
 fail=0
 check() { if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; else printf '  FAIL  %s (want %s, got %s)\n' "$1" "$2" "$3"; fail=1; fi; }
 
@@ -38,7 +38,7 @@ NF_SAN_IN="$W/in.hex" NF_SAN_OUT="$W/out.rust" cargo test --release --manifest-p
 
 # bash loggers: each case in a fresh subshell and fresh log, the reason read back from the line
 unhex() { local h=$1 out="" i; for ((i = 0; i < ${#h}; i += 2)); do out+="\\x${h:i:2}"; done; printf '%b' "$out"; }
-LIBLOG="$HOME/.claude/nerdflair-errors.log"
+LIBLOG="$W/home/.claude/nerdflair-errors.log"
 readback() { # file regex -> hex of the reason (group 1), or NOLINE
   LC_ALL=C python3 -I - "$1" "$2" <<'PY'
 import re, sys
