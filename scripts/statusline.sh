@@ -1143,7 +1143,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
 fi
 right_width=$(_vis_len "$row1_right")
 
-# Left side budget = total width minus right side minus 3 char min padding
+# Left side budget = total width minus right side minus the gap before it (2 when a right readout exists, else 3)
 # In minimal mode, reserve space for pill + dirty (both appended to left later)
 _extra_reserve=0
 if [[ "$_SL_MODE" == "minimal" ]]; then
