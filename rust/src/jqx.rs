@@ -121,21 +121,6 @@ pub fn path<'a>(root: &'a Value, keys: &[&str]) -> Result<&'a Value, ()> {
     Ok(cur)
 }
 
-/// jq's `@tsv` escaping for one field.
-pub fn tsv_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 /// `.x // ""` — null and false both fall through to the alternative.
 pub fn alt_str(v: &Value) -> String {
     match v {

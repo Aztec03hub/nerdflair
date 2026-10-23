@@ -1,5 +1,5 @@
-//! lib.sh state handling, including its legacy migrations and its
-//! field-collapsing read bug (see `read_ifs_whitespace`).
+//! lib.sh state handling, including its legacy migrations. Fields are split on the
+//! unit separator, so an empty field keeps its place (upstream 89c0af3).
 
 use crate::errlog;
 use crate::jqx;

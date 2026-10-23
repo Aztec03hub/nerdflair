@@ -294,36 +294,6 @@ pub fn slugify(s: &str) -> String {
         .collect()
 }
 
-/// `IFS=$'\t' read -r a b c ...`: tab is IFS *whitespace*, so leading/trailing
-/// runs are ignored and interior runs collapse — empty fields disappear. This
-/// is a real behaviour of lib.sh's state read and is reproduced deliberately.
-pub fn read_ifs_whitespace(line: &str, n: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(n);
-    let trimmed = line.trim_matches('\t');
-    if trimmed.is_empty() {
-        return vec![String::new(); n];
-    }
-    let mut fields: Vec<&str> = trimmed.split('\t').filter(|f| !f.is_empty()).collect();
-    if fields.len() > n {
-        // the last variable soaks up the remainder, separators preserved
-        let tail_start = fields
-            .iter()
-            .take(n - 1)
-            .map(|f| f.len())
-            .sum::<usize>();
-        let _ = tail_start;
-        let head: Vec<String> = fields.drain(..n - 1).map(|s| s.to_string()).collect();
-        out.extend(head);
-        out.push(fields.join("\t"));
-    } else {
-        out.extend(fields.iter().map(|s| s.to_string()));
-        while out.len() < n {
-            out.push(String::new());
-        }
-    }
-    out
-}
-
 /// `IFS=$'\x1f' read -r ...`: \x1f is not IFS whitespace, so empty fields are
 /// preserved. Missing trailing fields become empty strings.
 pub fn read_ifs_unit(line: &str, n: usize) -> Vec<String> {
