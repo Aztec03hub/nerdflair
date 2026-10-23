@@ -45,6 +45,9 @@ for case in sorted(os.listdir(run)):
             if repo == "wrap-longfirst" and cols >= 100: checks.append(("zeta\u2026" in lines[0] and "zeta:" not in lines[0], "peek ends on the colon"))
             for good, why in checks:
                 if not good: print(f"{case} {side} {why}: {lines[0]!r}"); bad += 1
+        if desc.startswith("row1 right edge: longdiv"):   # a truncated model keeps the 2-column gap, not 3
+            g = re.search(r"Mythos[^\u2026]*\u2026( +)\S", lines[0])
+            if g and len(g.group(1)) != 2: print(f"{case} {side} gap after the truncated model is {len(g.group(1))}, not 2: {lines[0]!r}"); bad += 1
         w1, w2 = len(lines[0]), len(lines[1])
         ok = (not has_right) or w1 == w2
         seen += has_right; bad += not ok

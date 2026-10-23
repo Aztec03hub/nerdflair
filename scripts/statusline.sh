@@ -1154,7 +1154,8 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
     _extra_reserve=$(( _extra_reserve + 3 + $(_vis_len "$dirty_segment") ))
   fi
 fi
-left_budget=$(( ROW_WIDTH - right_width - 3 - _extra_reserve ))
+# 2 = the gap _justified_row keeps before the right readout; 3 when there is none (unchanged)
+left_budget=$(( ROW_WIDTH - right_width - (right_width > 0 ? 2 : 3) - _extra_reserve ))
 (( left_budget < 20 )) && left_budget=20
 
 # Chrome overhead on the left side (icons + spaces, not counting text):
