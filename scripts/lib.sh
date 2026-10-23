@@ -5,7 +5,6 @@
 # ── Paths ────────────────────────────────────────────────────────
 NF_STATE_FILE="$HOME/.claude/nerdflair/state.json"
 NF_SESSION_DIR="$HOME/.claude/nerdflair/sessions"
-NF_CACHE_DIR="$HOME/.claude/nerdflair/cache"
 NF_SETTINGS_FILE="$HOME/.claude/settings.json"
 
 # ── Defaults ─────────────────────────────────────────────────────

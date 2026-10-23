@@ -558,9 +558,6 @@ _int_or_zero() {
 # ── Git cache (3-second TTL) ──────────────────────────────────────
 # Cache git status/diff results to avoid running git on every render.
 _GIT_CACHE_TTL=3
-# Caches live under HOME, never in world-writable /tmp where another user could
-# plant a file (or a symlink) with a predictable name.
-mkdir -p "$NF_CACHE_DIR" 2>/dev/null
 _git_cache_file=""
 _git_cache_fresh=false
 if [[ -n "$git_dir" ]]; then
