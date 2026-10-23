@@ -818,6 +818,14 @@ def selfcheck():
         assert reread_for_judging(lay3, set()) is True and len(calls) == 1, "reads resume after the backoff"
     finally:
         mklayout.build_ex = real_ex
+    # The Folder card's path line: the layout hands build_ex the directory claude was launched from.
+    seen = []
+    try:
+        mklayout.build_ex = lambda _p, skip=(), shadow=None, cwd=None: (seen.append(cwd) or [], False)
+        Layout("%0").refresh(force=True)
+        assert seen == [os.getcwd()], f"build_ex must get the launch dir, got {seen}"
+    finally:
+        mklayout.build_ex = real_ex
     # A card is not opened while a card's erase is still queued and the live pane
     # is the only source (it would save the old card as the "screen" to restore).
     queue = [("erase", True)]
