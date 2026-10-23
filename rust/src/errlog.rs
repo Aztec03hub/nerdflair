@@ -27,6 +27,11 @@ const KEEP_BYTES: u64 = 64 * 1024;
 const MAX_REASON: usize = 400;
 
 pub fn log_path() -> PathBuf {
+    // Unit tests never write the person's real log: state.rs's lock-timeout test added a state-lock line to
+    // ~/.claude/nerdflair-errors.log on every `cargo test`, and doctor then warned about it (2026-10-23).
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("nf-errlog-test-{}", std::process::id())).join(".claude/nerdflair-errors.log");
+    }
     // Same rule as state.rs: HOME unset or empty means "/", never a relative path.
     let home = std::env::var("HOME").unwrap_or_default();
     let base = if home.is_empty() { PathBuf::from("/") } else { PathBuf::from(home) };

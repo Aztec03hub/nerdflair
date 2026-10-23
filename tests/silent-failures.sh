@@ -743,9 +743,12 @@ fi
 # hooks/bell.sh reads the same state file but not the renderer: a non-numeric chime_volume must be
 # defaulted and logged by lib.sh, or awk reads "loud" as 0 and the hook mutes itself silently.
 if unit_on bell-chime-volume; then
-BV="$WORK/bell-vol"; mkdir -p "$BV/home/.claude/nerdflair" "$BV/stamps" "$BV/work"
+BV="$WORK/bell-vol"; mkdir -p "$BV/home/.claude/nerdflair" "$BV/stamps" "$BV/work" "$BV/bin"
+# No-op players first on PATH: "loud" defaults to volume 1, and only the random style's missing Stop clip kept the
+# real paplay from playing through the speakers here (2026-10-23).
+for _p in paplay afplay ffplay; do printf '#!/bin/sh\nexit 0\n' > "$BV/bin/$_p"; chmod +x "$BV/bin/$_p"; done
 printf '{"mode":"full","width":"auto","flair":true,"terminal_bell":"off","chime_sound":"Glass","chime_volume":"loud","chime_style":"random","chime_events":"Notification,Stop","color":"vibrant","last_session":"","chime_recent_styles":[]}' > "$BV/home/.claude/nerdflair/state.json"
-( cd "$BV/work" && printf '{"hook_event_name":"Stop","session_id":"%s-b"}' "$TAG" | timeout 20 env -i PATH="$PATH" HOME="$BV/home" TMPDIR="$BV" \
+( cd "$BV/work" && printf '{"hook_event_name":"Stop","session_id":"%s-b"}' "$TAG" | timeout 20 env -i PATH="$BV/bin:$PATH" HOME="$BV/home" TMPDIR="$BV" \
     NERDFLAIR_ERR_STAMP_DIR="$BV/stamps" bash "$REPO/hooks/bell.sh" Stop >/dev/null 2>&1 )
 check "bell.sh: a non-numeric chime_volume is logged by the hook (1 line)" 1 "$(rg -cF ' chime-volume: ' "$BV/home/.claude/nerdflair-errors.log" 2>/dev/null || echo 0)"
 _bv=$( ( export HOME="$BV/home" NERDFLAIR_ERR_STAMP_DIR="$BV/stamps2"; mkdir -p "$NERDFLAIR_ERR_STAMP_DIR"; source "$REPO/scripts/lib.sh"; _nf_read_state; printf '%s' "$NF_CUR_CHIME_VOLUME" ) 2>/dev/null )

@@ -365,6 +365,8 @@ mod tests {
         assert!(waited >= std::time::Duration::from_millis(400), "did not wait on the lock: {:?}", waited);
         assert!(kept, "removed a lock it did not take");
         assert_eq!(v["last_session"], "s1");
+        let real = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".claude/nerdflair-errors.log");
+        assert_ne!(crate::errlog::log_path(), real, "a unit test's lock timeout must not reach the real error log");
     }
 
     /// bash's `_nf_write_state` keys, in its order: no `flair`, `spinner_verbs` before the history.
