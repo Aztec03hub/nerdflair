@@ -486,10 +486,17 @@ test_renderer_rows_match_columns_in_any_locale() {
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
   echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
-  local w_c w_utf
+  local w_c w_utf utf8_loc
   w_c=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=C HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
-  w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=en_US.UTF-8 HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
-  assert_equals "rows are COLUMNS-4 (96) wide under UTF-8" "$w_utf" "96 96 96 "
+  # Use a UTF-8 locale this box really has: the renderer trusts any LC_ALL that names UTF-8, installed or
+  # not, and bash then counts bytes. With none installed the case is skipped (the C case still runs).
+  utf8_loc=$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.utf-?8$' | head -n 1 || true)
+  if [[ -n "$utf8_loc" ]]; then
+    w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL="$utf8_loc" HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
+    assert_equals "rows are COLUMNS-4 (96) wide under UTF-8 ($utf8_loc)" "$w_utf" "96 96 96 "
+  else
+    echo "  SKIP: no en_US/C UTF-8 locale installed (locale -a)"
+  fi
   assert_equals "rows are COLUMNS-4 (96) wide under C locale" "$w_c" "96 96 96 "
   _teardown
 }
