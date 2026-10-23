@@ -495,8 +495,6 @@ if [[ "$show_info" == "true" ]]; then
   exit 0
 fi
 
-# Handle flair toggle
-
 # Handle terminal-bell toggle: on, off, on
 next_terminal_bell="$current_terminal_bell"
 if [[ "$toggle_terminal_bell" == "true" ]]; then
