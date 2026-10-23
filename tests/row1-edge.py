@@ -41,6 +41,7 @@ for case in sorted(os.listdir(run)):
             repo, cols = mm.group(1), int(mm.group(2))
             checks = []
             if repo == "wrap-many" and cols >= 60: checks.append((" high" in lines[0], "effort word dropped"))
+            if repo == "wrap-two" and cols >= 59: checks.append((" high" in lines[0], "effort word dropped"))
             if repo == "wrap-short" and cols >= 100: checks.append(("\u00b7 c:d " in lines[0] + " ", "short second entry not whole and clean"))
             if repo == "wrap-longfirst" and cols >= 100: checks.append(("zeta\u2026" in lines[0] and "zeta:" not in lines[0], "peek ends on the colon"))
             for good, why in checks:

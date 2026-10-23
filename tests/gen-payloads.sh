@@ -408,4 +408,8 @@ for w in 58 62; do
     "$(mut ".workspace={\"current_dir\":\"@@REPO:longdiv@@\",\"project_dir\":\"@@REPO:longdiv@@\"} | .model.display_name=\"Mythos Experimental Preview Edition 12.5\" | .effort.level=\"xhigh\" | .thinking.enabled=true | .output_style.name=\"Explanatory\"")" \
     "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=$w"
 done
+# the measured effort thresholds row1-edge.py pins: wrap-two keeps its effort word from 59 (wrap-many from 60, already in the loop above)
+emit "row1 multi: wrap-two at COLUMNS=59, effort high" \
+  "$(mut ".workspace={\"current_dir\":\"@@REPO:wrap-two@@\",\"project_dir\":\"@@REPO:wrap-two@@\"}")" \
+  "CASE_STATE=$FULL_VIB" "CASE_COLUMNS=59"
 echo "generated $N payloads in $OUT"
