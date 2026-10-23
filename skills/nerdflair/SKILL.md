@@ -239,7 +239,7 @@ bash "$CLAUDE_PLUGIN_ROOT/scripts/nerdflair.sh" info
 
 ### Width
 - **width**: sets the layout width (50-150, or "auto")
-  - **auto** (default): the detected terminal width (`$COLUMNS`), clamped to 50-150
+  - **auto** (default): the detected terminal width (`$COLUMNS` minus the 4-column inset), clamped to 50-150
   - **50-150**: fixed bar width in columns
 
 ### Terminal Bell
