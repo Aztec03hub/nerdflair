@@ -1,1 +1,1 @@
-model display_name Haiku 5 (preview 2): bare major from before the paren
+model display_name Haiku (preview 2): the only digit sits inside the paren, so no version

@@ -15,7 +15,7 @@
   },
   "fast_mode": false,
   "model": {
-    "display_name": "Haiku 5 (preview 2)",
+    "display_name": "Haiku (preview 2)",
     "id": "claude-haiku"
   },
   "output_style": {
