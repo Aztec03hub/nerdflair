@@ -1083,7 +1083,8 @@ fn render_inner(input: &str) -> Result<String, String> {
             extra_reserve += 3 + vis_len(&dirty_segment) as i64;
         }
     }
-    let mut left_budget = row_width - right_width - 3 - extra_reserve;
+    // 2 = the gap justified_row keeps before the right readout; 3 when there is none (unchanged)
+    let mut left_budget = row_width - right_width - if right_width > 0 { 2 } else { 3 } - extra_reserve;
     if left_budget < 20 {
         left_budget = 20;
     }

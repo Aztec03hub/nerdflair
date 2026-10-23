@@ -710,7 +710,7 @@ _MULTI_PEEK=5
 # Truncates repo and/or branch independently (start kept, ELLIPSIS appended),
 # each floored at _MULTI_SIDE_MIN, colon always kept. Whichever side fits whole
 # yields its surplus to the other; otherwise the budget (minus colon) splits
-# evenly. Names are ASCII and ELLIPSIS is one column, so char count == width.
+# evenly. Width is counted in characters (as _vis_len does), so wide characters (CJK repo or branch names) overflow the cells; display width is a separate change.
 _render_multi_entry() {
   local _e="$1" _width=$2
   local _repo="${_e%%:*}" _br="${_e#*:}"
@@ -1143,7 +1143,7 @@ if [[ "$_SL_MODE" != "minimal" ]]; then
 fi
 right_width=$(_vis_len "$row1_right")
 
-# Left side budget = total width minus right side minus 3 char min padding
+# Left side budget = total width minus right side minus the gap before it (2 when a right readout exists, else 3)
 # In minimal mode, reserve space for pill + dirty (both appended to left later)
 _extra_reserve=0
 if [[ "$_SL_MODE" == "minimal" ]]; then
@@ -1154,7 +1154,8 @@ if [[ "$_SL_MODE" == "minimal" ]]; then
     _extra_reserve=$(( _extra_reserve + 3 + $(_vis_len "$dirty_segment") ))
   fi
 fi
-left_budget=$(( ROW_WIDTH - right_width - 3 - _extra_reserve ))
+# 2 = the gap _justified_row keeps before the right readout; 3 when there is none (unchanged)
+left_budget=$(( ROW_WIDTH - right_width - (right_width > 0 ? 2 : 3) - _extra_reserve ))
 (( left_budget < 20 )) && left_budget=20
 
 # Chrome overhead on the left side (icons + spaces, not counting text):
