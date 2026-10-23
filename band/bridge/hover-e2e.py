@@ -57,6 +57,8 @@ def main():
             time.sleep(0.5)
             scr = screen(target)
             ok = bool(re.search(r"╭─ " + re.escape(s["title"]) + r" ─", scr))
+            if s["title"] == "Folder":       # the card names the directory claude was started in (new-window -c above)
+                ok = ok and "│ ~/nerdflair " in scr
             print(f"  {'PASS' if ok else 'FAIL'}  {s['title']:<28} col {col:>3} row {s['row']}")
             bad += not ok
             # off the band, long enough for the panel to be taken down

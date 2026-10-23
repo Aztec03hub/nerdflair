@@ -6,6 +6,8 @@ the demo writes to /dev/tty while the wrapper writes into the stream it is
 already relaying to the real terminal.
 """
 
+import re
+
 from mklayout import cells
 
 ESC = "\033"
@@ -19,6 +21,14 @@ FPS = 28
 # Frames the panel rests, lit but still, between sweeps.
 REST = 26
 FRAME = 1.0 / FPS
+
+
+def _inert(s):
+    """C0 controls, DEL and C1 controls shown as "?". Card text is painted raw, so
+    one of these in it (a directory named with an ESC, now that the Folder card
+    shows the cwd) would reach the terminal as a command. Not str.isprintable:
+    that also refuses Nerd Font glyphs (private use) and emoji joiners."""
+    return "".join("?" if ord(c) < 32 or 127 <= ord(c) < 160 else c for c in s)
 
 
 def _cut(s, n):
@@ -140,7 +150,8 @@ class Panel:
         # way tmux draws them: live readout text can hold CJK and emoji); only a
         # single word wider than that is clipped (and logged) below.
         avail = max(12, self.cols - 4) - 4
-        body = [ln for b in body for ln in _wrap(b, avail)]
+        title = _inert(title)
+        body = [ln for b in body for ln in _wrap(_inert(b), avail)]
         clipped = False
         # Tall cards: keep the body within the larger side of the anchor row, so
         # the card never scrolls the screen nor covers the hovered row.
@@ -338,6 +349,19 @@ def demo():
     restarts = sum(p.advance() for _ in range(len(a) + TRAIL + REST + 2))
     assert restarts == 1, restarts
     assert p.head == 0, p.head
+
+    # Control characters in card text are painted inert; glyphs outside them are kept.
+    out = []
+    q = Panel(out.append, rows=50, cols=200)
+    q.show("f", "T\x1b]0;x\x07", ["~/a\x1b[2Jb\x9bc\x7fd", "\ue5ff \U0001f468\u200d\U0001f469"], (1, 2, 3),
+           anchor_col=10, anchor_row=40)
+    painted = "".join(out)
+    # The panel's own CSI sequences out, nothing raw may be left: the title is painted a cell at a time, so a
+    # substring check would miss an ESC in it.
+    left = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", painted)
+    assert not [c for c in left if ord(c) < 32 or 127 <= ord(c) < 160], repr(left)
+    assert "~/a?[2Jb?c?d" in painted, painted
+    assert "\ue5ff" in painted and "\u200d" in painted
 
     # Switching from one readout to another must ask for a repaint of the
     # rect it abandons. Without this the old panel's area stays blank: the
