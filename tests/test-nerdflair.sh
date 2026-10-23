@@ -33,6 +33,13 @@ _setup() {
   FAKE_HOME="$TMPDIR_ROOT/home"
   mkdir -p "$FAKE_HOME/.claude/nerdflair"
 
+  # install/uninstall run band/hover/install.sh, which calls the REAL `systemctl --user`
+  # (HOME does not isolate it). This stub reads as "no user manager" and logs each call,
+  # so a test can prove it was reached and the host's units are never touched.
+  mkdir -p "$TMPDIR_ROOT/stub"
+  printf '#!/bin/sh\necho "$*" >> "%s/systemctl.calls"\nexit 1\n' "$TMPDIR_ROOT" > "$TMPDIR_ROOT/stub/systemctl"
+  chmod +x "$TMPDIR_ROOT/stub/systemctl"
+
   FAKE_CWD="$TMPDIR_ROOT/workspace/my-project"
   mkdir -p "$FAKE_CWD"
 
@@ -206,7 +213,7 @@ _render() {
 
 # Run the configurator
 _configure() {
-  HOME="$FAKE_HOME" bash "$CONFIGURATOR" "$@"
+  PATH="$TMPDIR_ROOT/stub:$PATH" HOME="$FAKE_HOME" bash "$CONFIGURATOR" "$@"
 }
 
 # Read a field from the state file
@@ -759,6 +766,15 @@ test_config_install_on_fresh_home_writes_defaults() {
   assert_equals "install default mode" "$(_state_field "mode")" "full"
   assert_equals "install default chime events" "$(_state_field "chime_events")" "Notification,PermissionRequest,PreCompact,SessionEnd,SessionStart,Stop"
   assert_not_contains "dead flair field no longer written" "$(cat "$FAKE_HOME/.claude/nerdflair/state.json")" "flair"
+  _teardown
+}
+
+test_config_install_never_reaches_the_host_systemd() {
+  _setup
+  local out; out=$(_configure install 2>&1) || true
+  assert_contains "install reached the stub, not the host" "$(cat "$TMPDIR_ROOT/systemctl.calls" 2>/dev/null)" "--user show-environment"
+  assert_equals "install made no change through systemctl" "$(grep -vc -- '--user show-environment' "$TMPDIR_ROOT/systemctl.calls" || true)" "0"
+  assert_contains "watcher step skipped" "$out" "tmux socket watcher: skipped"
   _teardown
 }
 
