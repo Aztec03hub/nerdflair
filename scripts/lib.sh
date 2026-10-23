@@ -579,6 +579,16 @@ _nf_update_field() {
   # defaults loses the stored preferences once; staying wedged loses them
   # every render and says nothing.
   _nf_state_heal
+  # Read-modify-write under the state lock (taken AFTER the heal: it locks itself, and the
+  # lock is not reentrant), so a concurrent _nf_write_state cannot be overwritten by a stale copy.
+  local _rc=0
+  _nf_state_lock
+  _nf_update_field_locked "$field" "$value" || _rc=$?
+  _nf_state_unlock
+  return $_rc
+}
+_nf_update_field_locked() {
+  local field="$1" value="$2" _uerr
   # jq to a variable first, so the temp file is only ever created on the path
   # that immediately renames it. Writing the temp first and relying on `&&`
   # left one orphan per PID behind in the state directory on every failure.
@@ -652,7 +662,13 @@ _nf_update_recent_styles() {
   # Same two reasons as _nf_update_field: a corrupt file is as unwritable as a
   # missing one, and the temp file is only created on the path that renames it.
   _nf_state_heal
-  local _new _uerr
+  _nf_state_lock
+  _nf_update_recent_styles_locked "$styles_csv" || _rc=$?
+  _nf_state_unlock
+  return $_rc
+}
+_nf_update_recent_styles_locked() {
+  local styles_csv="$1" _new _uerr
   if _new=$(jq --arg csv "$styles_csv" \
               '.chime_recent_styles = ($csv | split(","))' \
               "$NF_STATE_FILE" 2>&1) && [[ -n "$_new" ]]; then

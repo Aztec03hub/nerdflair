@@ -79,6 +79,21 @@ test_config_state_lock_held_by_another_survives() {
   _teardown
 }
 
+# The renderer's last_session update (_nf_update_field) is a read-modify-write: it must wait on
+# the state lock like _nf_write_state does. A held fresh lock makes it log state-lock and leave the lock alone.
+test_renderer_last_session_update_takes_the_state_lock() {
+  _setup
+  mkdir -p "$FAKE_HOME/.claude/nerdflair/state.json.lock"
+  local state='{"mode": "full", "width": "auto", "terminal_bell": "off", "chime_volume": "0", "chime_style": "random", "chime_events": "Stop", "color": "vibrant", "last_session": ""}'
+  _render "$state" "$(_make_input)" >/dev/null 2>"$TMPDIR_ROOT/err"
+  assert_equals "renderer silent on stderr" "" "$(cat "$TMPDIR_ROOT/err")"
+  assert_equals "last_session still lands" "$(_state_field last_session)" "test-session-001"
+  assert_contains "update waited on the lock and logged it" "$(cat "$FAKE_HOME/.claude/nerdflair-errors.log" 2>/dev/null)" "state-lock"
+  local kept="yes"; [[ -d "$FAKE_HOME/.claude/nerdflair/state.json.lock" ]] || kept="no"
+  assert_equals "holder's lock survives the renderer" "$kept" "yes"
+  _teardown
+}
+
 # Exercise the empty-bar (logo) and full-bar paths, which most tests skip.
 test_renderer_bar_at_zero_and_full() {
   _setup
