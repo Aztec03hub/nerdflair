@@ -363,12 +363,16 @@ test_renderer_lines_added_has_thousands_separator() {
 }
 
 test_renderer_git_cache_lives_under_home() {
+  # The fork keeps every cache in one private per-user dir (NERDFLAIR_CACHE_DIR, else
+  # ~/.cache/nerdflair), mode 0700, never in /tmp. The point: the git cache lands there.
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
-  _render "$state" "$(_make_input 42 5.00)" >/dev/null
+  local cdir="$TMPDIR_ROOT/private-cache"
+  NERDFLAIR_CACHE_DIR="$cdir" _render "$state" "$(_make_input 42 5.00)" >/dev/null
   local n
-  n=$(ls "$FAKE_HOME/.claude/nerdflair/cache/" 2>/dev/null | grep -c '^git-' || true)
-  assert_equals "git cache written under HOME, not /tmp" "$n" "1"
+  n=$(ls "$cdir" 2>/dev/null | grep -c '^nerdflair-git-' || true)
+  assert_equals "git cache written under the private cache dir, not /tmp" "$n" "1"
+  assert_equals "cache dir is private (0700)" "$(stat -c %a "$cdir" 2>/dev/null || stat -f %Lp "$cdir")" "700"
   _teardown
 }
 
@@ -462,22 +466,30 @@ test_renderer_non_numeric_chime_volume_does_not_error() {
   _teardown
 }
 
-# Rows must be exactly COLUMNS wide, and the same width whether or not the
-# spawning environment has a UTF-8 locale (Claude Code passes no LANG).
+# Rows must fill exactly ROW_WIDTH = COLUMNS - 4 cells (Claude Code insets the status line
+# two columns each side; NERDFLAIR_WIDTH_INSET retunes it), measured in display cells with
+# wide glyphs (East Asian W/F) counting 2, and the same whether or not the spawning
+# environment has a UTF-8 locale (Claude Code passes no LANG).
 _row_widths() {
-  sed $'s/\033\\[[0-9;]*m//g' | awk 'NF' | while IFS= read -r line; do
-    printf '%s ' "$(printf '%s' "$line" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
-  done
+  python3 -c '
+import sys, re, unicodedata
+for l in sys.stdin.read().split("\n"):
+    l = re.sub(r"\x1b\[[0-9;]*m", "", l)
+    if not l.strip():
+        continue
+    print(sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in l), end=" ")
+print()
+' | sed 's/ *$/ /;s/^ $//' | tr -d '\n'
 }
 test_renderer_rows_match_columns_in_any_locale() {
   _setup
   local state='{"mode": "full", "width": "auto", "flair": true, "terminal_bell": "on", "chime_volume": "1", "chime_style": "random", "chime_events": "Stop", "color": "vibrant"}'
   echo "$state" > "$FAKE_HOME/.claude/nerdflair/state.json"
   local w_c w_utf
-  w_c=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=C HOME="$FAKE_HOME" bash "$RENDERER" | _row_widths)
-  w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=en_US.UTF-8 HOME="$FAKE_HOME" bash "$RENDERER" | _row_widths)
-  assert_equals "rows are 100 wide under UTF-8" "$w_utf" "100 100 100 "
-  assert_equals "rows are 100 wide under C locale" "$w_c" "100 100 100 "
+  w_c=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=C HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
+  w_utf=$(_make_input 42 5.00 | COLUMNS=100 LC_ALL=en_US.UTF-8 HOME="$FAKE_HOME" bash "$RENDERER" 2>/dev/null | _row_widths)
+  assert_equals "rows are COLUMNS-4 (96) wide under UTF-8" "$w_utf" "96 96 96 "
+  assert_equals "rows are COLUMNS-4 (96) wide under C locale" "$w_c" "96 96 96 "
   _teardown
 }
 
@@ -934,7 +946,8 @@ test_config_corrupt_state_warns_instead_of_dying_silently() {
   local rc=0 err_file="$TMPDIR_ROOT/err"
   _configure info >/dev/null 2>"$err_file" || rc=$?
   assert_exit_code "info survives corrupt state" "0" "$rc"
-  assert_contains "warns about invalid JSON" "$(cat "$err_file")" "not valid JSON"
+  # The fork logs to its durable error log (stderr stays clean for Claude Code), not to stderr.
+  assert_contains "logs that the state is not valid JSON" "$(cat "$FAKE_HOME/.claude/nerdflair-errors.log" 2>/dev/null)" "is not a valid JSON object"
   _teardown
 }
 
