@@ -317,7 +317,9 @@ fn load_claude_json(path: &Path, project_dir: &str) -> Option<Value> {
 
 fn parse_model(raw: &str) -> String {
     const FAMILIES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
-    let bytes = raw.as_bytes();
+    // bash `${raw%%(*}`: a parenthesised suffix such as "(1M context)" is never searched.
+    let core = raw.find('(').map_or(raw, |p| &raw[..p]);
+    let bytes = core.as_bytes();
     let mut found: Option<(usize, usize)> = None;
     'outer: for i in 0..bytes.len() {
         for fam in FAMILIES {
@@ -334,17 +336,17 @@ fn parse_model(raw: &str) -> String {
         Some(v) => v,
         None => return sanitize(raw),
     };
-    let name = &raw[i..i + len];
+    let name = &core[i..i + len];
     let mut model = String::new();
     let mut cs = name.chars();
     if let Some(c) = cs.next() {
         model.extend(c.to_uppercase());
     }
     model.push_str(cs.as_str());
-    if let Some(v) = find_dotted_version(raw) {
+    if let Some(v) = find_dotted_version(core) {
         model.push(' ');
         model.push_str(&v.replace('-', "."));
-    } else if let Some(v) = find_digits(raw) {
+    } else if let Some(v) = find_digits(core) {
         model.push(' ');
         model.push_str(&v);
     }

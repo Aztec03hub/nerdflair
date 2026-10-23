@@ -1,0 +1,1 @@
+model display_name Sonnet (1M context): no version, so no 'Sonnet 1'

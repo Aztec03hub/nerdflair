@@ -443,4 +443,7 @@ emit "output_style custom concise-ish: initial C" "$(mut '.output_style.name="co
 for c in 12.50 1234567.89; do
   emit "compact right label: COLUMNS=200, api time + cost $c" "$(mut ".cost.total_cost_usd=$c | .cost.total_api_duration_ms=3660000")" "CASE_STATE=$(st compact vibrant)" "CASE_COLUMNS=200"
 done
+# ═══ model display_name: a "(...)" suffix is never searched for a version (bash _model_core) ═══
+emit "model display_name Sonnet (1M context): no version, so no 'Sonnet 1'" "$(mut '.model={"display_name":"Sonnet (1M context)","id":"claude-sonnet"}')" "${E_FULL[@]}"
+emit "model display_name Haiku 5 (preview 2): bare major from before the paren" "$(mut '.model={"display_name":"Haiku 5 (preview 2)","id":"claude-haiku"}')" "${E_FULL[@]}"
 echo "generated $N payloads in $OUT"
